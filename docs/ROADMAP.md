@@ -160,7 +160,7 @@ Issue #23), **Decision Tree** (read-only traversal; Issue #24), and
 establish the simplest ownership topology — immutable, shareable model data
 with no model-owned scratch — and the first micro-batch pattern for independent
 observations. Bounded micro-batch over the existing GRU **reference** path
-(Issue #22) follows.
+(Issue #34) follows.
 
 Algorithm selection should follow actual Seqvex use cases and experiments,
 not an attempt to reproduce every conventional ML library. The development

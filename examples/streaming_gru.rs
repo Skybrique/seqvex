@@ -10,13 +10,13 @@ use seqvex::models::recurrent::gru::{Gru, GruParameters};
 fn main() {
     let input_dim = 3;
     let hidden_dim = 4;
-    let mut model = Gru::new(
+    let model = Gru::new(
         input_dim,
         hidden_dim,
         GruParameters::deterministic(input_dim, hidden_dim),
     )
     .unwrap();
-    let mut executor = StreamingExecutor::new(&mut model, Vector::zeros(hidden_dim));
+    let mut executor = StreamingExecutor::new(&model, Vector::zeros(hidden_dim));
 
     println!("initial hidden state: {:?}", executor.state().as_slice());
 

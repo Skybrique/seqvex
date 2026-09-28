@@ -19,30 +19,33 @@
 //!
 //! [`Gru`] implements the foundation [`StateModel`], so a step computes a
 //! candidate and commits it only on success. A failed step leaves the
-//! previously committed hidden state untouched. [`Gru::step`] is a thin
-//! stateful wrapper over that transition.
+//! previously committed hidden state untouched.
+//!
+//! # State ownership
+//!
+//! `Gru` holds only immutable configuration and parameters. The authoritative
+//! hidden state `h` is per execution, not model-owned: a reference caller holds
+//! it in a `Vector` advanced through [`StateModel::update`], and the optimized
+//! [`GruExecutor`] holds the single authoritative `Vector` for its execution.
+//! There is no second, model-owned hidden state.
 //!
 //! # Reference and production paths
 //!
-//! [`Gru::step`] and the [`StateModel::update`] implementation are the
+//! The [`StateModel::update`] implementation (via the private `compute`) is the
 //! **reference** path: value-returning, allocating one `Vector` per operation,
 //! and the semantic oracle every optimized path must be tested against.
 //!
-//! [`Gru::step_in_place`] and [`Gru::update_in_place`] are an **experimental
-//! production** path. They reuse a private workspace, allocate nothing in
-//! steady state, and are bit-identical to the reference path in the tested
-//! range. The design is **provisional**: the workspace is owned by the model and
-//! reached through `&mut Gru`, which is under a CRITICAL architecture review
-//! because it couples immutable, shareable weights with per-stream scratch and
-//! prevents multiple executors from sharing one model. Do not treat this API as
-//! settled, and do not generalize the workspace to other models yet.
+//! [`GruExecutor::process_one_optimized`] is the **optimized** path. It borrows
+//! the model immutably, owns a private reusable `GruWorkspace`, allocates
+//! nothing in steady state, and is bit-identical to the reference path in the
+//! tested range. The workspace is per-execution scratch, never model-owned and
+//! never shared between live executions; it does not generalize to other models.
 
-use crate::execution::streaming::StreamingExecutor;
 use crate::foundation::numerical::{DimensionMismatch, Matrix, Vector, sigmoid, tanh};
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
 
-/// Failure classes reported by a GRU step or construction.
+/// Failure classes reported by a GRU transition or construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GruError {
     /// A configured dimension is zero.
@@ -126,13 +129,14 @@ impl GruParameters {
     }
 }
 
-/// Reusable scratch storage for the allocation-free production path.
+/// Reusable scratch storage for the allocation-free optimized path.
 ///
-/// Allocated once per model and reused every observation, so the production
-/// step allocates nothing in steady state. It never aliases the committed
-/// hidden state.
+/// Owned by a [`GruExecutor`], allocated once per execution and reused every
+/// observation, so the optimized step allocates nothing in steady state. It
+/// holds only intermediate values, never the committed hidden state, and is
+/// never shared between live executions.
 #[derive(Debug)]
-struct Workspace {
+struct GruWorkspace {
     /// Holds `z_t`, then `(1 − z_t) ⊙ h`, then the committed candidate `h_t`.
     acc: Vec<f32>,
     /// Holds `r_t`, then `r_t ⊙ h`, then the candidate `h̃_t`.
@@ -141,7 +145,7 @@ struct Workspace {
     scratch: Vec<f32>,
 }
 
-impl Workspace {
+impl GruWorkspace {
     fn new(hidden_dim: usize) -> Self {
         Self {
             acc: vec![0.0; hidden_dim],
@@ -151,20 +155,22 @@ impl Workspace {
     }
 }
 
-/// A stateful GRU with a committed hidden state.
+/// A GRU with immutable parameters and configuration.
+///
+/// The recurrent hidden state is not stored here; it is per-execution state
+/// (see the module documentation).
 #[derive(Debug)]
 pub struct Gru {
     input_dim: usize,
     hidden_dim: usize,
     parameters: GruParameters,
-    hidden: Vector,
-    workspace: Workspace,
 }
 
 impl Gru {
     /// Builds a GRU, validating dimensions and parameter finiteness.
     ///
-    /// The hidden state starts at zeros.
+    /// The initial hidden state is supplied by the caller, through
+    /// [`StateModel::update`] or [`GruExecutor::new`].
     pub fn new(
         input_dim: usize,
         hidden_dim: usize,
@@ -187,8 +193,6 @@ impl Gru {
             input_dim,
             hidden_dim,
             parameters,
-            hidden: Vector::zeros(hidden_dim),
-            workspace: Workspace::new(hidden_dim),
         })
     }
 
@@ -200,73 +204,6 @@ impl Gru {
     /// The configured hidden dimension.
     pub fn hidden_dim(&self) -> usize {
         self.hidden_dim
-    }
-
-    /// The current committed hidden state.
-    pub fn hidden(&self) -> &Vector {
-        &self.hidden
-    }
-
-    /// Advances the committed hidden state by one observation.
-    ///
-    /// On failure the hidden state is unchanged.
-    pub fn step(&mut self, observation: &Observation<Vector>) -> Result<&Vector, GruError> {
-        let next = self.update(&self.hidden, observation)?;
-        self.hidden = next;
-        Ok(&self.hidden)
-    }
-
-    /// Resets the hidden state to zeros, starting a new sequence.
-    pub fn reset(&mut self) {
-        self.hidden = Vector::zeros(self.hidden_dim);
-    }
-
-    /// Advances the committed hidden state using the reusable workspace.
-    ///
-    /// This production path allocates nothing in steady state and commits the
-    /// candidate only after validation, so a failed step leaves the committed
-    /// state unchanged. It is numerically equivalent to [`Gru::step`]; the test
-    /// suite verifies bitwise agreement.
-    ///
-    /// **Provisional:** the workspace is model-owned and reached through
-    /// `&mut self`; this API shape is under a CRITICAL architecture review and
-    /// is not settled.
-    pub fn step_in_place(
-        &mut self,
-        observation: &Observation<Vector>,
-    ) -> Result<&Vector, GruError> {
-        {
-            let Self {
-                parameters,
-                workspace,
-                hidden,
-                ..
-            } = self;
-            compute_in_place(parameters, workspace, hidden, observation)?;
-        }
-        Ok(&self.hidden)
-    }
-
-    /// Computes the candidate for `observation` into `state` using the reusable
-    /// workspace, committing it only after validation.
-    ///
-    /// Exposes the production path over an explicit state so streaming execution
-    /// can drive it without owning the model's hidden state.
-    ///
-    /// **Provisional:** the workspace is model-owned and reached through
-    /// `&mut self`; this API shape is under a CRITICAL architecture review and
-    /// is not settled.
-    pub fn update_in_place(
-        &mut self,
-        state: &mut Vector,
-        observation: &Observation<Vector>,
-    ) -> Result<(), GruError> {
-        let Self {
-            parameters,
-            workspace,
-            ..
-        } = self;
-        compute_in_place(parameters, workspace, state, observation)
     }
 
     fn compute(
@@ -335,6 +272,65 @@ impl StateModel for Gru {
     }
 }
 
+/// Algorithm-local optimized execution context for a [`Gru`].
+///
+/// This is execution machinery, not a generic execution framework: it borrows
+/// the model immutably, owns exactly one authoritative hidden `State`, and owns
+/// a private reusable `GruWorkspace`. It is the only entry point to the
+/// allocation-free optimized path.
+pub struct GruExecutor<'m> {
+    model: &'m Gru,
+    state: Vector,
+    workspace: GruWorkspace,
+}
+
+impl<'m> GruExecutor<'m> {
+    /// Creates an executor over `model`, starting from `initial`.
+    ///
+    /// The initial state length is validated by the first
+    /// [`GruExecutor::process_one_optimized`] call, mirroring the generic
+    /// executor's per-step validation.
+    pub fn new(model: &'m Gru, initial: Vector) -> Self {
+        Self {
+            model,
+            state: initial,
+            workspace: GruWorkspace::new(model.hidden_dim),
+        }
+    }
+
+    /// The current committed hidden state.
+    pub fn state(&self) -> &Vector {
+        &self.state
+    }
+
+    /// Replaces the committed hidden state, starting a new sequence.
+    ///
+    /// The reusable workspace is retained: its buffers are fully overwritten on
+    /// the next step, so they need no clearing.
+    pub fn reset(&mut self, initial: Vector) {
+        self.state = initial;
+    }
+
+    /// Advances the committed hidden state using the reusable workspace.
+    ///
+    /// Allocation-free in steady state and equivalent to the reference
+    /// [`StateModel::update`] path; the test suite verifies bitwise agreement.
+    /// On failure the committed state is unchanged and the workspace remains
+    /// usable.
+    pub fn process_one_optimized(
+        &mut self,
+        observation: &Observation<Vector>,
+    ) -> Result<&Vector, GruError> {
+        compute_in_place(
+            &self.model.parameters,
+            &mut self.workspace,
+            &mut self.state,
+            observation,
+        )?;
+        Ok(&self.state)
+    }
+}
+
 fn validate_matrix(matrix: &Matrix, rows: usize, cols: usize) -> Result<(), GruError> {
     if matrix.rows() != rows {
         return Err(GruError::DimensionMismatch {
@@ -374,7 +370,7 @@ fn validate_vector(vector: &Vector, len: usize) -> Result<(), GruError> {
 /// state and overwritten only after the candidate is validated.
 fn compute_in_place(
     parameters: &GruParameters,
-    workspace: &mut Workspace,
+    workspace: &mut GruWorkspace,
     state: &mut Vector,
     observation: &Observation<Vector>,
 ) -> Result<(), GruError> {
@@ -483,24 +479,49 @@ fn tanh_assign(values: &mut [f32]) {
     }
 }
 
-impl<'m> StreamingExecutor<'m, Gru> {
-    /// Production streaming step: allocation-free steady state.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::foundation::numerical::Vector;
+    use crate::foundation::observation::Observation;
+
+    /// `reset` replaces the committed State and must reuse the executor's
+    /// existing private workspace buffers rather than reallocating them.
     ///
-    /// Equivalent to the reference [`StateModel::update`] path; the test suite
-    /// verifies bitwise agreement. On failure the committed state is unchanged.
-    ///
-    /// **Provisional:** this is a Gru-specific entry point on the generic
-    /// executor type, reached because the workspace is model-owned. It is under
-    /// a CRITICAL architecture review and is not a settled API.
-    pub fn process_one_optimized(
-        &mut self,
-        observation: &Observation<Vector>,
-    ) -> Result<&Vector, GruError> {
-        let state = self
-            .state
-            .as_mut()
-            .expect("executor state is present between calls");
-        self.model.update_in_place(state, observation)?;
-        Ok(self.state())
+    /// The workspace is private and not observable through the public API, so
+    /// this private test checks buffer identity directly: the pointers and
+    /// capacities of all three scratch buffers must be unchanged after a
+    /// successful step, a reset, and a further successful step.
+    #[test]
+    fn reset_retains_workspace_buffers() {
+        let model = Gru::new(2, 2, GruParameters::deterministic(2, 2)).unwrap();
+        let mut executor = GruExecutor::new(&model, Vector::zeros(2));
+
+        let identity = |executor: &GruExecutor<'_>| {
+            let workspace = &executor.workspace;
+            (
+                workspace.acc.as_ptr(),
+                workspace.gate.as_ptr(),
+                workspace.scratch.as_ptr(),
+                workspace.acc.capacity(),
+                workspace.gate.capacity(),
+                workspace.scratch.capacity(),
+            )
+        };
+
+        let before = identity(&executor);
+        executor
+            .process_one_optimized(&Observation::new(Vector::from_slice(&[0.1, 0.2])))
+            .unwrap();
+        executor.reset(Vector::zeros(2));
+        executor
+            .process_one_optimized(&Observation::new(Vector::from_slice(&[0.3, -0.4])))
+            .unwrap();
+
+        assert_eq!(
+            before,
+            identity(&executor),
+            "reset must reuse the existing workspace buffers"
+        );
     }
 }

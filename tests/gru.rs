@@ -10,7 +10,7 @@ use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::{Matrix, Vector};
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::{StateModel, process_batch, process_one, process_stream};
-use seqvex::models::recurrent::gru::{Gru, GruError, GruParameters};
+use seqvex::models::recurrent::gru::{Gru, GruError, GruExecutor, GruParameters};
 
 // --- independent scalar reference -------------------------------------------
 
@@ -306,15 +306,16 @@ fn single_step_matches_hand_computed_value() {
         u_h: Matrix::from_rows(&[&[1.0]]).unwrap(),
         b_h: Vector::zeros(1),
     };
-    let mut gru = Gru::new(1, 1, parameters).unwrap();
-    gru.step(&observation(&[1.0])).unwrap();
-    assert_close(gru.hidden().as_slice(), &[0.5 * 1.0_f32.tanh()], 1e-6);
+    let gru = Gru::new(1, 1, parameters).unwrap();
+    let hidden = gru.update(&Vector::zeros(1), &observation(&[1.0])).unwrap();
+    assert_close(hidden.as_slice(), &[0.5 * 1.0_f32.tanh()], 1e-6);
 }
 
 #[test]
 fn repeated_steps_match_independent_reference() {
     let reference = sample_params();
-    let mut gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let mut state = Vector::zeros(2);
     let mut hidden = vec![0.0, 0.0];
     for input in [
         vec![0.5, -0.5],
@@ -322,46 +323,51 @@ fn repeated_steps_match_independent_reference() {
         vec![-0.75, 0.1],
         vec![0.0, 0.9],
     ] {
-        gru.step(&observation(&input)).unwrap();
+        state = gru.update(&state, &observation(&input)).unwrap();
         hidden = ref_step(&reference, &hidden, &input);
-        assert_close(gru.hidden().as_slice(), &hidden, 1e-5);
+        assert_close(state.as_slice(), &hidden, 1e-5);
     }
 }
 
 #[test]
 fn step_uses_previous_committed_state() {
     let reference = sample_params();
-    let mut gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
-    gru.step(&observation(&[0.5, -0.5])).unwrap();
-    let after_first = gru.hidden().clone();
-    gru.step(&observation(&[1.0, 0.25])).unwrap();
+    let gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let after_first = gru
+        .update(&Vector::zeros(2), &observation(&[0.5, -0.5]))
+        .unwrap();
+    let state = gru
+        .update(&after_first, &observation(&[1.0, 0.25]))
+        .unwrap();
     let expected = ref_step(&reference, after_first.as_slice(), &[1.0, 0.25]);
-    assert_close(gru.hidden().as_slice(), &expected, 1e-5);
+    assert_close(state.as_slice(), &expected, 1e-5);
 }
 
 #[test]
-fn state_model_update_matches_step() {
+fn state_model_update_matches_independent_reference() {
     let reference = sample_params();
-    let mut gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
-    let observation = observation(&[0.3, -0.2]);
-    let expected = gru.update(&Vector::zeros(2), &observation).unwrap();
-    gru.step(&observation).unwrap();
-    assert_close(gru.hidden().as_slice(), expected.as_slice(), 0.0);
+    let gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let input = [0.3, -0.2];
+    let produced = gru.update(&Vector::zeros(2), &observation(&input)).unwrap();
+    let expected = ref_step(&reference, &[0.0, 0.0], &input);
+    assert_close(produced.as_slice(), &expected, 1e-5);
 }
 
 #[test]
 fn sequence_context_does_not_change_the_computation() {
     let reference = sample_params();
-    let mut plain = Gru::new(2, 2, to_parameters(&reference)).unwrap();
-    let mut ordered = Gru::new(2, 2, to_parameters(&reference)).unwrap();
-    plain.step(&observation(&[0.5, -0.5])).unwrap();
-    ordered
-        .step(
+    let gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let plain = gru
+        .update(&Vector::zeros(2), &observation(&[0.5, -0.5]))
+        .unwrap();
+    let ordered = gru
+        .update(
+            &Vector::zeros(2),
             &observation(&[0.5, -0.5])
                 .with_sequence(seqvex::foundation::observation::SequenceNumber::new(7)),
         )
         .unwrap();
-    assert_eq!(plain.hidden(), ordered.hidden());
+    assert_eq!(plain, ordered);
 }
 
 // --- independent closed-form and alternative-formulation oracle ---------------
@@ -413,22 +419,18 @@ fn alt_reference_matches_production_over_randomized_sequences() {
     let cases = [(1_usize, 1_usize), (2, 2), (3, 5), (5, 3)];
     for (case, (input_dim, hidden_dim)) in cases.into_iter().enumerate() {
         let params = random_params(input_dim, hidden_dim, 0xa11c_e000 + case as u64);
-        let mut gru = Gru::new(input_dim, hidden_dim, to_parameters(&params)).unwrap();
+        let gru = Gru::new(input_dim, hidden_dim, to_parameters(&params)).unwrap();
         let mut lcg = Lcg::new(0xbeef_5eed + case as u64);
         let mut hidden = vec![0.0_f32; hidden_dim];
+        let mut state = Vector::zeros(hidden_dim);
 
         for _ in 0..80 {
             let input = random_vector(&mut lcg, input_dim);
             let observation = observation(&input);
             let expected = ref_step_alt(&params, &hidden, &input);
 
-            let committed = gru.hidden().clone();
-            let via_update = gru.update(&committed, &observation).unwrap();
-            assert_close(via_update.as_slice(), &expected, 1e-5);
-
-            gru.step(&observation).unwrap();
-            assert_close(gru.hidden().as_slice(), &expected, 1e-5);
-            assert_bitwise_eq(gru.hidden().as_slice(), via_update.as_slice());
+            state = gru.update(&state, &observation).unwrap();
+            assert_close(state.as_slice(), &expected, 1e-5);
 
             hidden = expected;
         }
@@ -440,35 +442,34 @@ fn alt_reference_matches_production_over_randomized_sequences() {
 #[test]
 fn long_sequence_matches_independent_reference() {
     let reference = sample_params();
-    let mut gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let mut state = Vector::zeros(2);
     let mut hidden = vec![0.0, 0.0];
     for step in 0..500 {
         let input = vec![(step as f32 * 0.37).sin(), (step as f32 * 0.11).cos()];
-        gru.step(&observation(&input)).unwrap();
+        state = gru.update(&state, &observation(&input)).unwrap();
         hidden = ref_step(&reference, &hidden, &input);
     }
-    assert_close(gru.hidden().as_slice(), &hidden, 1e-4);
+    assert_close(state.as_slice(), &hidden, 1e-4);
 }
 
 #[test]
 fn reset_starts_a_new_sequence() {
     let reference = sample_params();
-    let mut gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
-    gru.step(&observation(&[0.5, -0.5])).unwrap();
-    gru.reset();
-    assert_close(gru.hidden().as_slice(), &[0.0, 0.0], 0.0);
+    let gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let reset = Vector::zeros(2);
+    assert_close(reset.as_slice(), &[0.0, 0.0], 0.0);
 
     let input = [0.2, -0.7];
-    gru.step(&observation(&input)).unwrap();
+    // After a reset (zero state), the next observation equals a fresh model's
+    // first observation.
+    let after_reset = gru.update(&reset, &observation(&input)).unwrap();
+    let fresh = gru.update(&Vector::zeros(2), &observation(&input)).unwrap();
+    assert_close(after_reset.as_slice(), fresh.as_slice(), 1e-6);
 
-    let mut fresh = Gru::new(2, 2, to_parameters(&reference)).unwrap();
-    fresh.step(&observation(&input)).unwrap();
-    assert_close(gru.hidden().as_slice(), fresh.hidden().as_slice(), 1e-6);
-
-    let mut continued = Gru::new(2, 2, to_parameters(&reference)).unwrap();
-    continued.step(&observation(&[0.5, -0.5])).unwrap();
-    continued.step(&observation(&input)).unwrap();
-    assert_ne!(gru.hidden().as_slice(), continued.hidden().as_slice());
+    let continued_first = gru.update(&reset, &observation(&[0.5, -0.5])).unwrap();
+    let continued = gru.update(&continued_first, &observation(&input)).unwrap();
+    assert_ne!(after_reset.as_slice(), continued.as_slice());
 }
 
 // --- failure behavior --------------------------------------------------------
@@ -476,30 +477,37 @@ fn reset_starts_a_new_sequence() {
 #[test]
 fn non_finite_input_is_rejected_and_state_is_preserved() {
     let reference = sample_params();
-    let mut gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
-    gru.step(&observation(&[0.5, -0.5])).unwrap();
-    let committed = gru.hidden().clone();
+    let gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let committed = gru
+        .update(&Vector::zeros(2), &observation(&[0.5, -0.5]))
+        .unwrap();
     assert_eq!(
-        gru.step(&observation(&[f32::NAN, 0.0])).unwrap_err(),
+        gru.update(&committed, &observation(&[f32::NAN, 0.0]))
+            .unwrap_err(),
         GruError::NonFiniteInput
     );
-    assert_close(gru.hidden().as_slice(), committed.as_slice(), 0.0);
+    // The failed update returned no state; the committed state still matches the
+    // independent oracle for the last successful transition.
+    let expected = ref_step(&reference, &[0.0, 0.0], &[0.5, -0.5]);
+    assert_close(committed.as_slice(), &expected, 1e-5);
 }
 
 #[test]
 fn wrong_input_length_is_rejected_and_state_is_preserved() {
     let reference = sample_params();
-    let mut gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
-    gru.step(&observation(&[0.5, -0.5])).unwrap();
-    let committed = gru.hidden().clone();
+    let gru = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let committed = gru
+        .update(&Vector::zeros(2), &observation(&[0.5, -0.5]))
+        .unwrap();
     assert_eq!(
-        gru.step(&observation(&[1.0])).unwrap_err(),
+        gru.update(&committed, &observation(&[1.0])).unwrap_err(),
         GruError::DimensionMismatch {
             expected: 2,
             actual: 1,
         }
     );
-    assert_close(gru.hidden().as_slice(), committed.as_slice(), 0.0);
+    let expected = ref_step(&reference, &[0.0, 0.0], &[0.5, -0.5]);
+    assert_close(committed.as_slice(), &expected, 1e-5);
 }
 
 #[test]
@@ -517,12 +525,14 @@ fn non_finite_candidate_is_rejected_and_state_is_preserved() {
         u_h: Matrix::from_rows(&[&[0.0]]).unwrap(),
         b_h: Vector::zeros(1),
     };
-    let mut gru = Gru::new(2, 1, parameters).unwrap();
+    let gru = Gru::new(2, 1, parameters).unwrap();
+    let zero = Vector::zeros(1);
     assert_eq!(
-        gru.step(&observation(&[f32::MAX, -f32::MAX])).unwrap_err(),
+        gru.update(&zero, &observation(&[f32::MAX, -f32::MAX]))
+            .unwrap_err(),
         GruError::NonFiniteCandidate
     );
-    assert_close(gru.hidden().as_slice(), &[0.0], 0.0);
+    assert_close(zero.as_slice(), &[0.0], 0.0);
 }
 
 // --- determinism -------------------------------------------------------------
@@ -534,90 +544,93 @@ fn deterministic_parameters_are_reproducible() {
         GruParameters::deterministic(3, 2)
     );
 
-    let mut left = Gru::new(2, 2, GruParameters::deterministic(2, 2)).unwrap();
-    let mut right = Gru::new(2, 2, GruParameters::deterministic(2, 2)).unwrap();
-    left.step(&observation(&[0.4, 0.6])).unwrap();
-    right.step(&observation(&[0.4, 0.6])).unwrap();
-    assert_eq!(left.hidden(), right.hidden());
+    let left = Gru::new(2, 2, GruParameters::deterministic(2, 2)).unwrap();
+    let right = Gru::new(2, 2, GruParameters::deterministic(2, 2)).unwrap();
+    let observation = observation(&[0.4, 0.6]);
+    let left_state = left.update(&Vector::zeros(2), &observation).unwrap();
+    let right_state = right.update(&Vector::zeros(2), &observation).unwrap();
+    assert_eq!(left_state, right_state);
 }
 
 // --- production path equivalence --------------------------------------------
 
 #[test]
 fn production_step_matches_reference_over_long_sequence() {
-    let mut reference = Gru::new(8, 16, GruParameters::deterministic(8, 16)).unwrap();
-    let mut production = Gru::new(8, 16, GruParameters::deterministic(8, 16)).unwrap();
+    let reference_model = Gru::new(8, 16, GruParameters::deterministic(8, 16)).unwrap();
+    let production_model = Gru::new(8, 16, GruParameters::deterministic(8, 16)).unwrap();
+    let mut reference = StreamingExecutor::new(&reference_model, Vector::zeros(16));
+    let mut production = GruExecutor::new(&production_model, Vector::zeros(16));
 
     for step in 0..500 {
         let input = Vector::from_fn(8, |i| ((step as f32) * 0.13 + (i as f32) * 0.07).sin());
         let observation = Observation::new(input);
-        reference.step(&observation).unwrap();
-        production.step_in_place(&observation).unwrap();
-        assert_bitwise_eq(
-            production.hidden().as_slice(),
-            reference.hidden().as_slice(),
-        );
+        reference.process_one(&observation).unwrap();
+        production.process_one_optimized(&observation).unwrap();
+        assert_bitwise_eq(production.state().as_slice(), reference.state().as_slice());
 
         if step == 250 {
-            reference.reset();
-            production.reset();
-            assert_bitwise_eq(
-                production.hidden().as_slice(),
-                reference.hidden().as_slice(),
-            );
+            reference.reset(Vector::zeros(16));
+            production.reset(Vector::zeros(16));
+            assert_bitwise_eq(production.state().as_slice(), reference.state().as_slice());
         }
     }
 }
 
 #[test]
-fn production_update_in_place_matches_update_bit_for_bit() {
+fn production_matches_update_bit_for_bit() {
     let reference = sample_params();
-    let mut model = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let model = Gru::new(2, 2, to_parameters(&reference)).unwrap();
     let mut update_state = Vector::zeros(2);
-    let mut in_place_state = Vector::zeros(2);
+    let mut executor = GruExecutor::new(&model, Vector::zeros(2));
 
     for step in 0..64 {
         let input = vec![(step as f32 * 0.23).sin(), (step as f32 * 0.07).cos()];
         let observation = observation(&input);
         update_state = model.update(&update_state, &observation).unwrap();
-        model
-            .update_in_place(&mut in_place_state, &observation)
-            .unwrap();
-        assert_bitwise_eq(in_place_state.as_slice(), update_state.as_slice());
+        executor.process_one_optimized(&observation).unwrap();
+        assert_bitwise_eq(executor.state().as_slice(), update_state.as_slice());
     }
 }
 
 #[test]
 fn production_step_rejects_non_finite_input_and_preserves_state() {
     let reference = sample_params();
-    let mut model = Gru::new(2, 2, to_parameters(&reference)).unwrap();
-    model.step_in_place(&observation(&[0.5, -0.5])).unwrap();
-    let committed = model.hidden().clone();
+    let model = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let mut executor = GruExecutor::new(&model, Vector::zeros(2));
+    executor
+        .process_one_optimized(&observation(&[0.5, -0.5]))
+        .unwrap();
+    let committed = executor.state().clone();
 
     assert_eq!(
-        model
-            .step_in_place(&observation(&[f32::NAN, 0.0]))
+        executor
+            .process_one_optimized(&observation(&[f32::NAN, 0.0]))
             .unwrap_err(),
         GruError::NonFiniteInput
     );
-    assert_bitwise_eq(model.hidden().as_slice(), committed.as_slice());
+    assert_bitwise_eq(executor.state().as_slice(), committed.as_slice());
 }
 
 #[test]
 fn production_step_rejects_wrong_input_length_and_preserves_state() {
     let reference = sample_params();
-    let mut model = Gru::new(2, 2, to_parameters(&reference)).unwrap();
-    model.step_in_place(&observation(&[0.5, -0.5])).unwrap();
-    let committed = model.hidden().clone();
+    let model = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let mut executor = GruExecutor::new(&model, Vector::zeros(2));
+    executor
+        .process_one_optimized(&observation(&[0.5, -0.5]))
+        .unwrap();
+    let committed = executor.state().clone();
 
     assert_eq!(
-        model.step_in_place(&observation(&[1.0])).unwrap_err(),
+        executor
+            .process_one_optimized(&observation(&[1.0]))
+            .unwrap_err(),
         GruError::DimensionMismatch {
             expected: 2,
             actual: 1,
         }
     );
-    assert_bitwise_eq(model.hidden().as_slice(), committed.as_slice());
+    assert_bitwise_eq(executor.state().as_slice(), committed.as_slice());
 }
 
 #[test]
@@ -633,15 +646,16 @@ fn production_step_rejects_non_finite_candidate_and_preserves_state() {
         u_h: Matrix::from_rows(&[&[0.0]]).unwrap(),
         b_h: Vector::zeros(1),
     };
-    let mut model = Gru::new(2, 1, parameters).unwrap();
+    let model = Gru::new(2, 1, parameters).unwrap();
+    let mut executor = GruExecutor::new(&model, Vector::zeros(1));
 
     assert_eq!(
-        model
-            .step_in_place(&observation(&[f32::MAX, -f32::MAX]))
+        executor
+            .process_one_optimized(&observation(&[f32::MAX, -f32::MAX]))
             .unwrap_err(),
         GruError::NonFiniteCandidate
     );
-    assert_bitwise_eq(model.hidden().as_slice(), &[0.0]);
+    assert_bitwise_eq(executor.state().as_slice(), &[0.0]);
 }
 
 // --- sequential / causal / non-IID audit (#27) ------------------------------
@@ -744,8 +758,8 @@ fn chunked_execution_matches_continuous_stream() {
     }
     assert_bitwise_eq(chunked.as_slice(), continuous.as_slice());
 
-    let mut executor_model = Gru::new(3, 4, to_parameters(&params)).unwrap();
-    let mut executor = StreamingExecutor::new(&mut executor_model, Vector::zeros(4));
+    let executor_model = Gru::new(3, 4, to_parameters(&params)).unwrap();
+    let mut executor = StreamingExecutor::new(&executor_model, Vector::zeros(4));
     let streamed = executor
         .process_stream(observations.iter().cloned(), |_| {})
         .clone();
@@ -867,8 +881,10 @@ fn long_run_matches_reference_and_stays_bounded() {
     // |h| <= 1 is a mathematical invariant, not a fitted tolerance; it is
     // checked as a divergence smoke test.
     let params = random_params(3, 5, 0x106e_0001);
-    let mut reference = Gru::new(3, 5, to_parameters(&params)).unwrap();
-    let mut production = Gru::new(3, 5, to_parameters(&params)).unwrap();
+    let reference_model = Gru::new(3, 5, to_parameters(&params)).unwrap();
+    let production_model = Gru::new(3, 5, to_parameters(&params)).unwrap();
+    let mut reference = StreamingExecutor::new(&reference_model, Vector::zeros(5));
+    let mut production = GruExecutor::new(&production_model, Vector::zeros(5));
     let mut scalar = vec![0.0_f32; 5];
     let mut lcg = Lcg::new(0xfeed_0001);
     let mut max_abs = 0.0_f32;
@@ -876,31 +892,28 @@ fn long_run_matches_reference_and_stays_bounded() {
     for _ in 0..10_000 {
         let input = vec![lcg.next_f32(), lcg.next_f32(), lcg.next_f32()];
         let observation = observation(&input);
-        reference.step(&observation).unwrap();
-        production.step_in_place(&observation).unwrap();
+        reference.process_one(&observation).unwrap();
+        production.process_one_optimized(&observation).unwrap();
         scalar = ref_step(&params, &scalar, &input);
 
-        assert_bitwise_eq(
-            production.hidden().as_slice(),
-            reference.hidden().as_slice(),
-        );
+        assert_bitwise_eq(production.state().as_slice(), reference.state().as_slice());
         assert!(
             reference
-                .hidden()
+                .state()
                 .as_slice()
                 .iter()
                 .all(|value| value.is_finite())
         );
         max_abs = max_abs.max(
             reference
-                .hidden()
+                .state()
                 .as_slice()
                 .iter()
                 .fold(0.0_f32, |max, value| max.max(value.abs())),
         );
     }
 
-    assert_close(reference.hidden().as_slice(), &scalar, 1e-4);
+    assert_close(reference.state().as_slice(), &scalar, 1e-4);
     assert!(
         max_abs <= 1.0 + 1e-6,
         "hidden state exceeded the unit bound: {max_abs}"

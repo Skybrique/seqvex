@@ -4,36 +4,33 @@
 //! composes the foundation state semantics (`process_one`, `process_stream`)
 //! rather than reimplementing the fold, and adds only what a model does not
 //! own: retaining the committed state across calls and an explicit reset
-//! boundary (`docs/KILO_CONNECTOME_SPRINT_REVISED.md` §15).
+//! boundary.
 //!
-//! # Provisional model ownership
-//!
-//! The executor borrows its model mutably so a model-owned production workspace
-//! can be reached. That is **provisional** and under a CRITICAL architecture
-//! review: it prevents several executors from sharing one model and couples
-//! immutable, shareable weights with per-stream scratch. Do not treat this
-//! signature as settled.
+//! The model is borrowed immutably: execution reads immutable parameters and
+//! carries the per-stream committed state itself. A reusable workspace, where an
+//! algorithm requires one, belongs to that algorithm's execution context (for
+//! example the GRU's `GruExecutor`), never to the model. This keeps one
+//! immutable model shareable by independent execution contexts.
 
 use crate::foundation::state::{StateModel, process_one, process_stream};
 
 /// Drives one stateful model, holding its committed state between calls.
 ///
+/// One executor owns exactly one independent execution State and borrows its
+/// model immutably, so several executors may share one model while keeping
+/// independent States.
+///
 /// The state lives in an `Option` only so [`StreamingExecutor::process_stream`]
 /// can satisfy the foundation's consume-and-return contract without cloning.
 /// It is `Some` at every point a caller can observe it.
 pub struct StreamingExecutor<'m, M: StateModel> {
-    pub(crate) model: &'m mut M,
+    pub(crate) model: &'m M,
     pub(crate) state: Option<M::State>,
 }
 
 impl<'m, M: StateModel> StreamingExecutor<'m, M> {
     /// Creates an executor over `model`, starting from `initial`.
-    ///
-    /// The model is borrowed mutably so production-oriented paths that reuse
-    /// model-owned scratch storage can be driven through the executor. That
-    /// borrow is **provisional** and under a CRITICAL architecture review; see
-    /// the module documentation.
-    pub fn new(model: &'m mut M, initial: M::State) -> Self {
+    pub fn new(model: &'m M, initial: M::State) -> Self {
         Self {
             model,
             state: Some(initial),
@@ -51,7 +48,7 @@ impl<'m, M: StateModel> StreamingExecutor<'m, M> {
     ///
     /// On failure the previous committed state is left intact.
     pub fn process_one(&mut self, observation: &M::Observation) -> Result<&M::State, M::Error> {
-        let next = process_one(&*self.model, self.state(), observation)?;
+        let next = process_one(self.model, self.state(), observation)?;
         self.state = Some(next);
         Ok(self.state())
     }
@@ -71,7 +68,7 @@ impl<'m, M: StateModel> StreamingExecutor<'m, M> {
             .take()
             .expect("executor state is present between calls");
         self.state = Some(process_stream(
-            &*self.model,
+            self.model,
             initial,
             observations,
             on_failure,

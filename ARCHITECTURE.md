@@ -722,7 +722,7 @@ measured optimization
 
 A production path must preserve the reference path's observable semantics.
 
-The GRU allocation-free execution path is an example of this principle: its reusable workspace is currently local to the GRU and remains **provisional**. Because reaching that model-owned workspace required the generic `StreamingExecutor<'m, M>` to hold `&'m mut M`, the executor's ownership and the model-owned workspace are under **CRITICAL ARCHITECTURE REVIEW** (`docs/DEVELOPMENT.md` §3): they couple immutable, shareable weights with per-stream mutable scratch and prevent several executors from sharing one model. The long-term ownership relationship between model state, per-stream state, and reusable scratch remains deliberately open. Do not treat the current `&mut M` signature or model-owned workspace as settled, and do not propagate that topology to other models.
+The GRU allocation-free execution path is an example of this principle. Its reusable workspace belongs to an algorithm-local execution context (`GruExecutor`), not to the model: `Gru` holds only immutable parameters and configuration, and the generic `StreamingExecutor` borrows the model immutably (`&M`). One immutable model may therefore drive several independent execution contexts, each owning its own State and (for GRU) its own private per-execution workspace. The former model-owned workspace and `&mut M` borrow were removed. Do not propagate the GRU-specific workspace to other models until a recurring requirement is demonstrated.
 
 ## 23. Architectural principles
 

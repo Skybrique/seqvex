@@ -130,7 +130,11 @@ Examples include:
 - introducing unsafe low-level primitives that constrain later backends;
 - changing state ownership to make a benchmark faster.
 
-The GRU workspace and current `StreamingExecutor` `&mut M` API are active examples.
+The former GRU model-owned workspace and `StreamingExecutor` `&mut M` API were
+active examples of this trigger; both were removed by the execution-ownership
+refactor (model borrowed immutably, per-execution State and algorithm-local
+Workspace). Any future model-owned scratch or exclusive model borrow is a new
+example.
 
 ## 3.4 Review output
 

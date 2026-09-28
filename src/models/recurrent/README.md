@@ -4,9 +4,9 @@ The Gated Recurrent Unit (GRU) is a recurrent neural network (RNN) architecture 
 
 Unlike a feed-forward model, a GRU maintains an internal hidden state that is carried from one observation to the next.
 
-In Seqvex, the GRU is implemented as a **stateful, single-observation CPU model with both a readable reference path and a provisional allocation-free production path**.
+In Seqvex, the GRU is implemented as a **stateful, single-observation CPU model with both a readable reference path and an allocation-free optimized execution path**.
 
-The reference path establishes mathematical correctness and semantic behavior. The production path demonstrates measured optimization without replacing the reference.
+The reference path establishes mathematical correctness and semantic behavior. The optimized path demonstrates measured optimization without replacing the reference.
 
 ---
 
@@ -381,7 +381,7 @@ Reset establishes a new execution boundary.
 
 ---
 
-# 9. Reference and Production Implementations
+# 9. Reference and Optimized Implementations
 
 Seqvex intentionally distinguishes two implementation roles.
 
@@ -399,63 +399,54 @@ The current reference route is based on the `StateModel` contract and readable G
 
 It is the **semantic oracle** for optimized implementations.
 
-## 9.2 Production path
+## 9.2 Optimized path
 
-The production path prioritizes measured execution properties.
+The optimized path prioritizes measured execution properties.
 
-The current GRU production path uses a private reusable workspace:
+`Gru` holds only immutable parameters and configuration. The optimized path is
+driven by the algorithm-local `GruExecutor`, which owns the single authoritative
+hidden `State` and a private reusable workspace:
 
 ```text
-Gru
-├── parameters
-├── hidden state
-└── private workspace
+GruExecutor
+├── &Gru              (immutable parameters)
+├── State             (authoritative hidden state h)
+└── private workspace (per execution)
     ├── acc
     ├── gate
     └── scratch
 ```
 
-The workspace contains three hidden-dimension `Vec<f32>` buffers allocated once and reused across steps.
+The workspace contains three hidden-dimension `Vec<f32>` buffers allocated once
+per execution and reused across steps. It is scratch only: it never holds the
+committed hidden state and is never shared between live executions.
 
-The production path therefore avoids the 20 steady-state allocations observed in the reference path during the Stage 2 allocation audit.
+The optimized path therefore avoids the 20 steady-state allocations observed in
+the reference path during the Stage 2 allocation audit, and validates the
+candidate before committing it.
 
-The production path validates the candidate before committing it.
+## 9.3 State and workspace ownership
 
-## 9.3 Current architectural status
+The hidden state is per execution, never model-owned. A reference caller holds it
+in a `Vector` advanced through `StateModel::update`; `GruExecutor` holds the one
+authoritative `Vector` for optimized execution. There is no model-owned hidden
+field.
 
-The production workspace is **provisional / experimental**.
+Reusable workspace belongs to the execution context, not the model: this keeps
+`Gru` immutable and shareable, so one model can drive several independent
+execution contexts while each keeps its own State (and, where used, its own
+Workspace). The generic `StreamingExecutor` borrows the model immutably and owns
+no workspace.
 
-It is a local GRU optimization, not a decision that all Seqvex models should own their execution scratch.
-
-In particular, the current `StreamingExecutor` mutable model borrow exists so the executor can reach this model-owned workspace.
-
-That creates an architectural question:
-
-```text
-immutable model parameters
-        +
-per-stream mutable state
-        +
-per-stream reusable workspace
-```
-
-versus:
-
-```text
-model-owned mutable workspace
-```
-
-The correct long-term topology has not been settled.
-
-This is therefore subject to **CRITICAL ARCHITECTURE REVIEW**.
-
-Do not generalize the GRU workspace into a framework-wide allocator/workspace abstraction until real classical and online ML workloads demonstrate that the requirement recurs.
+The `&mut Model` requirement and model-owned workspace have been removed. Do not
+generalize the GRU workspace into a framework-wide abstraction until other
+algorithms demonstrate that a reusable workspace requirement recurs.
 
 ---
 
-# 10. Production Execution Semantics
+# 10. Optimized Execution Semantics
 
-The production path must preserve:
+The optimized path must preserve:
 
 - the exact GRU equations;
 - state ordering;
@@ -473,7 +464,7 @@ reference implementation
         ↓
 independent validation
         ↓
-production optimization
+optimized execution
         ↓
 equivalence tests
         ↓
@@ -503,7 +494,7 @@ The current GRU provides:
 - hidden-state reset;
 - state-transition errors;
 - reference computation;
-- provisional allocation-free production computation;
+- allocation-free optimized computation (`GruExecutor`);
 - streaming integration.
 
 The current implementation does **not** provide:
@@ -532,10 +523,10 @@ The implementation should be validated against:
 - reset behavior;
 - repeated state transitions;
 - long sequential folds;
-- reference/production equivalence;
+- reference/optimized equivalence;
 - failure atomicity.
 
-The production path is only useful if it remains semantically equivalent to the reference path.
+The optimized path is only useful if it remains semantically equivalent to the reference path.
 
 ---
 
@@ -549,7 +540,7 @@ The Stage 2 allocation investigation established that the reference path perform
 
 for the measured GRU configurations.
 
-The production workspace path reduces this to:
+The optimized path (executor-owned workspace) reduces this to:
 
 ```text
 0 steady-state allocations / step
@@ -561,7 +552,7 @@ and uses:
 3 × hidden-dimension f32 buffers
 ```
 
-for reusable scratch.
+of reusable scratch owned by the `GruExecutor`.
 
 Measured streaming benefit was strongest for the small GRU configuration and became small or indistinguishable from benchmark noise at larger configurations.
 
@@ -569,7 +560,7 @@ Therefore:
 
 > **Allocation elimination is demonstrated; universal latency improvement is not.**
 
-The production path should remain evidence-driven and local until broader workloads justify generalization.
+The optimized path remains evidence-driven and local to the GRU until broader workloads justify generalization.
 
 ---
 
@@ -617,8 +608,8 @@ A reader should be able to explain:
 6. Why the GRU is naturally sequential.
 7. How GRU state maps onto Seqvex state semantics.
 8. Why a reference implementation is useful.
-9. Why the production path uses reusable workspace.
-10. Why the current workspace ownership is still an architectural question.
+9. Why the optimized path uses reusable workspace.
+10. Why execution-owned workspace keeps the model immutable and shareable.
 11. Why allocation reduction does not automatically imply universal latency improvement.
 
 ---

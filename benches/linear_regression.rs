@@ -65,8 +65,8 @@ fn main() {
             black_box(reference.predict(black_box(observation.value())).unwrap());
         });
 
-        let mut streaming_model = model(features);
-        let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+        let streaming_model = model(features);
+        let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
         common::measure("streaming", steps, 1, || {
             black_box(executor.process_one(black_box(&observation)).unwrap());
         });
@@ -120,8 +120,8 @@ fn main() {
                 black_box(direct.predict(black_box(observation.value())).unwrap());
             });
 
-            let mut streaming_model = workload_model(features);
-            let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+            let streaming_model = workload_model(features);
+            let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
             let mut stream_index = 0_usize;
             common::measure("streaming", steps, 1, || {
                 let observation = &observations[stream_index % observations.len()];

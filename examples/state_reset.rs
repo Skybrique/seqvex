@@ -9,14 +9,14 @@ use seqvex::models::recurrent::gru::{Gru, GruParameters};
 
 fn main() {
     let (input_dim, hidden_dim) = (2, 3);
-    let mut model = Gru::new(
+    let model = Gru::new(
         input_dim,
         hidden_dim,
         GruParameters::deterministic(input_dim, hidden_dim),
     )
     .unwrap();
 
-    let mut executor = StreamingExecutor::new(&mut model, Vector::zeros(hidden_dim));
+    let mut executor = StreamingExecutor::new(&model, Vector::zeros(hidden_dim));
     for input in [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]] {
         let hidden = executor
             .process_one(&Observation::new(Vector::from_slice(&input)))
@@ -34,13 +34,13 @@ fn main() {
         .unwrap()
         .clone();
 
-    let mut fresh_model = Gru::new(
+    let fresh_model = Gru::new(
         input_dim,
         hidden_dim,
         GruParameters::deterministic(input_dim, hidden_dim),
     )
     .unwrap();
-    let mut fresh = StreamingExecutor::new(&mut fresh_model, Vector::zeros(hidden_dim));
+    let mut fresh = StreamingExecutor::new(&fresh_model, Vector::zeros(hidden_dim));
     let from_fresh = fresh
         .process_one(&Observation::new(Vector::from_slice(&y)))
         .unwrap()

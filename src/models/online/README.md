@@ -27,13 +27,11 @@ This confirms, on a stateful model, the same finding linear regression made on a
 stateless one: streaming does not require `&mut M`, and adaptive state is a
 per-stream property.
 
-One consequence is recorded rather than solved: the generic
-`StreamingExecutor::new(&mut M)` cannot share one immutable `Rls` across two
-executors, even though RLS needs only `&self`. That `&mut M` limitation is a
-pre-existing CRITICAL ARCHITECTURE REVIEW item; it is not changed here. One
-shared `&Rls` with independent states is expressible today through the
-foundation `process_one`/`process_stream` functions, which take `&M`, and the
-tests exercise exactly that.
+That former limitation is resolved: the generic `StreamingExecutor` now borrows
+the model immutably (`&Model`), so one immutable `Rls` can drive two executors
+with independent States. One shared `&Rls` with independent states is also
+expressible through the foundation `process_one`/`process_stream` functions,
+which take `&M`, and the tests exercise that.
 
 ## Equations
 
@@ -385,11 +383,13 @@ This contract does **not** declare RLS production-ready. Remaining gates:
 
 - decision-grade performance profiling of a persistent-excitation streaming
   workload, tied to a defined workload/service level;
-- architecture review of `StreamingExecutor<'m, &mut M>` multi-stream sharing;
 - architecture review of where an optimised `P` buffer would live;
 - any future numerical-representation decision;
 - final production API review;
 - measured optimization only after the above.
+
+Shared-model / multi-stream execution is no longer a gate: the executor now
+borrows the model immutably (`&Model`).
 
 **OPTIMIZATION REMAINS CLOSED.** `O(D²)` complexity, the existing allocations,
 the existing benchmark, known `f32` boundaries, or a theoretical SIMD benefit are
@@ -468,10 +468,10 @@ preserved because `v_i v_j == v_j v_i` exactly in IEEE `f32`.
 
 ## Major deferred decisions
 
-- Whether the generic executor should allow shared-model / multi-stream
-  execution (the `&mut M` question) — escalated, not solved here.
-- Where an optimized `P` double-buffer would live, if optimization is ever
-  justified — requires a workspace decision.
+- Shared-model / multi-stream execution (the former `&mut M` question) is now
+  supported by the immutable-borrow executor; where an optimized `P`
+  double-buffer would live, if optimization is ever justified, remains deferred
+  and requires a workspace decision.
 - Whether `f32` suffices for RLS at larger `D` and long runs, or whether a
   numerical-representation decision is required. Numerical stability under weak
   excitation (variable/adaptive forgetting, ridge, `f64` covariance, UD or

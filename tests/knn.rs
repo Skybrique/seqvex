@@ -313,8 +313,8 @@ fn state_model_update_matches_predict_and_ignores_incoming_state() {
 #[test]
 fn streaming_matches_reference_bitwise() {
     let reference_model = model(1, 2, line_references());
-    let mut streaming_model = model(1, 2, line_references());
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = model(1, 2, line_references());
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
 
     for value in [0.0_f32, 1.6, 2.4, -3.0, 10.0] {
         let observation = observation(&[value]);
@@ -348,8 +348,8 @@ fn micro_batch_matches_streaming_bitwise() {
     ];
     let batched = reference_model.predict_batch(&batch).unwrap();
 
-    let mut streaming_model = model(1, 2, line_references());
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = model(1, 2, line_references());
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
     for (index, observation) in batch.iter().enumerate() {
         assert_bits_eq(batched[index], *executor.process_one(observation).unwrap());
     }
@@ -397,8 +397,8 @@ fn micro_batch_element_failure_returns_error_without_partial_output() {
 
 #[test]
 fn failed_streaming_prediction_preserves_last_prediction() {
-    let mut streaming_model = model(1, 2, line_references());
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = model(1, 2, line_references());
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
 
     executor.process_one(&observation(&[0.0])).unwrap();
     assert_eq!(

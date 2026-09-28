@@ -266,55 +266,47 @@ The execution layer must preserve observation order unless an explicit execution
 
 # 8. State Ownership
 
-## 8.1 Current reference topology
+## 8.1 Reference topology
 
-The current `StreamingExecutor` owns the **committed execution state** for the execution session.
-
-The current implementation also holds a mutable borrow of the model:
+The `StreamingExecutor` owns the **committed execution state** for one execution
+context and borrows the model **immutably**:
 
 ```text
 StreamingExecutor
-├── mutable model borrow
-└── committed state
+├── immutable model borrow (&Model)
+└── committed State (one per execution)
 ```
 
-The mutable model borrow was introduced to reach the current GRU production workspace without allocating per step.
+Because the model is only read during execution, one immutable model may be
+shared by several independent execution contexts, each owning its own State.
+The execution layer itself holds no reusable scratch: `StateModel` does not
+model a workspace.
 
-**This ownership topology is provisional and under CRITICAL ARCHITECTURE REVIEW.**
+## 8.2 Reference vs optimized execution
 
-It creates an important distinction:
-
-```text
-immutable model data / weights
-        vs.
-per-stream mutable execution scratch
-```
-
-A model-owned workspace is convenient for allocation-free GRU execution, but a model-owned mutable workspace can prevent multiple execution sessions from sharing the same model instance.
-
-Therefore the current topology must not be treated as the final generic execution architecture.
-
-## 8.2 Reference vs production execution
-
-The current implementation intentionally contains two paths:
+Where an algorithm needs reusable scratch, that scratch belongs to an
+algorithm-local execution context, not to the model:
 
 ```text
 reference path
     ↓
-StateModel::update / readable computation
+StateModel::update (value-returning)
     ↓
 semantic reference
 
-production path
+optimized path (GRU only, currently)
     ↓
-model-owned reusable workspace
+GruExecutor: &Gru + State + private reusable workspace
     ↓
-allocation-free hot path
+allocation-free steady state
 ```
 
-The production path is currently local to the GRU and is not a general `StateModel` redesign.
+The optimized path is local to the GRU and is not a general `StateModel`
+redesign. Per-execution State and per-execution Workspace are never shared
+across live executions.
 
-Its ownership model remains experimental/provisional until additional workloads—especially classical and online ML workloads—provide evidence about the appropriate long-term relationship between model parameters, per-stream state, reusable scratch, and execution sessions.
+The former model-owned workspace and the resulting `&mut M` executor borrow were
+removed; the executor no longer requires exclusive access to the model.
 
 ---
 
@@ -404,7 +396,7 @@ The GRU demonstrates the execution architecture.
 Reference path:
 
 ```text
-StreamingExecutor
+StreamingExecutor (&Gru)
         ↓
 StateModel::update
         ↓
@@ -413,25 +405,26 @@ Gru::compute
 new hidden state
 ```
 
-Production path:
+Optimized path (algorithm-local):
 
 ```text
-StreamingExecutor
+GruExecutor (&Gru + State + workspace)
         ↓
-Gru::process_one_optimized
+process_one_optimized
         ↓
-Gru::update_in_place
+compute_in_place
         ↓
-reusable GRU workspace
+reusable GRU workspace (private, per execution)
         ↓
-validated state commit
+validated State commit
 ```
 
-The two paths are intended to be semantically equivalent.
+The two paths are semantically equivalent and bitwise-tested.
 
-The production path currently eliminates steady-state allocations by reusing three hidden-dimension workspace buffers owned by `Gru`.
-
-This is a **measured local optimization**, not a decision that Seqvex will use model-owned workspaces universally.
+The optimized path eliminates steady-state allocations by reusing three
+hidden-dimension workspace buffers owned by the `GruExecutor`, not by `Gru`.
+This is a **measured local optimization**, not a decision that Seqvex will use
+model-owned or framework-wide workspace abstractions.
 
 ---
 
@@ -547,27 +540,16 @@ The current execution module provides:
 
 - stateful single-observation execution;
 - ordered stream execution;
-- committed state ownership;
+- committed State ownership (one per execution);
 - reset;
 - failure-aware progression;
 - the generic `StateModel` reference path;
-- a provisional GRU-specific optimized path.
+- an algorithm-local GRU optimized path (`GruExecutor`).
 
-The current `StreamingExecutor` API uses `&mut M` because the present GRU production workspace is model-owned.
-
-That signature is **not a settled architecture**.
-
-A future design may instead separate:
-
-```text
-model parameters / immutable computation
-        +
-per-stream state
-        +
-per-stream reusable workspace
-```
-
-or establish another ownership topology once real workloads demonstrate the requirement.
+The `StreamingExecutor` borrows the model immutably (`&M`), so independent
+execution contexts can share one model. Reusable scratch, where an algorithm
+requires it, belongs to that algorithm's execution context (GRU today) and is
+never model-owned.
 
 ---
 
@@ -681,7 +663,9 @@ Any implementation, optimization, or API change that could materially constrain:
 
 must undergo **CRITICAL ARCHITECTURE REVIEW before implementation**.
 
-The current `StreamingExecutor<'_, M>` mutable model borrow is an active example of this guard.
+The former `StreamingExecutor<'_, M>` mutable model borrow was an example of this
+guard; it was removed in favour of an immutable model borrow with
+execution-owned State and algorithm-local Workspace.
 
 ---
 

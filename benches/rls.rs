@@ -317,9 +317,9 @@ fn main() {
                 .unwrap();
         });
 
-        let mut streaming_model = model(features, LAMBDA_CONTROL);
+        let streaming_model = model(features, LAMBDA_CONTROL);
         let initial = streaming_model.initial_state();
-        let mut executor = StreamingExecutor::new(&mut streaming_model, initial);
+        let mut executor = StreamingExecutor::new(&streaming_model, initial);
         common::measure("streaming", steps, 1, || {
             black_box(executor.process_one(black_box(&observation)).unwrap());
         });
@@ -410,10 +410,10 @@ fn main() {
                 );
             }
 
-            let mut streaming_model = model(features, common::LAMBDA_PE);
+            let streaming_model = model(features, common::LAMBDA_PE);
             let initial = streaming_model.initial_state();
             let reset_state = model(features, common::LAMBDA_PE).initial_state();
-            let mut executor = StreamingExecutor::new(&mut streaming_model, initial);
+            let mut executor = StreamingExecutor::new(&streaming_model, initial);
             let mut stream_index = 0_usize;
             let mut streaming_failures = 0_u64;
             common::measure("streaming", steps, 1, || {

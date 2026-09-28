@@ -139,8 +139,8 @@ fn main() {
             ));
         });
 
-        let mut streaming_model = Knn::new(d, k, build_references(n, d)).unwrap();
-        let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+        let streaming_model = Knn::new(d, k, build_references(n, d)).unwrap();
+        let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
         common::measure("streaming", steps, 1, || {
             black_box(executor.process_one(black_box(&query)).unwrap());
         });

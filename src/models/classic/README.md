@@ -30,13 +30,14 @@ review. Unlike the GRU slice, linear-regression prediction:
 
 Its characteristics are evidence for the hypothesis that immutable, shareable
 model data and per-stream state/scratch should be separate concerns. It must not
-be made to conform to the GRU's model-owned-workspace topology.
+be made to conform to a model-owned-workspace topology.
 
-One observable consequence: the current generic `StreamingExecutor` demands
-`&mut M`, yet linear regression needs no mutable model state at all. That is
-direct evidence that the `&mut M` requirement is broader than any individual
-model's needs and belongs to the executor/workspace review, not to this slice.
-This slice does not change that signature.
+The former generic `StreamingExecutor` `&mut M` requirement was removed by the
+execution-ownership refactor: the executor now borrows `&Model`, so one
+immutable model can drive several independent execution contexts. Linear
+regression, which needs no mutable model state at all, was direct evidence that
+the `&mut M` requirement was broader than any individual model's needs and
+belonged to the executor/workspace review, not to this slice.
 
 ## Inside
 

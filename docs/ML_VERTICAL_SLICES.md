@@ -61,7 +61,7 @@ this matrix does not create or close Issues.
 | **Linear Regression** | #23 | Closed-form prediction `ŷ = w · x + b`; prediction only | None during prediction (immutable weights) | None | Streaming per-observation; independent observations may micro-batch | Implemented (reference/streaming/micro-batch) |
 | **Decision Tree** | #24 | Read-only traversal from a trained tree | None (immutable at inference) | None, or a small traversal path | Streaming per-observation traversal; independent observations may micro-batch | Implemented (reference/streaming/micro-batch; regression only, classification deferred) |
 | **K-Nearest Neighbors** | #25 | Brute-force distance + neighbor selection | Stored reference observations + `k` | Per-query distance scratch `O(N)`; neighbor set `O(k)` | Streaming per-query; independent queries may micro-batch | Implemented (reference/streaming/micro-batch; regression only, classification deferred) |
-| **GRU bounded micro-batch** | #22 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the model-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Planned (reference path only) |
+| **GRU bounded micro-batch** | #22 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Planned (reference path only) |
 | **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Implemented (reference/streaming/bounded fold) |
 
 Two families emerge from the matrix and are the point of the exercise:
@@ -112,10 +112,14 @@ per-stream state                 → owned by the execution session
 per-stream scratch / workspace   → owned by the execution session
 ```
 
-The GRU slice already shows one counter-example: its scratch is currently
-**model-owned** to reach allocation-free stepping, which forces `&mut M` on the
-generic executor. That arrangement is provisional and under CRITICAL
-ARCHITECTURE REVIEW. Vertical slices must not propagate it.
+The GRU slice initially placed its reusable scratch in the model to reach
+allocation-free stepping, forcing `&mut M` on the generic executor. That
+arrangement was resolved: the workspace now belongs to the algorithm-local
+`GruExecutor` (an execution context), `Gru` holds only immutable parameters and
+configuration, and the generic executor borrows the model immutably (`&M`).
+One immutable model may therefore drive several independent execution contexts,
+each owning its own State and (for GRU) its own private workspace. Vertical
+slices must not reintroduce model-owned scratch.
 
 RLS is the first **stateful** slice to confirm the hypothesis rather than
 contradict it: its adaptive `(w, P)` is per-stream execution state, the model
@@ -134,8 +138,10 @@ residency, per-stream versus model-owned state/scratch, synchronization, or
 low-level allocation/layout control requires **CRITICAL ARCHITECTURE REVIEW
 before implementation** (`docs/DEVELOPMENT.md` §3).
 
-Active examples: `StreamingExecutor<'m, M>` holding `&'m mut M`, and a model
-owning its execution workspace.
+Active examples are none at present: the former `StreamingExecutor<'m, M>`
+holding `&'m mut M` and the model-owned GRU workspace were both removed by the
+execution-ownership refactor. Treat any future model-owned state/scratch or
+exclusive model borrow as a trigger for this review.
 
 Stop and escalate rather than resolving such a question locally. In particular,
 do not add a generic workspace, micro-batch executor, scheduler, or
@@ -213,11 +219,12 @@ it consumes owned observations. The `O(D²)` candidate allocation is the
 RLS-specific evidence, reported rather than optimized — a double-buffered `P`
 would raise an unresolved workspace-ownership question.
 
-RLS also reinforces the `&mut M` finding: adaptive state belongs to the stream,
-not the model, yet the generic `StreamingExecutor::new(&mut M)` blocks sharing
-one immutable `Rls` across streams. That remains a CRITICAL ARCHITECTURE REVIEW
-item; one shared `&Rls` with independent per-stream states is demonstrated with
-the foundation `process_one`/`process_stream` functions.
+RLS also confirms the ownership rule: adaptive state belongs to the stream, not
+the model. One immutable `&Rls` can now drive independent per-stream states both
+through the foundation `process_one`/`process_stream` functions and through the
+generic `StreamingExecutor`, which borrows the model immutably (`&M`) and owns
+the per-stream State. The former `&mut M` limitation was removed by the
+execution-ownership refactor.
 
 ## Matrix growth rule
 

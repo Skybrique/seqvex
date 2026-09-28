@@ -778,10 +778,10 @@ fn failed_update_leaves_committed_state_bitwise_unchanged() {
 
 #[test]
 fn executor_failure_preserves_state_and_the_stream_continues() {
-    let mut streaming_model = Rls::new(2, 0.99, 10.0).unwrap();
+    let streaming_model = Rls::new(2, 0.99, 10.0).unwrap();
     let reference = streaming_model.clone();
     let initial = streaming_model.initial_state();
-    let mut executor = StreamingExecutor::new(&mut streaming_model, initial);
+    let mut executor = StreamingExecutor::new(&streaming_model, initial);
 
     executor.process_one(&sample(&[1.0, 2.0], 1.0)).unwrap();
     let committed = executor.state().clone();
@@ -848,10 +848,10 @@ fn process_stream_continues_after_a_failure() {
 
 #[test]
 fn reset_starts_a_new_sequence() {
-    let mut streaming_model = Rls::new(2, 0.9, 2.0).unwrap();
+    let streaming_model = Rls::new(2, 0.9, 2.0).unwrap();
     let reference = streaming_model.clone();
     let initial = streaming_model.initial_state();
-    let mut executor = StreamingExecutor::new(&mut streaming_model, initial.clone());
+    let mut executor = StreamingExecutor::new(&streaming_model, initial.clone());
 
     executor.process_one(&sample(&[1.0, 2.0], 1.0)).unwrap();
     executor.reset(initial.clone());

@@ -100,8 +100,8 @@ fn main() {
             black_box(model.predict(black_box(observation.value())).unwrap());
         });
 
-        let mut streaming_model = balanced_tree(features, depth);
-        let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+        let streaming_model = balanced_tree(features, depth);
+        let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
         common::measure("streaming", steps, 1, || {
             black_box(executor.process_one(black_box(&observation)).unwrap());
         });

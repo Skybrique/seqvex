@@ -262,8 +262,8 @@ fn streaming_matches_reference_bitwise() {
             leaf(2.0),
         ],
     );
-    let mut streaming_model = reference.clone();
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = reference.clone();
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
 
     for features in [[1.0_f32, 2.0], [-1.0, 0.5], [0.0, 0.0], [10.0, -3.0]] {
         let observation = observation(&features);
@@ -299,8 +299,8 @@ fn micro_batch_matches_streaming_prediction_bitwise() {
     ];
     let batched = model.predict_batch(&batch).unwrap();
 
-    let mut streaming_model = model.clone();
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = model.clone();
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
     for (index, observation) in batch.iter().enumerate() {
         let streamed = *executor.process_one(observation).unwrap();
         assert_bits_eq(batched[index], streamed);
@@ -347,8 +347,8 @@ fn micro_batch_propagates_element_failure() {
 
 #[test]
 fn failed_streaming_prediction_preserves_last_prediction() {
-    let mut streaming_model = two_leaf_tree();
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = two_leaf_tree();
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
 
     executor.process_one(&observation(&[-1.0])).unwrap();
     let error = executor.process_one(&observation(&[1.0, 2.0])).unwrap_err();

@@ -71,8 +71,8 @@ fn non_finite_input_is_rejected() {
 #[test]
 fn streaming_prediction_matches_reference() {
     let reference = model(&[0.25, -0.5, 1.5], 0.125);
-    let mut streaming_model = model(&[0.25, -0.5, 1.5], 0.125);
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = model(&[0.25, -0.5, 1.5], 0.125);
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
 
     for features in [
         [1.0_f32, 2.0, 3.0],
@@ -89,8 +89,8 @@ fn streaming_prediction_matches_reference() {
 
 #[test]
 fn streaming_state_is_the_latest_prediction() {
-    let mut streaming_model = model(&[2.0], 1.0);
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = model(&[2.0], 1.0);
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
 
     executor.process_one(&observation(&[3.0])).unwrap();
     assert_bits_eq(*executor.state(), 7.0);
@@ -100,8 +100,8 @@ fn streaming_state_is_the_latest_prediction() {
 
 #[test]
 fn failed_streaming_prediction_preserves_last_prediction() {
-    let mut streaming_model = model(&[2.0], 1.0);
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = model(&[2.0], 1.0);
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
 
     executor.process_one(&observation(&[3.0])).unwrap();
     let error = executor.process_one(&observation(&[1.0, 2.0])).unwrap_err();
@@ -117,8 +117,8 @@ fn failed_streaming_prediction_preserves_last_prediction() {
 
 #[test]
 fn reset_starts_a_new_streaming_sequence() {
-    let mut streaming_model = model(&[2.0], 1.0);
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = model(&[2.0], 1.0);
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
 
     executor.process_one(&observation(&[3.0])).unwrap();
     assert_bits_eq(*executor.state(), 7.0);
@@ -164,8 +164,8 @@ fn micro_batch_matches_streaming_prediction_bitwise() {
     let model = model(&[1.5, -0.5], 2.0);
     let micro_batched = model.predict_batch(&batch).unwrap();
 
-    let mut streaming_model = model.clone();
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = model.clone();
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
     for (index, observation) in batch.iter().enumerate() {
         let streamed = *executor.process_one(observation).unwrap();
         assert_bits_eq(micro_batched[index], streamed);
@@ -699,8 +699,8 @@ fn suffix_does_not_affect_committed_stream_state_for_x_t() {
     ];
     let reference = model(&[0.5, -1.25, 2.0], -0.375);
 
-    let mut running_model = reference.clone();
-    let mut running = StreamingExecutor::new(&mut running_model, 0.0);
+    let running_model = reference.clone();
+    let mut running = StreamingExecutor::new(&running_model, 0.0);
     for observation in prefix.iter().chain(std::iter::once(&target)) {
         running.process_one(observation).unwrap();
     }
@@ -732,8 +732,8 @@ fn sequence_number_context_does_not_change_prediction() {
         Observation::new(Vector::from_slice(&features)).with_sequence(SequenceNumber::new(7));
     assert_bits_eq(model.predict(with_sequence.value()).unwrap(), plain);
 
-    let mut streaming_model = model.clone();
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = model.clone();
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
     assert_bits_eq(*executor.process_one(&with_sequence).unwrap(), plain);
 }
 
@@ -1029,8 +1029,8 @@ fn long_run_streaming_state_is_last_prediction_only() {
         .map(|_| vec![lcg.next_f32(), lcg.next_f32(), lcg.next_f32()])
         .collect();
 
-    let mut streaming_model = model.clone();
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = model.clone();
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
     let mut last = 0.0_f32;
     for features in &series {
         last = *executor.process_one(&observation(features)).unwrap();
@@ -1265,8 +1265,8 @@ fn failure_does_not_corrupt_subsequent_prediction() {
 
 #[test]
 fn failed_streaming_prediction_then_valid_continues() {
-    let mut streaming_model = model(&[2.0], 1.0);
-    let mut executor = StreamingExecutor::new(&mut streaming_model, 0.0);
+    let streaming_model = model(&[2.0], 1.0);
+    let mut executor = StreamingExecutor::new(&streaming_model, 0.0);
     executor.process_one(&observation(&[3.0])).unwrap();
     assert!(executor.process_one(&observation(&[1.0, 2.0])).is_err());
     assert_bits_eq(*executor.process_one(&observation(&[4.0])).unwrap(), 9.0);
@@ -1291,8 +1291,7 @@ fn failed_batch_then_valid_batch_succeeds() {
 #[test]
 fn single_implementation_delegation() {
     // LR has one implementation (`predict`); `StateModel::update` and
-    // `predict_batch` delegate to it. There is no reference/production dual path
-    // (unlike the GRU's `step` vs `step_in_place`).
+    // `predict_batch` delegate to it. LR has no dual reference/production path.
     let model = model(&[1.5, -2.0, 0.25], 0.125);
     let observation = observation(&[4.0, 5.0, -6.0]);
     let reference = model.predict(observation.value()).unwrap();

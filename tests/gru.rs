@@ -7,7 +7,7 @@
 //! correct rather than evidence the two paths share a bug.
 
 use seqvex::execution::streaming::StreamingExecutor;
-use seqvex::foundation::numerical::{Matrix, Vector};
+use seqvex::foundation::numerical::{Matrix, RandomGenerator, Vector};
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::{StateModel, process_batch, process_one, process_stream};
 use seqvex::models::recurrent::gru::{Gru, GruError, GruExecutor, GruParameters};
@@ -940,4 +940,180 @@ fn stream_failure_preserves_state_and_continues_from_last_valid() {
     expected = ref_step(&params, &expected, &[0.3, -0.4]);
     expected = ref_step(&params, &expected, &[0.3, -0.4]);
     assert_close(final_state.as_slice(), &expected, 1e-5);
+}
+
+// --- production parameter initialization -------------------------------------
+//
+// KAT values below are regression guards for a fixed dependency version; they do
+// not prove PRNG statistical quality (`docs/RANDOMNESS.md`).
+
+const INIT_SEED: u64 = 0x20_2026;
+const INIT_W_Z_BITS: [u32; 6] = [
+    1040303696, 3183172272, 3193933668, 3213583158, 1062216716, 3196331252,
+];
+const INIT_U_Z_BITS: [u32; 9] = [
+    3181920064, 3206166352, 3197753888, 1056856344, 1056296408, 3204752864, 3199735400, 1050635104,
+    1058511716,
+];
+const INIT_W_R_BITS: [u32; 6] = [
+    1059577298, 3210317944, 3205156764, 1032894032, 3212080696, 1051457936,
+];
+const INIT_U_R_BITS: [u32; 9] = [
+    1062129092, 3195957568, 3207081800, 3204079688, 3180773952, 1042619376, 3198690040, 3199229072,
+    1057853656,
+];
+const INIT_W_H_BITS: [u32; 6] = [
+    3205365034, 1055788580, 3158734208, 3200476934, 3188849436, 1065420982,
+];
+const INIT_U_H_BITS: [u32; 9] = [
+    1055376800, 1049922032, 1058680456, 1059606408, 1058086072, 1060379132, 1029657344, 3206315656,
+    3204765208,
+];
+
+fn from_bits(bits: &[u32]) -> Vec<f32> {
+    bits.iter().map(|bits| f32::from_bits(*bits)).collect()
+}
+
+fn ref_params_from(parameters: &GruParameters) -> RefParams {
+    let rows = |matrix: &Matrix| -> Vec<Vec<f32>> {
+        (0..matrix.rows())
+            .map(|row| {
+                (0..matrix.cols())
+                    .map(|col| matrix.get(row, col).unwrap())
+                    .collect()
+            })
+            .collect()
+    };
+    RefParams {
+        w_z: rows(&parameters.w_z),
+        u_z: rows(&parameters.u_z),
+        b_z: parameters.b_z.as_slice().to_vec(),
+        w_r: rows(&parameters.w_r),
+        u_r: rows(&parameters.u_r),
+        b_r: parameters.b_r.as_slice().to_vec(),
+        w_h: rows(&parameters.w_h),
+        u_h: rows(&parameters.u_h),
+        b_h: parameters.b_h.as_slice().to_vec(),
+    }
+}
+
+#[test]
+fn initializer_is_reproducible_for_a_fixed_seed() {
+    let mut left = RandomGenerator::from_seed(0xabcd);
+    let mut right = RandomGenerator::from_seed(0xabcd);
+    let left_parameters = GruParameters::init(3, 2, &mut left).unwrap();
+    let right_parameters = GruParameters::init(3, 2, &mut right).unwrap();
+    assert_eq!(left_parameters, right_parameters);
+}
+
+#[test]
+fn initializer_matches_frozen_parameter_vector() {
+    let mut rng = RandomGenerator::from_seed(INIT_SEED);
+    let parameters = GruParameters::init(2, 3, &mut rng).unwrap();
+    assert_bitwise_eq(parameters.w_z.as_slice(), &from_bits(&INIT_W_Z_BITS));
+    assert_bitwise_eq(parameters.u_z.as_slice(), &from_bits(&INIT_U_Z_BITS));
+    assert_bitwise_eq(parameters.w_r.as_slice(), &from_bits(&INIT_W_R_BITS));
+    assert_bitwise_eq(parameters.u_r.as_slice(), &from_bits(&INIT_U_R_BITS));
+    assert_bitwise_eq(parameters.w_h.as_slice(), &from_bits(&INIT_W_H_BITS));
+    assert_bitwise_eq(parameters.u_h.as_slice(), &from_bits(&INIT_U_H_BITS));
+}
+
+#[test]
+fn initializer_produces_shaped_finite_parameters_and_zero_biases() {
+    let mut rng = RandomGenerator::from_seed(0x5ca1e);
+    let parameters = GruParameters::init(2, 3, &mut rng).unwrap();
+    for matrix in [
+        &parameters.w_z,
+        &parameters.u_z,
+        &parameters.w_r,
+        &parameters.u_r,
+        &parameters.w_h,
+        &parameters.u_h,
+    ] {
+        assert!(matrix.as_slice().iter().all(|value| value.is_finite()));
+    }
+    assert_eq!((parameters.w_z.rows(), parameters.w_z.cols()), (3, 2));
+    assert_eq!((parameters.u_z.rows(), parameters.u_z.cols()), (3, 3));
+    assert_eq!(parameters.b_z.as_slice(), &[0.0, 0.0, 0.0]);
+    assert_eq!(parameters.b_r.as_slice(), &[0.0, 0.0, 0.0]);
+    assert_eq!(parameters.b_h.as_slice(), &[0.0, 0.0, 0.0]);
+    assert!(Gru::new(2, 3, parameters).is_ok());
+}
+
+#[test]
+fn initializer_rejects_zero_dimensions() {
+    let mut rng = RandomGenerator::from_seed(1);
+    assert_eq!(
+        GruParameters::init(0, 3, &mut rng).unwrap_err(),
+        GruError::ZeroDimension
+    );
+    assert_eq!(
+        GruParameters::init(3, 0, &mut rng).unwrap_err(),
+        GruError::ZeroDimension
+    );
+}
+
+#[test]
+fn initializer_scale_matches_glorot_variance_and_shrinks_with_dimension() {
+    let mut previous_input_half_width = f32::INFINITY;
+    for (input_dim, hidden_dim) in [(2_usize, 3_usize), (8, 16), (32, 64)] {
+        let input_half_width = (6.0_f64 / (input_dim as f64 + hidden_dim as f64)).sqrt() as f32;
+        let recurrent_half_width = (3.0_f32 / hidden_dim as f32).sqrt();
+        assert!(input_half_width < previous_input_half_width);
+        previous_input_half_width = input_half_width;
+
+        let mut rng =
+            RandomGenerator::from_seed(0x5ca1e + input_dim as u64 * 31 + hidden_dim as u64);
+        let parameters = GruParameters::init(input_dim, hidden_dim, &mut rng).unwrap();
+        assert!(
+            parameters
+                .w_z
+                .as_slice()
+                .iter()
+                .all(|value| value.abs() <= input_half_width)
+        );
+        assert!(
+            parameters
+                .u_z
+                .as_slice()
+                .iter()
+                .all(|value| value.abs() <= recurrent_half_width)
+        );
+
+        let mut samples = parameters.w_z.as_slice().to_vec();
+        samples.extend_from_slice(parameters.u_z.as_slice());
+        let count = samples.len() as f32;
+        let mean = samples.iter().sum::<f32>() / count;
+        let variance = samples
+            .iter()
+            .map(|value| (value - mean) * (value - mean))
+            .sum::<f32>()
+            / count;
+        let input_variance = input_half_width * input_half_width / 3.0;
+        let recurrent_variance = recurrent_half_width * recurrent_half_width / 3.0;
+        let expected_variance = (input_variance * (hidden_dim * input_dim) as f32
+            + recurrent_variance * (hidden_dim * hidden_dim) as f32)
+            / count;
+        let standard_error = (expected_variance / count).sqrt();
+        assert!(
+            mean.abs() <= 4.0 * standard_error + 1e-6,
+            "dim {input_dim}x{hidden_dim} mean {mean}"
+        );
+        assert!(
+            (0.5..=2.0).contains(&(variance / expected_variance)),
+            "dim {input_dim}x{hidden_dim} variance {variance}, expected ~{expected_variance}"
+        );
+    }
+}
+
+#[test]
+fn initialized_model_matches_independent_reference() {
+    let mut rng = RandomGenerator::from_seed(0x1234_5678);
+    let parameters = GruParameters::init(2, 2, &mut rng).unwrap();
+    let reference = ref_params_from(&parameters);
+    let gru = Gru::new(2, 2, parameters).unwrap();
+    let input = [0.4, -0.6];
+    let produced = gru.update(&Vector::zeros(2), &observation(&input)).unwrap();
+    let expected = ref_step(&reference, &[0.0, 0.0], &input);
+    assert_close(produced.as_slice(), &expected, 1e-6);
 }

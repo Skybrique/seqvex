@@ -475,11 +475,11 @@ benchmark / profile
 
 # 11. Initialization
 
-`GruParameters::deterministic` provides deterministic parameters for examples, tests, and benchmarks.
+`GruParameters::deterministic` provides deterministic parameters for examples, tests, and benchmarks. It is a fixed fixture, is not entropy-backed, and its values must not change.
 
-It should not be interpreted as a statistically justified production initialization scheme.
+`GruParameters::init(input_dim, hidden_dim, &mut RandomGenerator)` draws a seeded or entropy-seeded starting point: Glorot/Xavier uniform weight matrices (input `a = sqrt(6/(input_dim + hidden_dim))`, recurrent `a = sqrt(3/hidden_dim)`) and zero biases. It is an untrained starting-parameter path, not a trained or predictive model, and does not replace training or loaded weights.
 
-Production training/initialization policies remain future work.
+The generator lives in `foundation::numerical` and performs parameter-value draws only: it never samples, shuffles, splits, or reorders observations. See `docs/RANDOMNESS.md`.
 
 ---
 

@@ -41,7 +41,9 @@
 //! tested range. The workspace is per-execution scratch, never model-owned and
 //! never shared between live executions; it does not generalize to other models.
 
-use crate::foundation::numerical::{DimensionMismatch, Matrix, Vector, sigmoid, tanh};
+use crate::foundation::numerical::{
+    DimensionMismatch, Matrix, RandomGenerator, Vector, sigmoid, tanh,
+};
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
 
@@ -127,6 +129,54 @@ impl GruParameters {
             b_h: Vector::from_fn(hidden_dim, |_| next()),
         }
     }
+
+    /// Builds parameters by drawing bounded uniform values for the weight
+    /// matrices and zeroing the biases.
+    ///
+    /// Input matrices `W_*` use Glorot/Xavier uniform scaling
+    /// `a = sqrt(6 / (input_dim + hidden_dim))`; recurrent matrices `U_*` use
+    /// `a = sqrt(3 / hidden_dim)`. Biases are zero and consume no draws. The
+    /// generated parameters are an untrained starting point: they are not
+    /// predictive, and they are not competition-ready.
+    pub fn init(
+        input_dim: usize,
+        hidden_dim: usize,
+        rng: &mut RandomGenerator,
+    ) -> Result<Self, GruError> {
+        if input_dim == 0 || hidden_dim == 0 {
+            return Err(GruError::ZeroDimension);
+        }
+        let input_half_width = glorot_half_width(input_dim as f64 + hidden_dim as f64);
+        let recurrent_half_width = glorot_half_width(2.0 * hidden_dim as f64);
+        let input_range = rng
+            .uniform_range(-input_half_width, input_half_width)
+            .expect("positive dimensions yield a finite non-empty range");
+        let recurrent_range = rng
+            .uniform_range(-recurrent_half_width, recurrent_half_width)
+            .expect("positive dimensions yield a finite non-empty range");
+
+        Ok(Self {
+            w_z: Matrix::from_fn(hidden_dim, input_dim, |_, _| rng.draw_f32(&input_range)),
+            u_z: Matrix::from_fn(hidden_dim, hidden_dim, |_, _| {
+                rng.draw_f32(&recurrent_range)
+            }),
+            b_z: Vector::zeros(hidden_dim),
+            w_r: Matrix::from_fn(hidden_dim, input_dim, |_, _| rng.draw_f32(&input_range)),
+            u_r: Matrix::from_fn(hidden_dim, hidden_dim, |_, _| {
+                rng.draw_f32(&recurrent_range)
+            }),
+            b_r: Vector::zeros(hidden_dim),
+            w_h: Matrix::from_fn(hidden_dim, input_dim, |_, _| rng.draw_f32(&input_range)),
+            u_h: Matrix::from_fn(hidden_dim, hidden_dim, |_, _| {
+                rng.draw_f32(&recurrent_range)
+            }),
+            b_h: Vector::zeros(hidden_dim),
+        })
+    }
+}
+
+fn glorot_half_width(fan_sum: f64) -> f32 {
+    (6.0 / fan_sum).sqrt() as f32
 }
 
 /// Reusable scratch storage for the allocation-free optimized path.

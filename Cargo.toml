@@ -2,6 +2,7 @@
 name = "seqvex"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 description = "A Rust-native machine learning and reinforcement learning framework for sequential, non-IID, and streaming workloads."
 license = "Apache-2.0"
 repository = "https://github.com/Skybrique/seqvex"
@@ -11,6 +12,7 @@ readme = "README.md"
 resolver = "3"
 
 [dependencies]
+rand = { version = "0.10", default-features = false, features = ["std", "chacha", "sys_rng"] }
 
 [[bench]]
 name = "numerical"

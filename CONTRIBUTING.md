@@ -163,6 +163,35 @@ Unsafe code should be:
 - tested
 - reviewed carefully
 
+## Continuous Integration
+
+The CI workflow runs on pushes and pull requests with independently visible
+checks:
+
+| Check | What it verifies |
+|---|---|
+| `rust-fmt` | Formatting with stable Rust |
+| `rust-test` | All targets and features with stable Rust and the committed lockfile |
+| `rust-clippy` | All targets and features with stable Rust; warnings are errors |
+| `rust-msrv` | All targets and features with Rust 1.85.1 and the committed lockfile |
+| `diff-check` | Whitespace errors and conflict markers introduced by committed changes |
+
+`Cargo.toml` declares the Rust 1.85 compiler line. The MSRV check uses 1.85.1;
+it does not establish compatibility with 1.85.0. If the declared minimum changes,
+update this check and its documentation in the same change.
+
+For pull requests, `diff-check` compares the merge base with the PR head.
+For existing-branch pushes, it compares the before and after commits. A branch's
+first push is compared with its merge base against the default branch. Full
+history is fetched so these comparisons do not depend on uncommitted changes
+or the checkout's shallow history.
+
+After these checks have appeared successfully on GitHub, configure the `main`
+branch rules to require their exact names. Creating the workflow does not itself
+make the checks required. Preserve merge commits and the maintainer's branch
+retention policy. Required checks verify the recorded commands; mathematical,
+statistical, scope, and production-readiness conclusions still require review.
+
 ## Architectural Changes
 
 Changes affecting the following areas should receive additional scrutiny:

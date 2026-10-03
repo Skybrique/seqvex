@@ -76,6 +76,12 @@ fn mean_panics_on_empty_input() {
 
 #[test]
 #[should_panic(expected = "empty slice undefined")]
+fn variance_panics_on_empty_input() {
+    numerical::variance(&[]);
+}
+
+#[test]
+#[should_panic(expected = "empty slice undefined")]
 fn norm_panics_on_empty_input() {
     numerical::norm(&[]);
 }
@@ -94,8 +100,27 @@ fn variance_panics_on_nan_input() {
 
 #[test]
 #[should_panic(expected = "must be non-negative")]
+fn variance_panics_on_positive_infinity_input() {
+    numerical::variance(&[f64::INFINITY]);
+}
+
+#[test]
+#[should_panic(expected = "must be non-negative")]
+fn variance_panics_on_negative_infinity_input() {
+    numerical::variance(&[f64::NEG_INFINITY]);
+}
+
+#[test]
+#[should_panic(expected = "must be non-negative")]
 fn norm_panics_on_nan_input() {
     numerical::norm(&[f64::NAN]);
+}
+
+#[test]
+fn norm_returns_positive_infinity_for_infinite_magnitudes() {
+    assert_eq!(numerical::norm(&[f64::INFINITY]), f64::INFINITY);
+    assert_eq!(numerical::norm(&[f64::NEG_INFINITY]), f64::INFINITY);
+    assert_eq!(numerical::norm(&[1.0, f64::INFINITY]), f64::INFINITY);
 }
 
 #[test]
@@ -104,6 +129,14 @@ fn sum_and_mean_propagate_non_finite_values() {
     assert_eq!(numerical::sum(&[f64::NEG_INFINITY]), f64::NEG_INFINITY);
     assert!(numerical::sum(&[f64::NAN]).is_nan());
     assert!(numerical::mean(&[f64::NAN, 1.0]).is_nan());
+    assert_eq!(numerical::mean(&[f64::INFINITY]), f64::INFINITY);
+    assert_eq!(numerical::mean(&[f64::NEG_INFINITY]), f64::NEG_INFINITY);
+}
+
+#[test]
+fn dot_propagates_non_finite_values() {
+    assert_eq!(numerical::dot(&[f64::INFINITY], &[1.0]), f64::INFINITY);
+    assert!(numerical::dot(&[f64::NAN], &[1.0]).is_nan());
 }
 
 #[test]

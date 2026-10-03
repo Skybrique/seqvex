@@ -7,15 +7,19 @@
 //! # Semantics
 //!
 //! - `sum(&[]) == 0.0`.
-//! - `mean` and `norm` panic on an empty slice, where the result is undefined.
+//! - `mean`, `variance`, and `norm` panic on an empty slice, where the result is
+//!   undefined.
 //! - `dot` panics when the operands differ in length.
 //! - `online_mean`/`online_variance` panic when the `count` is inconsistent
 //!   with the running statistics (`count == 0` with a non-zero mean/variance).
 //! - `variance` is the **population** variance (divide by `N`), computed in two
 //!   passes for numerical stability.
 //! - IEEE-754 `NaN`/`±Inf` propagate through `sum`, `mean`, and `dot`.
-//!   `variance` and `norm` assert non-negativity, so non-finite input panics
-//!   rather than returning a meaningless result.
+//! - `variance` asserts a non-negative result; any non-finite input makes the
+//!   two-pass result `NaN`, so `variance` panics on `NaN` and on `±Inf`.
+//! - `norm` asserts a non-negative result. A `NaN` input yields `NaN` and
+//!   panics; a `±Inf` input yields `+Inf`, which satisfies the assertion, so
+//!   `norm` returns `+Inf` without panicking.
 //!
 //! The panic contract is intentional for these `f64` primitives: it is the
 //! existing hand-written behavior and `§9` forbids silently changing semantics.

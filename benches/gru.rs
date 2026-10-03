@@ -12,6 +12,14 @@
 //! parameter clone for model construction, are reported separately and are not
 //! mixed into the per-observation numbers.
 //!
+//! This file also prepares a bounded reference-batch comparison (#34, unit B):
+//! grouped `StreamingExecutor` steps, `Gru::process_batch_reference`, and the
+//! foundation `process_batch` ordered fold. Correctness prechecks run outside
+//! timing; each path is measured once per batch size with `work_per_call = B`.
+//! The foundation fold is a labelled control whose timed body includes the
+//! observation clone it requires. `(256,512)` is out of scope for the bounded
+//! comparison. Release evidence is pending.
+//!
 //! The `GruParameters::deterministic` fixture is a test/benchmark fixture only:
 //! it is not production initialization, and nothing here claims that production
 //! randomness or initialization is solved (see issue #20).
@@ -22,6 +30,7 @@ use std::mem::size_of;
 use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::Vector;
 use seqvex::foundation::observation::Observation;
+use seqvex::foundation::state::process_batch;
 use seqvex::models::recurrent::gru::{Gru, GruExecutor, GruParameters};
 
 #[allow(dead_code)]
@@ -68,6 +77,133 @@ fn verify_paths_agree(model: &Gru, observation: &Observation<Vector>, hidden_dim
             "reference StreamingExecutor and optimized GruExecutor diverged"
         );
     }
+}
+
+/// Largest batch size in the bounded reference comparison.
+const MAX_BATCH_SIZE: usize = 128;
+
+/// Batch sizes compared for bounded reference batching (#34, unit B).
+const BOUNDED_BATCH_SIZES: [usize; 4] = [1, 8, 32, 128];
+
+/// Provisional per-window observation budget by dimension in release. These are
+/// workload limits, not performance evidence. Each value divides exactly by
+/// every batch size in [`BOUNDED_BATCH_SIZES`], so `calls = budget / B` keeps the
+/// observation count equal across paths and batch sizes within a dimension.
+fn bounded_window_budget(input_dim: usize, hidden_dim: usize) -> u32 {
+    match (input_dim, hidden_dim) {
+        (8, 16) => 8_192,
+        (32, 64) => 2_048,
+        (128, 256) => 256,
+        _ => 256,
+    }
+}
+
+/// Consecutive-call depth of the pre-timing bitwise equivalence check.
+fn precheck_calls() -> usize {
+    if cfg!(debug_assertions) { 2 } else { 4 }
+}
+
+/// Batch sizes used by the bounded comparison. The two largest are skipped in
+/// debug so that `cargo test --all-targets` — which executes this binary — stays
+/// cheap; the bounded block multiplies `steps` by `B`, and the largest
+/// dimension's reference transition is expensive.
+fn bounded_batch_sizes() -> &'static [usize] {
+    if cfg!(debug_assertions) {
+        &BOUNDED_BATCH_SIZES[..2]
+    } else {
+        &BOUNDED_BATCH_SIZES
+    }
+}
+
+/// Calls per measurement for the bounded block. Debug is deliberately tiny and
+/// is not evidence. In release, `calls = window_budget / B`, so every `B`
+/// processes the same number of observations within a dimension.
+fn bounded_steps(batch_size: usize, window_budget: u32) -> u32 {
+    if cfg!(debug_assertions) {
+        10
+    } else {
+        (window_budget / batch_size as u32).max(1)
+    }
+}
+
+/// Deterministic ordered observations shared by every path for one dimension
+/// pair. The prefix `[..B]` is used for batch size `B`, so smaller batches are
+/// nested inside larger ones and all paths see identical inputs.
+fn bounded_observations(input_dim: usize, seed: u64) -> Vec<Observation<Vector>> {
+    let mut lcg = common::Lcg::new(seed);
+    (0..MAX_BATCH_SIZE)
+        .map(|_| Observation::new(Vector::from_fn(input_dim, |_| lcg.next_f32())))
+        .collect()
+}
+
+fn bitwise_same(left: &Vector, right: &Vector) -> bool {
+    left.as_slice().len() == right.as_slice().len()
+        && left
+            .as_slice()
+            .iter()
+            .zip(right.as_slice())
+            .all(|(l, r)| l.to_bits() == r.to_bits())
+}
+
+/// Confirms, outside any timing region, that the grouped reference executor,
+/// the bounded reference batch, and the foundation ordered fold stay bitwise
+/// identical across several consecutive calls over the same `[..batch_size]`
+/// prefix. Continuity (state carried between calls) is part of what is checked.
+fn verify_bounded_equivalence(
+    model: &Gru,
+    observations: &[Observation<Vector>],
+    batch_size: usize,
+    hidden_dim: usize,
+    calls: usize,
+) {
+    let batch = &observations[..batch_size];
+    let mut grouped = StreamingExecutor::new(model, Vector::zeros(hidden_dim));
+    let mut carried_batch = Some(Vector::zeros(hidden_dim));
+    let mut carried_fold = Some(Vector::zeros(hidden_dim));
+
+    for _ in 0..calls {
+        for observation in batch {
+            grouped.process_one(observation).unwrap();
+        }
+
+        let state = carried_batch.take().expect("bounded batch state available");
+        carried_batch = Some(
+            model
+                .process_batch_reference(state, batch, batch_size)
+                .expect("validated benchmark fixture"),
+        );
+
+        let state = carried_fold.take().expect("fold state available");
+        carried_fold = Some(
+            process_batch(model, state, batch.iter().cloned())
+                .expect("validated benchmark fixture"),
+        );
+
+        assert!(
+            bitwise_same(grouped.state(), carried_batch.as_ref().unwrap()),
+            "grouped StreamingExecutor and bounded reference batch diverged"
+        );
+        assert!(
+            bitwise_same(grouped.state(), carried_fold.as_ref().unwrap()),
+            "grouped StreamingExecutor and foundation process_batch diverged"
+        );
+    }
+}
+
+/// Prints the derived amortized per-batch duration for one path. This reverses
+/// the helper's per-observation normalization of the same measurement window;
+/// it is not an individual-call latency percentile and not per-event latency.
+fn report_amortized_batch(label: &str, stats: common::Stats, batch_size: usize) {
+    let ns_per_batch = stats.median * batch_size as f64;
+    let batches_per_second = if ns_per_batch > 0.0 {
+        1e9 / ns_per_batch
+    } else {
+        0.0
+    };
+    println!(
+        "    {label:<24} derived amortized {ns_per_batch:>10.1} ns/batch  \
+         {batches_per_second:>10.0} batches/s  (window derived; not per-call latency)"
+    );
 }
 
 fn main() {
@@ -145,5 +281,74 @@ fn main() {
             WORKSPACE_BUFFERS * hidden_dim * size_of::<f32>(),
             parameter_bytes(&parameters),
         );
+
+        // --- bounded reference batching (#34, unit B) -------------------------
+        //
+        // One measurement pass per path/batch-size/dimension with
+        // `work_per_call = B`; `ns/obs` comes from the shared harness and the
+        // amortized `ns/batch` is derived by reversing the same normalization.
+        // `p95`/`IQR` are variability across the repeated measurement windows,
+        // not per-call latency percentiles. `foundation process_batch` is a
+        // labelled control: it consumes owned observations, so its timed body
+        // includes the `iter().cloned()` copy and is not a batching-speedup
+        // claim. `(256,512)` is excluded in both profiles as the optional
+        // dimension; the existing per-step benchmarks above still cover it.
+        //
+        // Continuity: each path builds a fresh zero State before measurement and
+        // then carries it through the harness warm-up and across the successive
+        // timed windows (that is how `measure` works); no window resets it. For a
+        // given dimension and `B`, all three paths run the same number of calls,
+        // so they receive equivalent processing histories. Release uses the
+        // per-dimension window budgets from `bounded_window_budget` as workload
+        // limits (not evidence); the timed totals exclude the harness warm-up and
+        // the pre-timing correctness prechecks, which are accounted separately.
+        // Debug keeps a reduced batch-size set and a tiny step count so the
+        // all-targets test run stays cheap.
+        if hidden_dim > 256 {
+            continue;
+        }
+        let observations =
+            bounded_observations(input_dim, 0x34ba_0000 + (input_dim * hidden_dim) as u64);
+        let window_budget = bounded_window_budget(input_dim, hidden_dim);
+        let calls = precheck_calls();
+        for &batch_size in bounded_batch_sizes() {
+            verify_bounded_equivalence(&model, &observations, batch_size, hidden_dim, calls);
+            let batch_steps = bounded_steps(batch_size, window_budget);
+            let batch = &observations[..batch_size];
+            println!(
+                "bounded batch B={batch_size} dims={input_dim}x{hidden_dim} \
+                 steps={batch_steps} precheck_calls={calls}"
+            );
+
+            let mut grouped = StreamingExecutor::new(&model, Vector::zeros(hidden_dim));
+            let grouped_stats =
+                common::measure("bounded grouped exec", batch_steps, batch_size, || {
+                    for observation in batch {
+                        black_box(grouped.process_one(black_box(observation)).unwrap());
+                    }
+                });
+
+            let mut carried = Some(Vector::zeros(hidden_dim));
+            let batch_stats = common::measure("bounded ref batch", batch_steps, batch_size, || {
+                let state = carried.take().expect("benchmark state available");
+                let next = model
+                    .process_batch_reference(state, batch, batch_size)
+                    .expect("validated benchmark fixture");
+                carried = Some(black_box(next));
+            });
+
+            let mut carried = Some(Vector::zeros(hidden_dim));
+            let fold_stats =
+                common::measure("foundation process_batch", batch_steps, batch_size, || {
+                    let state = carried.take().expect("benchmark state available");
+                    let next = process_batch(&model, state, batch.iter().cloned())
+                        .expect("validated benchmark fixture");
+                    carried = Some(black_box(next));
+                });
+
+            report_amortized_batch("bounded grouped exec", grouped_stats, batch_size);
+            report_amortized_batch("bounded ref batch", batch_stats, batch_size);
+            report_amortized_batch("foundation process_batch", fold_stats, batch_size);
+        }
     }
 }

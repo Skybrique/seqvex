@@ -442,6 +442,48 @@ The `&mut Model` requirement and model-owned workspace have been removed. Do not
 generalize the GRU workspace into a framework-wide abstraction until other
 algorithms demonstrate that a reusable workspace requirement recurs.
 
+## 9.4 Bounded micro-batch (reference path)
+
+Issue #34 adds a bounded micro-batch capability to the **reference** path:
+
+```text
+Gru::process_batch_reference(state, batch, max_batch) -> Result<State, GruBatchError>
+```
+
+It is a sequential, ordered fold over a caller-bounded slice that drives the
+same [`StateModel::update`] transition as single-observation execution. It is
+**not** vectorized and uses no workspace: it never calls `compute_in_place`, and
+`GruExecutor`/`GruWorkspace` are untouched.
+
+Contract:
+
+- **State-only result.** Success returns the committed hidden state after the
+  last observation; no per-observation snapshots are retained.
+- **Bound first.** `batch.len() > max_batch` is rejected before any transition or
+  validation. `GruBatchError::BatchTooLarge { max, actual, state }` returns the
+  original supplied state unchanged, and `max_batch == 0` accepts only an empty
+  batch. Because the call consumes `state`, returning it keeps recovery
+  clone-free.
+- **Empty input.** An empty batch returns the supplied state unchanged, with no
+  additional initial-state validation.
+- **Ordered, stop-on-first-failure.** Observations are processed strictly in
+  slice order. The first failed transition stops the fold;
+  `GruBatchError::Transition { failed_index, state, error }` reports the
+  zero-based index, the last committed state after the successful prefix (the
+  supplied state when nothing succeeded), and the underlying `GruError`. Later
+  observations are not processed and the failing candidate is never committed.
+- **Per-transition commit.** There is no whole-batch rollback; the returned state
+  is the last committed valid state, matching the foundation reference fold.
+- **Recovery is the caller's policy.** Retrying a corrected observation and
+  skipping a failed one are both caller decisions, starting from the returned
+  state.
+- Continuation across successful batch boundaries uses the returned state and is
+  bitwise-equivalent to repeated single-observation stepping.
+
+This is the selected minimal contract for #34. It adds no generic batching
+framework, scheduler, or executor change, and it does not alter model
+ownership. Performance and allocation measurement is pending.
+
 ---
 
 # 10. Optimized Execution Semantics
@@ -495,6 +537,7 @@ The current GRU provides:
 - state-transition errors;
 - reference computation;
 - allocation-free optimized computation (`GruExecutor`);
+- bounded reference micro-batch (`process_batch_reference`);
 - streaming integration.
 
 The current implementation does **not** provide:
@@ -524,6 +567,7 @@ The implementation should be validated against:
 - repeated state transitions;
 - long sequential folds;
 - reference/optimized equivalence;
+- bounded reference micro-batch ordering, bound, and failure semantics;
 - failure atomicity.
 
 The optimized path is only useful if it remains semantically equivalent to the reference path.

@@ -10,7 +10,7 @@ use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::{Matrix, RandomGenerator, Vector};
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::{StateModel, process_batch, process_one, process_stream};
-use seqvex::models::recurrent::gru::{Gru, GruError, GruExecutor, GruParameters};
+use seqvex::models::recurrent::gru::{Gru, GruBatchError, GruError, GruExecutor, GruParameters};
 
 // --- independent scalar reference -------------------------------------------
 
@@ -1116,4 +1116,423 @@ fn initialized_model_matches_independent_reference() {
     let produced = gru.update(&Vector::zeros(2), &observation(&input)).unwrap();
     let expected = ref_step(&reference, &[0.0, 0.0], &input);
     assert_close(produced.as_slice(), &expected, 1e-6);
+}
+
+// --- bounded micro-batch reference path (#34) --------------------------------
+//
+// These tests exercise `Gru::process_batch_reference`: a state-only, ordered
+// reference fold with a caller-declared bound. Equivalence with the equivalent
+// reference paths is asserted bitwise; agreement with the independent scalar
+// `ref_step` oracle keeps the existing 1e-5 absolute tolerance.
+
+#[test]
+fn bounded_batch_final_state_matches_reference_paths_bitwise() {
+    let reference = sample_params();
+    let model = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let batch = vec![
+        observation(&[0.5, -0.5]),
+        observation(&[1.0, 0.25]),
+        observation(&[-0.75, 0.1]),
+        observation(&[0.0, 0.9]),
+    ];
+
+    let mut repeated = Vector::zeros(2);
+    for obs in &batch {
+        repeated = model.update(&repeated, obs).unwrap();
+    }
+
+    let mut streamed = StreamingExecutor::new(&model, Vector::zeros(2));
+    for obs in &batch {
+        streamed.process_one(obs).unwrap();
+    }
+    assert_bitwise_eq(streamed.state().as_slice(), repeated.as_slice());
+
+    let folded = process_batch(&model, Vector::zeros(2), batch.iter().cloned()).unwrap();
+    assert_bitwise_eq(folded.as_slice(), repeated.as_slice());
+
+    let batched = model
+        .process_batch_reference(Vector::zeros(2), &batch, batch.len())
+        .unwrap();
+    assert_bitwise_eq(batched.as_slice(), repeated.as_slice());
+}
+
+#[test]
+fn bounded_batch_matches_independent_scalar_oracle() {
+    let reference = random_params(3, 4, 0x34ba_0001);
+    let model = Gru::new(3, 4, to_parameters(&reference)).unwrap();
+    let inputs: Vec<Vec<f32>> = (0..24)
+        .map(|step| {
+            vec![
+                (step as f32 * 0.31).sin(),
+                (step as f32 * 0.17).cos(),
+                (step as f32 * 0.05).sin(),
+            ]
+        })
+        .collect();
+    let batch: Vec<Observation<Vector>> = inputs.iter().map(|input| observation(input)).collect();
+
+    let batched = model
+        .process_batch_reference(Vector::zeros(4), &batch, batch.len())
+        .unwrap();
+
+    let mut expected = vec![0.0_f32; 4];
+    for input in &inputs {
+        expected = ref_step(&reference, &expected, input);
+    }
+    assert_close(batched.as_slice(), &expected, 1e-5);
+}
+
+#[test]
+fn bounded_batch_chunk_continuity_including_empty_chunks() {
+    let reference = random_params(2, 3, 0x34ba_0002);
+    let model = Gru::new(2, 3, to_parameters(&reference)).unwrap();
+    let inputs: Vec<Vec<f32>> = (0..20)
+        .map(|step| vec![(step as f32 * 0.21).sin(), (step as f32 * 0.13).cos()])
+        .collect();
+    let batch: Vec<Observation<Vector>> = inputs.iter().map(|input| observation(input)).collect();
+
+    let continuous = model
+        .process_batch_reference(Vector::zeros(3), &batch, batch.len())
+        .unwrap();
+
+    let mut chunked = Vector::zeros(3);
+    for chunk in batch.chunks(6) {
+        chunked = model.process_batch_reference(chunked, chunk, 6).unwrap();
+        // An empty chunk must be a no-op that returns the supplied state.
+        chunked = model.process_batch_reference(chunked, &[], 0).unwrap();
+    }
+    assert_bitwise_eq(chunked.as_slice(), continuous.as_slice());
+}
+
+#[test]
+fn bounded_batch_prefixes_are_causal() {
+    let reference = random_params(2, 3, 0x34ba_0003);
+    let model = Gru::new(2, 3, to_parameters(&reference)).unwrap();
+    let inputs: Vec<Vec<f32>> = (0..32)
+        .map(|step| vec![(step as f32 * 0.19).sin(), (step as f32 * 0.07).cos()])
+        .collect();
+    let batch: Vec<Observation<Vector>> = inputs.iter().map(|input| observation(input)).collect();
+
+    for prefix in [1_usize, 5, 17, 32] {
+        let batched = model
+            .process_batch_reference(Vector::zeros(3), &batch[..prefix], prefix)
+            .unwrap();
+
+        let mut repeated = Vector::zeros(3);
+        for obs in &batch[..prefix] {
+            repeated = model.update(&repeated, obs).unwrap();
+        }
+        assert_bitwise_eq(batched.as_slice(), repeated.as_slice());
+
+        let mut oracle = vec![0.0_f32; 3];
+        for input in &inputs[..prefix] {
+            oracle = ref_step(&reference, &oracle, input);
+        }
+        assert_close(batched.as_slice(), &oracle, 1e-5);
+    }
+}
+
+#[test]
+fn bounded_batch_is_order_sensitive() {
+    let reference = random_params(2, 2, 0x34ba_0004);
+    let model = Gru::new(2, 2, to_parameters(&reference)).unwrap();
+    let inputs: Vec<Vec<f32>> = (0..8)
+        .map(|step| vec![(step as f32 * 0.5).sin(), (step as f32 * 0.9).cos()])
+        .collect();
+    let forward: Vec<Observation<Vector>> = inputs.iter().map(|input| observation(input)).collect();
+    let mut reversed = forward.clone();
+    reversed.reverse();
+
+    let forward_state = model
+        .process_batch_reference(Vector::zeros(2), &forward, forward.len())
+        .unwrap();
+    let reversed_state = model
+        .process_batch_reference(Vector::zeros(2), &reversed, reversed.len())
+        .unwrap();
+    assert!(
+        states_differ(forward_state.as_slice(), reversed_state.as_slice()),
+        "the GRU reference fold must be order-sensitive"
+    );
+
+    let mut oracle = vec![0.0_f32; 2];
+    for input in &inputs {
+        oracle = ref_step(&reference, &oracle, input);
+    }
+    assert_close(forward_state.as_slice(), &oracle, 1e-5);
+}
+
+#[test]
+fn bounded_batch_bound_rejection_and_empty_input() {
+    let model = Gru::new(2, 2, to_parameters(&sample_params())).unwrap();
+    let batch = vec![
+        observation(&[0.1, 0.2]),
+        observation(&[0.3, -0.4]),
+        observation(&[0.5, 0.6]),
+    ];
+
+    // The exact bound succeeds.
+    assert!(
+        model
+            .process_batch_reference(Vector::zeros(2), &batch, batch.len())
+            .is_ok()
+    );
+
+    // Oversized: rejected before any transition. The moved input state is
+    // recovered from the error without a defensive caller clone.
+    let rejection = model
+        .process_batch_reference(Vector::from_slice(&[0.25, -0.5]), &batch, 2)
+        .unwrap_err();
+    match rejection {
+        GruBatchError::BatchTooLarge { max, actual, state } => {
+            assert_eq!(max, 2);
+            assert_eq!(actual, 3);
+            assert_bitwise_eq(state.as_slice(), &[0.25, -0.5]);
+        }
+        other => panic!("expected BatchTooLarge, got {other:?}"),
+    }
+
+    // Empty input returns the supplied state unchanged, and max_batch == 0
+    // accepts it.
+    let empty = model
+        .process_batch_reference(Vector::from_slice(&[1.0, -1.0]), &[], 0)
+        .unwrap();
+    assert_bitwise_eq(empty.as_slice(), &[1.0, -1.0]);
+}
+
+#[test]
+fn bounded_batch_bound_is_checked_before_transition_validation() {
+    let model = Gru::new(2, 2, to_parameters(&sample_params())).unwrap();
+    // Oversized *and* the first observation is invalid (wrong dimension and
+    // non-finite). The bound must be rejected first.
+    let oversized = vec![observation(&[f32::NAN]), observation(&[0.0, 0.0])];
+    let rejection = model
+        .process_batch_reference(Vector::from_slice(&[0.25, -0.5]), &oversized, 1)
+        .unwrap_err();
+    match rejection {
+        GruBatchError::BatchTooLarge { max, actual, state } => {
+            assert_eq!(max, 1);
+            assert_eq!(actual, 2);
+            assert_bitwise_eq(state.as_slice(), &[0.25, -0.5]);
+        }
+        other => panic!("bound rejection must precede validation; got {other:?}"),
+    }
+}
+
+#[test]
+fn bounded_batch_reports_failed_index_and_last_committed_state() {
+    let model = Gru::new(2, 2, to_parameters(&sample_params())).unwrap();
+    let first = observation(&[0.5, -0.5]);
+    let second = observation(&[1.0, 0.25]);
+    let bad = observation(&[f32::NAN, 0.0]);
+
+    // Failure at index 0: nothing committed, the supplied state is returned.
+    let err = model
+        .process_batch_reference(Vector::zeros(2), &[bad.clone(), first.clone()], 2)
+        .unwrap_err();
+    match err {
+        GruBatchError::Transition {
+            failed_index,
+            state,
+            error,
+        } => {
+            assert_eq!(failed_index, 0);
+            assert_eq!(error, GruError::NonFiniteInput);
+            assert_bitwise_eq(state.as_slice(), &[0.0, 0.0]);
+        }
+        other => panic!("expected Transition, got {other:?}"),
+    }
+
+    // Failure in the middle: state is the fold over the first observation.
+    let after_first = model.update(&Vector::zeros(2), &first).unwrap();
+    let err = model
+        .process_batch_reference(
+            Vector::zeros(2),
+            &[first.clone(), bad.clone(), second.clone()],
+            3,
+        )
+        .unwrap_err();
+    match err {
+        GruBatchError::Transition {
+            failed_index,
+            state,
+            error,
+        } => {
+            assert_eq!(failed_index, 1);
+            assert_eq!(error, GruError::NonFiniteInput);
+            assert_bitwise_eq(state.as_slice(), after_first.as_slice());
+        }
+        other => panic!("expected Transition, got {other:?}"),
+    }
+
+    // Failure at the last index: state is the fold over the first two.
+    let after_second = model.update(&after_first, &second).unwrap();
+    let err = model
+        .process_batch_reference(
+            Vector::zeros(2),
+            &[first.clone(), second.clone(), bad.clone()],
+            3,
+        )
+        .unwrap_err();
+    match err {
+        GruBatchError::Transition {
+            failed_index,
+            state,
+            error,
+        } => {
+            assert_eq!(failed_index, 2);
+            assert_eq!(error, GruError::NonFiniteInput);
+            assert_bitwise_eq(state.as_slice(), after_second.as_slice());
+        }
+        other => panic!("expected Transition, got {other:?}"),
+    }
+}
+
+#[test]
+fn bounded_batch_surfaces_transition_error_classes() {
+    let model = Gru::new(2, 2, to_parameters(&sample_params())).unwrap();
+
+    let err = model
+        .process_batch_reference(Vector::zeros(2), &[observation(&[1.0])], 1)
+        .unwrap_err();
+    match err {
+        GruBatchError::Transition {
+            failed_index,
+            error,
+            ..
+        } => {
+            assert_eq!(failed_index, 0);
+            assert_eq!(
+                error,
+                GruError::DimensionMismatch {
+                    expected: 2,
+                    actual: 1,
+                }
+            );
+        }
+        other => panic!("expected Transition, got {other:?}"),
+    }
+
+    let err = model
+        .process_batch_reference(Vector::zeros(2), &[observation(&[f32::NAN, 0.0])], 1)
+        .unwrap_err();
+    match err {
+        GruBatchError::Transition { error, .. } => {
+            assert_eq!(error, GruError::NonFiniteInput);
+        }
+        other => panic!("expected Transition, got {other:?}"),
+    }
+
+    let parameters = GruParameters {
+        w_z: Matrix::from_rows(&[&[f32::MAX, f32::MAX]]).unwrap(),
+        u_z: Matrix::from_rows(&[&[0.0]]).unwrap(),
+        b_z: Vector::zeros(1),
+        w_r: Matrix::from_rows(&[&[0.0, 0.0]]).unwrap(),
+        u_r: Matrix::from_rows(&[&[0.0]]).unwrap(),
+        b_r: Vector::zeros(1),
+        w_h: Matrix::from_rows(&[&[0.0, 0.0]]).unwrap(),
+        u_h: Matrix::from_rows(&[&[0.0]]).unwrap(),
+        b_h: Vector::zeros(1),
+    };
+    let model = Gru::new(2, 1, parameters).unwrap();
+    let err = model
+        .process_batch_reference(Vector::zeros(1), &[observation(&[f32::MAX, -f32::MAX])], 1)
+        .unwrap_err();
+    match err {
+        GruBatchError::Transition {
+            failed_index,
+            error,
+            ..
+        } => {
+            assert_eq!(failed_index, 0);
+            assert_eq!(error, GruError::NonFiniteCandidate);
+        }
+        other => panic!("expected Transition, got {other:?}"),
+    }
+}
+
+#[test]
+fn bounded_batch_recovery_retry_and_skip_are_caller_policies() {
+    let model = Gru::new(2, 2, to_parameters(&sample_params())).unwrap();
+    let first = observation(&[0.4, -0.2]);
+    let second = observation(&[0.7, 0.3]);
+    let corrected = observation(&[-0.1, 0.5]);
+    let corrupted = observation(&[f32::NAN, 0.0]);
+
+    // Policy 1: retry a corrected failing observation, then continue. The
+    // committed state is moved out of the error, never cloned from the input.
+    let committed = match model
+        .process_batch_reference(
+            Vector::zeros(2),
+            &[first.clone(), corrupted.clone(), second.clone()],
+            3,
+        )
+        .unwrap_err()
+    {
+        GruBatchError::Transition {
+            failed_index,
+            state,
+            error,
+        } => {
+            assert_eq!(failed_index, 1);
+            assert_eq!(error, GruError::NonFiniteInput);
+            state
+        }
+        other => panic!("expected Transition, got {other:?}"),
+    };
+    let retried = model
+        .process_batch_reference(committed, &[corrected.clone(), second.clone()], 2)
+        .unwrap();
+    let mut expected_retry = Vector::zeros(2);
+    for obs in [&first, &corrected, &second] {
+        expected_retry = model.update(&expected_retry, obs).unwrap();
+    }
+    assert_bitwise_eq(retried.as_slice(), expected_retry.as_slice());
+
+    // Policy 2: deliberately skip the failing observation and continue. The
+    // committed state is recovered afresh rather than retained from a clone.
+    let committed = match model
+        .process_batch_reference(
+            Vector::zeros(2),
+            &[first.clone(), corrupted.clone(), second.clone()],
+            3,
+        )
+        .unwrap_err()
+    {
+        GruBatchError::Transition { state, .. } => state,
+        other => panic!("expected Transition, got {other:?}"),
+    };
+    let skipped = model
+        .process_batch_reference(committed, std::slice::from_ref(&second), 1)
+        .unwrap();
+    let mut expected_skip = Vector::zeros(2);
+    for obs in [&first, &second] {
+        expected_skip = model.update(&expected_skip, obs).unwrap();
+    }
+    assert_bitwise_eq(skipped.as_slice(), expected_skip.as_slice());
+}
+
+#[test]
+fn bounded_batch_is_deterministic_and_leaves_contexts_independent() {
+    let model = Gru::new(2, 2, to_parameters(&sample_params())).unwrap();
+    let batch = vec![
+        observation(&[0.2, -0.9]),
+        observation(&[0.6, 0.4]),
+        observation(&[-0.3, 0.8]),
+    ];
+
+    let first = model
+        .process_batch_reference(Vector::zeros(2), &batch, batch.len())
+        .unwrap();
+    let second = model
+        .process_batch_reference(Vector::zeros(2), &batch, batch.len())
+        .unwrap();
+    assert_bitwise_eq(first.as_slice(), second.as_slice());
+
+    // An independent execution context over the same immutable model is
+    // unaffected by the reference batch calls.
+    let mut executor = StreamingExecutor::new(&model, Vector::zeros(2));
+    for obs in &batch {
+        executor.process_one(obs).unwrap();
+    }
+    assert_bitwise_eq(executor.state().as_slice(), first.as_slice());
 }

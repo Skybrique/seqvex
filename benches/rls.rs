@@ -284,6 +284,417 @@ fn run_evidence() {
     }
 }
 
+// ===== bounded reference batch-size sensitivity (#26) =========================
+//
+// Compares grouping through `StreamingExecutor::process_one` against the
+// RLS-local bounded reference API over an identical ordered stream. Observation
+// histories are equalized across batch sizes by fixing the outer window
+// (`work_per_call = OUTER`) and the per-run outer-call count: every path and
+// every `B` sees the same warm-up and timed observation counts. The fixture is a
+// deterministic cyclic replay; its limitations are noted where it is built.
+
+/// Batch sizes swept for the bounded reference API (#26), release.
+const SWEEP_BATCH_SIZES: [usize; 4] = [1, 8, 32, 128];
+/// Outer observation window per harness invocation, release.
+const SWEEP_OUTER_RELEASE: usize = 128;
+/// Outer observation window under the debug test profile.
+const SWEEP_OUTER_DEBUG: usize = 8;
+/// Deterministic cyclic fixture length; `OUTER | LEN` and every swept `B | OUTER`.
+const SWEEP_FIXTURE_LEN: usize = 2048;
+/// Short bitwise precheck outer windows per batch size, release.
+const SWEEP_PRECHECK_OUTER_CALLS: usize = 4;
+/// Fixed timed outer calls under the debug test profile.
+const SWEEP_DEBUG_STEPS: u32 = 4;
+/// Planned default dimension matrix; `D = 128` is deferred.
+const SWEEP_DIMENSIONS: [usize; 2] = [8, 32];
+
+fn sweep_outer() -> usize {
+    if cfg!(debug_assertions) {
+        SWEEP_OUTER_DEBUG
+    } else {
+        SWEEP_OUTER_RELEASE
+    }
+}
+
+fn sweep_batch_sizes() -> &'static [usize] {
+    if cfg!(debug_assertions) {
+        &SWEEP_BATCH_SIZES[..2]
+    } else {
+        &SWEEP_BATCH_SIZES
+    }
+}
+
+fn sweep_precheck_outer_calls() -> usize {
+    if cfg!(debug_assertions) {
+        2
+    } else {
+        SWEEP_PRECHECK_OUTER_CALLS
+    }
+}
+
+/// Outer-window harness invocations per timed run. Debug uses a fixed tiny count
+/// and is validation only, not evidence.
+fn sweep_steps(features: usize) -> u32 {
+    if cfg!(debug_assertions) {
+        SWEEP_DEBUG_STEPS
+    } else {
+        match features {
+            8 => 32,
+            32 => 16,
+            _ => 16,
+        }
+    }
+}
+
+/// One deterministic dense persistent-excitation fixture per dimension, replayed
+/// cyclically. Replay makes the driving stream periodic with period
+/// `SWEEP_FIXTURE_LEN`; `lambda < 1` down-weights older contributions
+/// geometrically but never to exactly zero, so the effective memory is a scale,
+/// not a hard cutoff, and periodicity is not literally invisible. This is a
+/// controlled grouping-cost experiment, not a claim of statistical applicability.
+fn sweep_fixture(features: usize) -> Vec<Observation<RlsSample>> {
+    let xs = common::persistent_excitation_features(features, SWEEP_FIXTURE_LEN);
+    let weights = common::fixed_weights(features);
+    let ys = common::linear_targets(&xs, &weights);
+    workload_observations(&xs, &ys)
+}
+
+/// Bitwise comparison of **both** coupled state components (`w` and `p`).
+fn bitwise_same_state(left: &RlsState, right: &RlsState) -> bool {
+    left.w.as_slice().len() == right.w.as_slice().len()
+        && left.p.as_slice().len() == right.p.as_slice().len()
+        && left
+            .w
+            .as_slice()
+            .iter()
+            .zip(right.w.as_slice())
+            .all(|(l, r)| l.to_bits() == r.to_bits())
+        && left
+            .p
+            .as_slice()
+            .iter()
+            .zip(right.p.as_slice())
+            .all(|(l, r)| l.to_bits() == r.to_bits())
+}
+
+/// Final state after `outer_calls` contiguous cyclic outer windows, carried
+/// across calls. `foundation` selects the cloning `process_batch` control.
+fn sweep_state_after_outer_calls(
+    model: &Rls,
+    observations: &[Observation<RlsSample>],
+    outer: usize,
+    batch: usize,
+    outer_calls: usize,
+    foundation: bool,
+) -> RlsState {
+    let mut state = model.initial_state();
+    let mut index = 0_usize;
+    for _ in 0..outer_calls {
+        let offset = index % observations.len();
+        let window = &observations[offset..offset + outer];
+        for chunk in window.chunks(batch) {
+            state = if foundation {
+                process_batch(model, state, chunk.iter().cloned()).unwrap()
+            } else {
+                model.process_batch_reference(state, chunk, batch).unwrap()
+            };
+        }
+        index += outer;
+    }
+    state
+}
+
+/// Short bitwise equivalence prechecks, outside every timing region: cross-path
+/// and cross-`B` agreement over equal outer windows, differing-chunk continuity,
+/// and wrap-crossing continuity.
+fn verify_sweep_equivalence(
+    model: &Rls,
+    observations: &[Observation<RlsSample>],
+    outer: usize,
+    batch_sizes: &[usize],
+    outer_calls: usize,
+) {
+    // Grouped reference over the same outer windows.
+    let mut executor = StreamingExecutor::new(model, model.initial_state());
+    let mut index = 0_usize;
+    for _ in 0..outer_calls {
+        let offset = index % observations.len();
+        let window = &observations[offset..offset + outer];
+        for observation in window {
+            executor.process_one(observation).unwrap();
+        }
+        index += outer;
+    }
+    let grouped = executor.state().clone();
+
+    let mut first_bounded: Option<RlsState> = None;
+    for &batch in batch_sizes {
+        let batched =
+            sweep_state_after_outer_calls(model, observations, outer, batch, outer_calls, false);
+        let folded =
+            sweep_state_after_outer_calls(model, observations, outer, batch, outer_calls, true);
+        assert!(
+            bitwise_same_state(&grouped, &batched),
+            "short precheck: grouped vs bounded diverged at B={batch}"
+        );
+        assert!(
+            bitwise_same_state(&grouped, &folded),
+            "short precheck: grouped vs foundation fold diverged at B={batch}"
+        );
+        match &first_bounded {
+            None => first_bounded = Some(batched),
+            Some(reference) => assert!(
+                bitwise_same_state(reference, &batched),
+                "short precheck: cross-B continuity failed at B={batch}"
+            ),
+        }
+    }
+
+    // Differing-chunk continuity over a fixed ordered segment.
+    let segment = &observations[..32];
+    let single = model
+        .process_batch_reference(model.initial_state(), segment, segment.len())
+        .unwrap();
+    let mut chunked = model.initial_state();
+    let mut start = 0_usize;
+    for &size in &[2_usize, 3, 5, 7, 15] {
+        let end = start + size;
+        chunked = model
+            .process_batch_reference(chunked, &segment[start..end], size)
+            .unwrap();
+        start = end;
+    }
+    assert!(
+        bitwise_same_state(&single, &chunked),
+        "short precheck: differing-chunk continuity failed"
+    );
+
+    // Wrap-crossing continuity: two outer windows starting at the fixture end.
+    let mut wrap_grouped = StreamingExecutor::new(model, model.initial_state());
+    let mut wrap_batched = model.initial_state();
+    let mut index = observations.len() - outer;
+    for _ in 0..2 {
+        let offset = index % observations.len();
+        let window = &observations[offset..offset + outer];
+        for observation in window {
+            wrap_grouped.process_one(observation).unwrap();
+        }
+        wrap_batched = model
+            .process_batch_reference(wrap_batched, window, outer)
+            .unwrap();
+        index += outer;
+    }
+    assert!(
+        bitwise_same_state(wrap_grouped.state(), &wrap_batched),
+        "short precheck: wrap-crossing continuity failed"
+    );
+}
+
+/// Full-horizon numerical validation (release only), run before any measurement.
+/// Traverses the complete intended trajectory once per dimension, including wrap
+/// boundaries, and aborts on the first failed update or non-finite state. No
+/// reset, skip, retry, or silent reduction.
+fn verify_release_horizon(
+    model: &Rls,
+    observations: &[Observation<RlsSample>],
+    outer: usize,
+    steps: u32,
+) {
+    let warm_up_calls = (steps as usize / 10).max(1000);
+    let total_outer_calls = warm_up_calls + common::RUNS * steps as usize;
+    let mut state = model.initial_state();
+    let mut index = 0_usize;
+    let mut wrap_crossings = 0_usize;
+    for call in 0..total_outer_calls {
+        let offset = index % observations.len();
+        if offset == 0 && call > 0 {
+            wrap_crossings += 1;
+        }
+        let window = &observations[offset..offset + outer];
+        state = model
+            .process_batch_reference(state, window, outer)
+            .expect("release full-horizon validation: update must succeed");
+        for value in state.w.as_slice().iter().chain(state.p.as_slice()) {
+            assert!(
+                value.is_finite(),
+                "release full-horizon validation: non-finite state at outer call {call}"
+            );
+        }
+        index += outer;
+    }
+    println!(
+        "  full-horizon release validation PASS: D={} obs={} wrap_crossings={wrap_crossings}",
+        model.dimension(),
+        total_outer_calls * outer,
+    );
+}
+
+fn report_sweep_row(
+    path: &str,
+    features: usize,
+    batch: usize,
+    steps: u32,
+    outer: usize,
+    api_calls_per_window: usize,
+    stats: common::Stats,
+) {
+    let api_calls_per_run = steps as usize * api_calls_per_window;
+    let timed_obs = steps as usize * outer;
+    let ns_per_batch = stats.median * batch as f64;
+    let obs_per_second = if stats.median > 0.0 {
+        1e9 / stats.median
+    } else {
+        0.0
+    };
+    println!(
+        "    D={features} lambda={} B={batch:>3} path={path:<15} \
+         outer_invocations/run={steps} api_calls/window={api_calls_per_window} \
+         api_calls/run={api_calls_per_run} timed_obs={timed_obs} \
+         ns/obs={:.1} p95={:.1} iqr={:.1} obs/s={obs_per_second:.0} \
+         allocs/obs={:.3} bytes/obs={:.1} derived_ns/batch={ns_per_batch:.1}",
+        common::LAMBDA_PE,
+        stats.median,
+        stats.p95,
+        stats.iqr,
+        stats.allocations,
+        stats.bytes,
+    );
+}
+
+fn run_batch_sweep() {
+    let outer = sweep_outer();
+    let batch_sizes = sweep_batch_sizes();
+    let outer_calls = sweep_precheck_outer_calls();
+
+    println!(
+        "\n== bounded reference batch-size sensitivity (lambda={}, outer={outer}) ==",
+        common::LAMBDA_PE
+    );
+    println!(
+        "  paths: grouped=StreamingExecutor::process_one; bounded=Rls::process_batch_reference; \
+         foundation=process_batch (labelled cloning control, release only)"
+    );
+    println!(
+        "  work_per_call=OUTER={outer}; observation histories are equalized across paths and B. \
+         Fixture={} cyclic deterministic persistent-excitation observations. \
+         ns/batch is window-derived amortized, p95/IQR are window variability, \
+         bytes/obs is allocator traffic (not live/peak memory), and committed \
+         payload is (D + D^2) x 4 bytes.",
+        SWEEP_FIXTURE_LEN
+    );
+    if cfg!(debug_assertions) {
+        println!(
+            "  debug profile: validation only (B={{1,8}}, outer={outer}, {} timed outer calls); \
+             full-horizon release validation and release measurements are deferred",
+            SWEEP_DEBUG_STEPS
+        );
+    }
+
+    // Short prechecks in every profile.
+    for &features in &SWEEP_DIMENSIONS {
+        let model = model(features, common::LAMBDA_PE);
+        let observations = sweep_fixture(features);
+        verify_sweep_equivalence(&model, &observations, outer, batch_sizes, outer_calls);
+    }
+
+    // Full-horizon numerical validation, release only, before measurement.
+    if !cfg!(debug_assertions) {
+        for &features in &SWEEP_DIMENSIONS {
+            let model = model(features, common::LAMBDA_PE);
+            let observations = sweep_fixture(features);
+            verify_release_horizon(&model, &observations, outer, sweep_steps(features));
+        }
+    }
+
+    for &features in &SWEEP_DIMENSIONS {
+        let model = model(features, common::LAMBDA_PE);
+        let observations = sweep_fixture(features);
+        let steps = sweep_steps(features);
+        let timed_obs = steps as usize * outer;
+        println!(
+            "  -- D={features} steps(outer invocations/run)={steps} outer={outer} timed_obs={timed_obs} --"
+        );
+
+        // Grouped path: OUTER process_one calls per outer window.
+        let mut grouped_executor = StreamingExecutor::new(&model, model.initial_state());
+        let mut grouped_index = 0_usize;
+        common::measure("sweep grouped", steps, outer, || {
+            let offset = grouped_index % observations.len();
+            let window = &observations[offset..offset + outer];
+            for observation in window {
+                black_box(
+                    grouped_executor
+                        .process_one(black_box(observation))
+                        .unwrap(),
+                );
+            }
+            grouped_index += outer;
+        });
+        println!(
+            "    D={features} lambda={} B=-   path=grouped          \
+             outer_invocations/run={steps} api_calls/window={outer} api_calls/run={timed_obs}",
+            common::LAMBDA_PE,
+        );
+
+        // Bounded reference path: OUTER/B calls per outer window.
+        for &batch in batch_sizes {
+            let mut carried = Some(model.initial_state());
+            let mut index = 0_usize;
+            let api_calls_per_window = outer / batch;
+            let stats = common::measure("sweep bounded-ref", steps, outer, || {
+                let offset = index % observations.len();
+                let window = &observations[offset..offset + outer];
+                let mut state = carried.take().expect("bounded state available");
+                for chunk in window.chunks(batch) {
+                    state = model
+                        .process_batch_reference(state, black_box(chunk), batch)
+                        .unwrap();
+                }
+                carried = Some(state);
+                index += outer;
+            });
+            report_sweep_row(
+                "bounded-ref",
+                features,
+                batch,
+                steps,
+                outer,
+                api_calls_per_window,
+                stats,
+            );
+        }
+
+        // Foundation cloning control, release only. The observation clone is
+        // inside its timing; it is a labelled accounting item, not a speedup.
+        if !cfg!(debug_assertions) {
+            for &batch in batch_sizes {
+                let mut carried = Some(model.initial_state());
+                let mut index = 0_usize;
+                let api_calls_per_window = outer / batch;
+                let stats = common::measure("sweep foundation-fold", steps, outer, || {
+                    let offset = index % observations.len();
+                    let window = &observations[offset..offset + outer];
+                    let mut state = carried.take().expect("fold state available");
+                    for chunk in window.chunks(batch) {
+                        state = process_batch(&model, state, chunk.iter().cloned()).unwrap();
+                    }
+                    carried = Some(state);
+                    index += outer;
+                });
+                report_sweep_row(
+                    "foundation-fold",
+                    features,
+                    batch,
+                    steps,
+                    outer,
+                    api_calls_per_window,
+                    stats,
+                );
+            }
+        }
+    }
+}
+
 fn main() {
     println!(
         "RLS benchmark ({} runs/measurement, delta={DELTA}, control lambda={LAMBDA_CONTROL})",
@@ -344,6 +755,8 @@ fn main() {
             features * features,
         );
     }
+
+    run_batch_sweep();
 
     if cfg!(debug_assertions) {
         println!("\ndecision-grade workload matrix skipped in the debug profile");

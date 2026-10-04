@@ -16,7 +16,7 @@ use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::{Matrix, Vector};
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::{StateModel, process_batch, process_one, process_stream};
-use seqvex::models::online::rls::{Rls, RlsError, RlsSample, RlsState};
+use seqvex::models::online::rls::{Rls, RlsBatchError, RlsError, RlsSample, RlsState};
 
 fn model(dimension: usize) -> Rls {
     Rls::new(dimension, 0.99, 1.0e4).unwrap()
@@ -901,6 +901,399 @@ fn bounded_fold_stops_on_first_failure_and_keeps_last_valid_state() {
     assert_eq!(failure.error, RlsError::NonFiniteInput);
     let expected = model.update(&model.initial_state(), &first).unwrap();
     assert_state_bitwise_eq(&failure.state, &expected);
+}
+
+// --- bounded reference batch (Rls::process_batch_reference) -------------------
+//
+// The RLS-local bounded reference batching contract: an ordered, bound-first,
+// state-only fold over direct `Rls::update` calls. It is not the foundation
+// `process_batch` (which stays unbounded); equivalence with the foundation fold
+// is asserted bitwise rather than by delegating to it.
+
+#[test]
+fn bounded_reference_matches_reference_paths_bitwise() {
+    for lambda in [1.0_f32, 0.9] {
+        let model = Rls::new(2, lambda, 5.0).unwrap();
+        let batch = vec![
+            sample(&[1.0, 0.0], 1.0),
+            sample(&[0.0, 1.0], -2.0),
+            sample(&[0.5, 0.5], 3.0),
+            sample(&[-0.25, 0.75], 0.5),
+        ];
+
+        let mut repeated = model.initial_state();
+        for observation in &batch {
+            repeated = model.update(&repeated, observation).unwrap();
+        }
+
+        let mut executor = StreamingExecutor::new(&model, model.initial_state());
+        for observation in &batch {
+            executor.process_one(observation).unwrap();
+        }
+        assert_state_bitwise_eq(executor.state(), &repeated);
+
+        let folded = process_batch(&model, model.initial_state(), batch.iter().cloned()).unwrap();
+        assert_state_bitwise_eq(&folded, &repeated);
+
+        let batched = model
+            .process_batch_reference(model.initial_state(), &batch, batch.len())
+            .unwrap();
+        assert_state_bitwise_eq(&batched, &repeated);
+    }
+}
+
+#[test]
+fn bounded_reference_matches_independent_oracle() {
+    let model = Rls::new(3, 0.95, 1.0e3).unwrap();
+    let xs: Vec<Vec<f32>> = (0..9)
+        .map(|k| {
+            vec![
+                (k as f32 * 0.31).sin(),
+                (k as f32 * 0.17).cos(),
+                (k as f32 * 0.05).sin(),
+            ]
+        })
+        .collect();
+    let ys: Vec<f32> = (0..9).map(|k| (k as f32 * 0.23).cos()).collect();
+    let batch: Vec<Observation<RlsSample>> =
+        xs.iter().zip(&ys).map(|(x, &y)| sample(x, y)).collect();
+
+    let batched = model
+        .process_batch_reference(model.initial_state(), &batch, batch.len())
+        .unwrap();
+
+    // Independent scalar recurrence, bitwise.
+    let mut reference = ref_initial(3, 1.0e3);
+    for (x, &y) in xs.iter().zip(&ys) {
+        reference = ref_step(&reference, x, y, 0.95);
+    }
+    assert_state_bitwise_eq(&batched, &to_state(&reference));
+
+    // Independent literal-objective f64 oracle, tolerance-based.
+    assert_matches_literal_objective(&model, &xs, &ys, 5e-3, 1e-2);
+}
+
+#[test]
+fn bounded_reference_permutation_semantics() {
+    let d = 2;
+    let n = 30;
+    let delta = 1.0e3_f32;
+    let (xs, ys) = sinusoidal_data(d, n);
+    let permutation: Vec<usize> = (0..n).map(|index| (index * 7 + 13) % n).collect();
+    let permuted_xs: Vec<Vec<f32>> = permutation.iter().map(|&index| xs[index].clone()).collect();
+    let permuted_ys: Vec<f32> = permutation.iter().map(|&index| ys[index]).collect();
+
+    let batch: Vec<Observation<RlsSample>> =
+        xs.iter().zip(&ys).map(|(x, &y)| sample(x, y)).collect();
+    let permuted_batch: Vec<Observation<RlsSample>> = permuted_xs
+        .iter()
+        .zip(&permuted_ys)
+        .map(|(x, &y)| sample(x, y))
+        .collect();
+
+    // lambda = 1: the multiset fixes the minimizer, so permutations agree within
+    // tolerance (not bitwise: the reduction order differs).
+    let model_one = Rls::new(d, 1.0, delta).unwrap();
+    let forward = model_one
+        .process_batch_reference(model_one.initial_state(), &batch, batch.len())
+        .unwrap();
+    let permuted = model_one
+        .process_batch_reference(
+            model_one.initial_state(),
+            &permuted_batch,
+            permuted_batch.len(),
+        )
+        .unwrap();
+    let weights = to_f64_vec(forward.w.as_slice());
+    let difference = max_abs_difference(&weights, &to_f64_vec(permuted.w.as_slice()));
+    assert!(
+        difference <= 1e-4 * (1.0 + infinity_norm(&weights)),
+        "lambda=1 batch permutation changed the fit by {difference}"
+    );
+
+    // lambda < 1: recency weighting makes order semantically significant.
+    let model_below = Rls::new(d, 0.5, delta).unwrap();
+    let ordered = model_below
+        .process_batch_reference(model_below.initial_state(), &batch, batch.len())
+        .unwrap();
+    let reordered = model_below
+        .process_batch_reference(
+            model_below.initial_state(),
+            &permuted_batch,
+            permuted_batch.len(),
+        )
+        .unwrap();
+    let difference = max_abs_difference(
+        &to_f64_vec(ordered.w.as_slice()),
+        &to_f64_vec(reordered.w.as_slice()),
+    );
+    assert!(
+        difference > 1e-3,
+        "lambda<1 batch permutation should change the weighted solution, difference {difference}"
+    );
+}
+
+#[test]
+fn bounded_reference_chunk_continuity_including_empty() {
+    let model = Rls::new(2, 0.97, 5.0).unwrap();
+    let observations: Vec<Observation<RlsSample>> = (0..7)
+        .map(|k| {
+            sample(
+                &[(k as f32 * 0.4).sin(), (k as f32 * 0.25).cos()],
+                (k as f32 * 0.3).cos(),
+            )
+        })
+        .collect();
+
+    let continuous = model
+        .process_batch_reference(model.initial_state(), &observations, observations.len())
+        .unwrap();
+
+    let mut chunked = model.initial_state();
+    for chunk in observations.chunks(2) {
+        chunked = model
+            .process_batch_reference(chunked, chunk, chunk.len())
+            .unwrap();
+        // An empty chunk is a no-op that returns the supplied state.
+        chunked = model.process_batch_reference(chunked, &[], 0).unwrap();
+    }
+    assert_state_bitwise_eq(&chunked, &continuous);
+}
+
+#[test]
+fn bounded_reference_prefixes_are_causal() {
+    let model = Rls::new(2, 0.9, 3.0).unwrap();
+    let observations: Vec<Observation<RlsSample>> = (0..8)
+        .map(|k| {
+            sample(
+                &[(k as f32 * 0.2).sin(), (k as f32 * 0.6).cos()],
+                k as f32 * 0.1,
+            )
+        })
+        .collect();
+
+    for prefix in [1_usize, 3, 5, 8] {
+        let batched = model
+            .process_batch_reference(model.initial_state(), &observations[..prefix], prefix)
+            .unwrap();
+
+        let mut repeated = model.initial_state();
+        for observation in &observations[..prefix] {
+            repeated = model.update(&repeated, observation).unwrap();
+        }
+        assert_state_bitwise_eq(&batched, &repeated);
+    }
+}
+
+#[test]
+fn bounded_reference_bound_rejection_and_empty_input() {
+    let model = Rls::new(2, 0.95, 5.0).unwrap();
+    let batch = vec![
+        sample(&[0.1, 0.2], 1.0),
+        sample(&[0.3, -0.4], 2.0),
+        sample(&[0.5, 0.6], 3.0),
+    ];
+
+    // The exact bound succeeds.
+    assert!(
+        model
+            .process_batch_reference(model.initial_state(), &batch, batch.len())
+            .is_ok()
+    );
+
+    // Oversized: rejected before any transition; the moved-in state is
+    // recovered bitwise without a defensive caller clone.
+    let supplied = state(&[0.25, -0.5], &[&[1.0, 0.0], &[0.0, 1.0]]);
+    match model.process_batch_reference(supplied.clone(), &batch, 2) {
+        Err(RlsBatchError::BatchTooLarge {
+            max,
+            actual,
+            state: returned,
+        }) => {
+            assert_eq!(max, 2);
+            assert_eq!(actual, 3);
+            assert_state_bitwise_eq(&returned, &supplied);
+        }
+        other => panic!("expected BatchTooLarge, got {other:?}"),
+    }
+
+    // max_batch == 0 accepts only the empty batch.
+    match model.process_batch_reference(model.initial_state(), &batch, 0) {
+        Err(RlsBatchError::BatchTooLarge { max, actual, .. }) => {
+            assert_eq!(max, 0);
+            assert_eq!(actual, 3);
+        }
+        other => panic!("expected BatchTooLarge for max_batch == 0, got {other:?}"),
+    }
+
+    let supplied = state(&[1.0, -1.0], &[&[2.0, 0.0], &[0.0, 3.0]]);
+    let empty = model
+        .process_batch_reference(supplied.clone(), &[], 0)
+        .unwrap();
+    assert_state_bitwise_eq(&empty, &supplied);
+}
+
+#[test]
+fn bounded_reference_returns_supplied_state_unvalidated() {
+    let model = Rls::new(2, 0.95, 5.0).unwrap();
+    // Dimension-mismatched and NaN-containing: not a valid RLS state anywhere.
+    let corrupt = state(&[f32::NAN, 0.0, 0.0], &[&[1.0, 0.0], &[0.0, 1.0]]);
+    let batch = vec![sample(&[0.1, 0.2], 1.0), sample(&[0.3, 0.4], 2.0)];
+
+    // Oversized: the bound is checked before any state validation, so the
+    // corrupt state is returned bitwise unchanged (NaN bits included).
+    match model.process_batch_reference(corrupt.clone(), &batch, 1) {
+        Err(RlsBatchError::BatchTooLarge {
+            state: returned, ..
+        }) => assert_state_bitwise_eq(&returned, &corrupt),
+        other => panic!("expected BatchTooLarge, got {other:?}"),
+    }
+
+    // Empty: returned bitwise unchanged without validation.
+    let empty = model
+        .process_batch_reference(corrupt.clone(), &[], 0)
+        .unwrap();
+    assert_state_bitwise_eq(&empty, &corrupt);
+}
+
+#[test]
+fn bounded_reference_failure_state_matches_committed_prefix() {
+    let model = Rls::new(2, 0.95, 5.0).unwrap();
+    let good = |k: usize| {
+        sample(
+            &[(k as f32 * 0.3).sin(), (k as f32 * 0.2).cos()],
+            k as f32 * 0.5,
+        )
+    };
+    let bad = sample(&[f32::NAN, 0.0], 1.0);
+
+    // Start from a committed state that is not the initial state, so a
+    // whole-batch rollback to the supplied state would be observable.
+    let base = model.update(&model.initial_state(), &good(9)).unwrap();
+
+    for k in [0_usize, 2, 4] {
+        let mut observations: Vec<Observation<RlsSample>> = (0..5).map(good).collect();
+        observations[k] = bad.clone();
+
+        match model.process_batch_reference(base.clone(), &observations, observations.len()) {
+            Err(RlsBatchError::Transition {
+                failed_index,
+                state: returned,
+                error,
+            }) => {
+                assert_eq!(failed_index, k);
+                assert_eq!(error, RlsError::NonFiniteInput);
+
+                // Both w and P bitwise-equal the fold over batch[..k]; the
+                // supplied batch-entry state applies only when k == 0.
+                let mut expected = base.clone();
+                for observation in &observations[..k] {
+                    expected = model.update(&expected, observation).unwrap();
+                }
+                assert_state_bitwise_eq(&returned, &expected);
+
+                // The caller can continue from the returned state.
+                let mut continued = returned.clone();
+                let mut reference = expected;
+                for observation in &observations[k + 1..] {
+                    continued = model.update(&continued, observation).unwrap();
+                    reference = model.update(&reference, observation).unwrap();
+                }
+                assert_state_bitwise_eq(&continued, &reference);
+            }
+            other => panic!("expected Transition at k={k}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn bounded_reference_moved_state_recovery_from_both_errors() {
+    let model = Rls::new(2, 0.9, 3.0).unwrap();
+    let good = |k: usize| {
+        sample(
+            &[(k as f32 * 0.25).sin(), (k as f32 * 0.15).cos()],
+            k as f32 * 0.2,
+        )
+    };
+    let batch: Vec<Observation<RlsSample>> = (0..4).map(good).collect();
+
+    // BatchTooLarge: recover the supplied state without a clone, then continue.
+    let supplied = model.update(&model.initial_state(), &good(11)).unwrap();
+    let recovered = match model.process_batch_reference(supplied.clone(), &batch, 1) {
+        Err(RlsBatchError::BatchTooLarge { state, .. }) => state,
+        other => panic!("expected BatchTooLarge, got {other:?}"),
+    };
+    assert_state_bitwise_eq(&recovered, &supplied);
+    let continued = model
+        .process_batch_reference(recovered, &batch[..1], 1)
+        .unwrap();
+    let expected = model.update(&supplied, &batch[0]).unwrap();
+    assert_state_bitwise_eq(&continued, &expected);
+
+    // Transition: recover the last committed prefix state, then continue.
+    let mut failing = batch.clone();
+    failing[1] = sample(&[f32::NAN, 0.0], 0.0);
+    let recovered = match model.process_batch_reference(supplied.clone(), &failing, failing.len()) {
+        Err(RlsBatchError::Transition {
+            failed_index,
+            state,
+            ..
+        }) => {
+            assert_eq!(failed_index, 1);
+            state
+        }
+        other => panic!("expected Transition, got {other:?}"),
+    };
+    let expected_prefix = model.update(&supplied, &batch[0]).unwrap();
+    assert_state_bitwise_eq(&recovered, &expected_prefix);
+
+    let continued = model
+        .process_batch_reference(recovered, &batch[2..], batch.len() - 2)
+        .unwrap();
+    let mut reference = expected_prefix;
+    for observation in &batch[2..] {
+        reference = model.update(&reference, observation).unwrap();
+    }
+    assert_state_bitwise_eq(&continued, &reference);
+}
+
+#[test]
+fn bounded_reference_transition_error_mapping() {
+    let model = Rls::new(2, 0.95, 5.0).unwrap();
+
+    // Non-finite target, wrapped as a transition failure at its index.
+    let non_finite = vec![sample(&[1.0, 0.0], 1.0), sample(&[0.0, 1.0], f32::INFINITY)];
+    match model.process_batch_reference(model.initial_state(), &non_finite, non_finite.len()) {
+        Err(RlsBatchError::Transition {
+            failed_index,
+            error,
+            ..
+        }) => {
+            assert_eq!(failed_index, 1);
+            assert_eq!(error, RlsError::NonFiniteInput);
+        }
+        other => panic!("expected Transition for a non-finite target, got {other:?}"),
+    }
+
+    // Wrong feature dimension, wrapped as a transition failure.
+    let mismatched = vec![sample(&[1.0, 0.0], 1.0), sample(&[1.0], 2.0)];
+    match model.process_batch_reference(model.initial_state(), &mismatched, mismatched.len()) {
+        Err(RlsBatchError::Transition {
+            failed_index,
+            error,
+            ..
+        }) => {
+            assert_eq!(failed_index, 1);
+            assert_eq!(
+                error,
+                RlsError::DimensionMismatch {
+                    expected: 2,
+                    actual: 1,
+                }
+            );
+        }
+        other => panic!("expected Transition for a dimension mismatch, got {other:?}"),
+    }
 }
 
 // --- shared model, independent states (architecture evidence) -----------------

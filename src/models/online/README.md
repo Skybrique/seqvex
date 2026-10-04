@@ -401,10 +401,20 @@ bottleneck, and (6) a measured benefit. No exception.
 ## Micro-batch
 
 RLS updates are ordered and state-dependent, so a bounded micro-batch must be an
-ordered sequential fold — independent or parallel updates are invalid. The
-foundation `process_batch` already expresses exactly this (ordered,
-stop-on-first-failure, returns the last committed valid state). No generic
-micro-batch API or executor is added for this slice.
+ordered sequential fold — independent or parallel updates are invalid.
+
+`Rls::process_batch_reference` is the RLS-local bounded reference batching
+contract. The caller supplies `max_batch`; an oversized batch is rejected
+before any transition and the supplied `State` is returned unchanged and
+unvalidated; an empty batch returns the supplied `State` unchanged;
+observations are folded strictly in order with `Rls::update`, stopping at the
+first failure and returning `RlsBatchError::Transition` with the failed index,
+the underlying `RlsError`, and the last committed `(w, P)`. There is no
+independent or parallel update and no whole-batch rollback.
+
+The foundation `process_batch` is the **unbounded** reference ordered fold
+(`src/foundation/state`); it is not a bounded micro-batch executor and is not
+the RLS bounded path.
 
 ## Measured evidence (#26)
 
@@ -448,10 +458,11 @@ Findings, stated without overclaiming:
 - Streaming is **not faster** than the direct reference (differences are within
   run noise); it is the same generic `update` path driven through the executor.
   Lower latency was never claimed for the streaming wrapper.
-- The bounded foundation fold is **not faster** either, and costs one extra
-  allocation/observation because it consumes owned observations (the batch is
-  cloned to feed it). It is retained as the semantically-correct ordered
-  micro-batch, not as a performance claim.
+- The foundation (unbounded) ordered fold is **not faster** either, and costs
+  one extra allocation/observation because it consumes owned observations (the
+  batch is cloned to feed it). These historical numbers describe the foundation
+  fold; the bounded RLS micro-batch is `Rls::process_batch_reference`, retained
+  as a semantically correct capability rather than a performance claim.
 - Latency scales roughly with `D²` (`232 ns` at `D = 8` to `140 µs` at
   `D = 256`), consistent with the covariance update dominating.
 

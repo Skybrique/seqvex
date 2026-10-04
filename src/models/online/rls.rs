@@ -41,6 +41,15 @@
 //! [`RlsError`] and leaves the committed state bitwise unchanged; there is no
 //! path that commits one component without the other.
 //!
+//! # Bounded reference batch
+//!
+//! [`Rls::process_batch_reference`] is an ordered, bounded fold that calls
+//! [`Rls::update`] directly over borrowed observations. It preserves the same
+//! ordered transition semantics as the foundation fold without calling it,
+//! rejects an oversized batch before any transition, and returns the committed
+//! `(w, P)` only on success. The foundation `process_batch` remains the
+//! **unbounded** reference fold.
+//!
 //! # Numerics
 //!
 //! The `f32` substrate ([`Vector`], [`Matrix`]) is reused: observations are
@@ -87,6 +96,38 @@ impl From<DimensionMismatch> for RlsError {
             actual: error.actual,
         }
     }
+}
+
+/// Failure of a bounded RLS reference-batch call.
+///
+/// The batch API consumes the incoming adaptive state, so both variants return a
+/// recoverable state: the caller never needs to clone merely to recover from a
+/// rejected bound or a failed transition.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RlsBatchError {
+    /// The supplied batch is longer than the caller-declared bound.
+    ///
+    /// Checked before any transition or validation, so no observation is
+    /// processed. `state` is the original supplied adaptive state, returned
+    /// unchanged and unvalidated, so recovery needs no clone.
+    BatchTooLarge {
+        /// The caller-declared maximum batch length.
+        max: usize,
+        /// The supplied batch length.
+        actual: usize,
+        /// The original supplied adaptive state, returned unchanged.
+        state: RlsState,
+    },
+    /// The ordered fold stopped at a failed observation.
+    Transition {
+        /// Zero-based index of the failed observation.
+        failed_index: usize,
+        /// The last committed valid state after the successful prefix (the
+        /// supplied state when no observation succeeded).
+        state: RlsState,
+        /// The failure reported by the reference transition.
+        error: RlsError,
+    },
 }
 
 /// The adaptive state of one RLS stream: `w` (`D`) and `P` (`D × D`).
@@ -178,6 +219,73 @@ impl Rls {
             return Err(RlsError::NonFiniteInput);
         }
         Ok(state.w.dot(features)?)
+    }
+
+    /// Bounded ordered reference micro-batch over the RLS update path.
+    ///
+    /// This is the RLS-local bounded reference batching contract: a sequential,
+    /// ordered fold — never vectorized and never independent — over a
+    /// caller-bounded slice. It calls [`Rls::update`] directly for each borrowed
+    /// observation; it does not call or reuse the foundation `process_batch`,
+    /// which remains the unbounded reference fold. State stays coupled: success
+    /// returns the committed `(w, P)` as one [`RlsState`].
+    ///
+    /// # Bound
+    ///
+    /// `batch.len() > max_batch` is rejected *before* any transition or
+    /// validation, so an oversized batch processes nothing and returns
+    /// [`RlsBatchError::BatchTooLarge`] with the original supplied state,
+    /// unchanged and unvalidated. `max_batch == 0` therefore accepts only an
+    /// empty batch.
+    ///
+    /// # Empty input
+    ///
+    /// An empty batch returns `state` unchanged without validating it. No
+    /// additional initial-state validation is performed.
+    ///
+    /// # Failure
+    ///
+    /// Observations are processed strictly in slice order. The fold stops at
+    /// the first failed transition and returns [`RlsBatchError::Transition`]
+    /// with the zero-based `failed_index`, the last committed state after the
+    /// successful prefix (the supplied state when nothing succeeded), and the
+    /// underlying [`RlsError`]. Later observations are not processed and the
+    /// failing candidate is never committed: there is no whole-batch rollback.
+    /// Retrying a corrected observation, skipping a failed one, and any further
+    /// recovery remain the caller's policy.
+    ///
+    /// # Continuity
+    ///
+    /// On success the returned state is the committed state after the final
+    /// observation. Passing it to the next call continues the same sequence and
+    /// is bitwise-equivalent to repeated single-observation stepping.
+    pub fn process_batch_reference(
+        &self,
+        state: RlsState,
+        batch: &[Observation<RlsSample>],
+        max_batch: usize,
+    ) -> Result<RlsState, RlsBatchError> {
+        if batch.len() > max_batch {
+            return Err(RlsBatchError::BatchTooLarge {
+                max: max_batch,
+                actual: batch.len(),
+                state,
+            });
+        }
+        let mut current = state;
+        for (failed_index, observation) in batch.iter().enumerate() {
+            match self.update(&current, observation) {
+                Ok(next) => current = next,
+                Err(error) => {
+                    return Err(RlsBatchError::Transition {
+                        failed_index,
+                        state: current,
+                        error,
+                    });
+                }
+            }
+        }
+        Ok(current)
     }
 
     /// Validates the feature and state dimensions, in order `x`, `w`, `P`.

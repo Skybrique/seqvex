@@ -62,7 +62,7 @@ this matrix does not create or close Issues.
 | **Decision Tree** | #24 | Read-only traversal from a trained tree | None (immutable at inference) | None, or a small traversal path | Streaming per-observation traversal; independent observations may micro-batch | Implemented (reference/streaming/micro-batch; regression only, classification deferred) |
 | **K-Nearest Neighbors** | #25 | Brute-force distance + neighbor selection | Stored reference observations + `k` | Per-query distance scratch `O(N)`; neighbor set `O(k)` | Streaming per-query; independent queries may micro-batch | Implemented (reference/streaming/micro-batch; regression only, classification deferred) |
 | **GRU bounded micro-batch** | #34 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Implemented (reference streaming + bounded fold); measurement pending |
-| **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Implemented (reference/streaming/bounded fold) |
+| **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Implemented (reference/streaming + RLS-local bounded reference batching); measurement pending |
 
 Two families emerge from the matrix and are the point of the exercise:
 
@@ -213,9 +213,13 @@ Unlike linear regression, the reference is **not** allocation-free: the
 value-returning contract produces a new `D×D` candidate `P'` every observation,
 so the steady cost is 5 allocations/observation dominated by `P'`, and
 bytes/observation scale with `D²` (`384` at `D = 8`, `266240` at `D = 256`).
-Streaming and the bounded foundation fold are **not** faster than the direct
-reference; the fold additionally costs one extra allocation/observation because
-it consumes owned observations. The `O(D²)` candidate allocation is the
+Streaming and the foundation (unbounded) ordered fold are **not** faster than
+the direct reference; the fold additionally costs one extra
+allocation/observation because it consumes owned observations. The RLS-local
+bounded reference API (`Rls::process_batch_reference`) preserves the same
+ordered transition semantics through direct `Rls::update` calls over borrowed
+observations — not by calling the foundation fold — and has no separate
+measurement yet; measurement is pending. The `O(D²)` candidate allocation is the
 RLS-specific evidence, reported rather than optimized — a double-buffered `P`
 would raise an unresolved workspace-ownership question.
 

@@ -164,11 +164,12 @@ future independent algorithms, not as a performance claim.
 ### Decision Tree (#24)
 
 Read-only regression traversal; classification and training remain deferred.
-Reference and streaming inference allocate nothing (`0.000` allocations, `0`
-bytes per observation). The measured streaming median differed from the direct
-reference by +0.6 ns/obs at a 127-node tree (15.9 vs 15.3 ns/obs) and by
--1.7 ns/obs at the largest tested 2047-node tree (106.7 vs 108.4 ns/obs); the
-benchmark applies no materiality test, so these are reported measured
+
+**[historical]** Reference and streaming inference allocate nothing (`0.000`
+allocations, `0` bytes per observation). The measured streaming median differed
+from the direct reference by +0.6 ns/obs at a 127-node tree (15.9 vs 15.3 ns/obs)
+and by -1.7 ns/obs at the largest tested 2047-node tree (106.7 vs 108.4 ns/obs);
+the benchmark applies no materiality test, so these are reported measured
 differences, not a statistical-equivalence claim. The bounded micro-batch adds
 exactly one output `Vec` per batch (amortized `1/batch_size` per observation) and
 is not faster than single-observation prediction; a first-element failure makes
@@ -176,7 +177,37 @@ the entire `predict_batch` call return `Err`, with no partial output vector
 returned. Construction builds one growing node `Vec` (11, 14, and 16 heap
 allocations at the measured tree sizes), distinct from the allocation-free
 per-observation inference and the per-batch output allocation. No optimization
-was implemented; there is no profile-identified bottleneck.
+was implemented.
+
+**[new run]** A release batch-size sweep at the **associated inspected revision**
+`b63136f5` (`cargo bench --bench decision_tree -j 2`; `os=linux arch=x86_64
+profile=release parallelism=20`; 20 normalized measurement windows; single
+machine, 12th Gen Intel Core i7-12700H, 20 logical CPUs). The actual run-time
+revision, compiler toolchain, and machine-contention status are **unverified**
+(the supplied output contains no revision or toolchain evidence and no run-time
+contention evidence). It recorded all 16 `B ∈ {1, 8, 32, 128}` rows across the
+four tree configurations. The full table, together with the measured,
+harness-derived, and calculated quantities separated, is in
+`src/models/classic/README.md` ("Release batch-size sweep"). The fixture repeats
+one deterministic observation, so it measures **repeated-input** behavior, not
+input-distribution performance. Under the harness materiality rule
+(`difference > 2·max(IQR)` AND `difference > 5%·max(median)`): micro-batch is
+materially slower than the direct reference only at 8 features (+5.9 ns/obs);
+streaming is not materially different at 32, 128, or 256 features, and at 8
+features the materiality classification is unresolved at displayed precision
+because the reported difference equals the reported `2·max(IQR)` threshold;
+within the repeated-input fixture, per-observation cost at `B = 128` is
+materially lower than at `B = 1` in all four configurations (≈ 20.5–22.5 ns/obs),
+with `allocs/obs` and allocator `bytes/obs` falling from `1.000`/`16.0` to
+`0.047`/`7.9`. The run does not decompose traversal from per-batch output
+handling, so the cause of the per-observation reduction is not isolated here.
+These comparative outcomes are single-run **directional** evidence, not
+acceptance-grade comparative performance conclusions; the run establishes that
+representative batch sizes were measured.
+
+The reference path is retained; optimization and profiling are deferred. No CPU
+profiling, bottleneck identification, universal speedup, or production readiness
+is established by this run.
 
 ### K-Nearest Neighbors (#25)
 

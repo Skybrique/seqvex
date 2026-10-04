@@ -226,6 +226,109 @@ generic `StreamingExecutor`, which borrows the model immutably (`&M`) and owns
 the per-stream State. The former `&mut M` limitation was removed by the
 execution-ownership refactor.
 
+### GRU production hot path (#17 / #18)
+
+Measured evidence for the GRU production hot path. The GRU slice's matrix row
+above is the bounded micro-batch work (#34), which is separate; this entry
+records the production-path comparison.
+
+**Compared paths and source version.** Historical measurements of the generic
+reference `StreamingExecutor::process_one` (via the GRU's `StateModel`) against
+the algorithm-local optimized `GruExecutor::process_one_optimized`. Both used
+the same immutable `&Gru`, one deterministic observation per size, equivalent
+zero initial hidden state, `work_per_call = 1`, and a 16-step bitwise
+committed-state pre-check (`verify_paths_agree`) outside the timed region. The
+benchmark source is `benches/gru.rs`, merged on `main` as commit `2346179`; the
+runs were recorded on branch `issue-17-executor-ownership` (HEAD `f6ca217`).
+These are **historical** measurements: they are recorded here from preserved
+development records and were not reproduced for this entry.
+
+**Provenance and methodology.** Linux x86_64; release `[profile.bench]`; Intel
+Core i7-12700H; shared `benches/common` harness (counting allocator +
+`Instant`). 20 measurement windows per run; warm-up `max(steps/10, 1000)`; step
+counts 100,000 / 50,000 / 5,000 / 2,000 for 8×16 / 32×64 / 128×256 / 256×512.
+The reported `parallelism=20` is the machine's available parallelism, not
+benchmark threading; the benchmark executes single-threaded.
+
+**Run A (`MEASURED EVIDENCE`, historical).** Each cell is median / IQR (ns)
+— derived throughput (obs/s):
+
+| size (steps) | ref `StreamingExecutor` | opt `GruExecutor` | opt allocs/obs |
+|---|---|---|---|
+| 8×16 (100k) | 786.8 / 12.0 — 1,270,932 | 483.3 / 16.7 — 2,069,093 | 0.000 (ref 20.000) |
+| 32×64 (50k) | 5,934.8 / 221.9 — 168,498 | 5,401.9 / 238.6 — 185,119 | 0.000 |
+| 128×256 (5k) | 96,243.6 / 2,033.8 — 10,390 | 95,333.5 / 1,003.6 — 10,489 | 0.000 |
+| 256×512 (2k) | 432,477.3 / 5,963.5 — 2,312 | 429,823.5 / 8,836.8 — 2,327 | 0.000 |
+
+The throughput figures are **derived** by the harness as `1e9 / median` from
+its unrounded median before display formatting; they are retained as recorded,
+and re-deriving from the displayed one-decimal median is subject to rounding.
+Reference allocation count is recorded as 20.000 at 8×16 and stated for the
+comparison as a whole; per-size reference allocation counts were not retained.
+
+**Run B (`MEASURED EVIDENCE`, historical repeat).** An independent repeat of
+the same comparison, medians only (ns):
+
+| size | ref `StreamingExecutor` | opt `GruExecutor` |
+|---|---|---|
+| 8×16 | 858.4 | 520.2 |
+| 32×64 | 6,014.5 | 5,536.0 |
+| 128×256 | 107,396.1 | 106,612.6 |
+| 256×512 | 483,218.0 | 475,052.6 |
+
+Run B's dispersion was not retained; Run A's IQR and throughput must not be
+attached to Run B's medians. The two runs are reported separately.
+
+**Materiality (Run A; harness rule `difference > 2·max(IQR)` AND
+`difference > 5%·max(median)`).** 8×16: difference 303.5 ns (2·IQR 33.4, 5%
+39.3) → **clearly measurable** (~39%). 32×64: difference 532.9 ns (477.2,
+296.7) → **clearly measurable** (~9%), with a narrow margin over the 2×IQR
+proxy (~12%). 128×256: difference 910.1 ns (4,067.6, 4,812.2) → **not
+materially different** (~0.9%). 256×512: difference 2,653.8 ns (17,673.6,
+21,623.9) → **not materially different** (~0.6%) and additionally noisy across
+runs. Allocation elimination (20 → 0 allocations/observation) is confirmed; the
+latency benefit is clear only at small sizes. **No universal speedup is
+claimed.**
+
+**Startup (separate from steady state).** Startup figures are average ns/init
+across the configured repetitions (`startup_reps()`); the measured closure
+includes destruction of the value it constructs, so these are not median/IQR
+timings and not pure construction latency. The retained record lists
+allocations/init but not bytes/init, so bytes per initialization are omitted.
+
+| size | `params-clone` | `params-clone+model-init` | `streaming-init` | `gru-executor-init` |
+|---|---|---|---|---|
+| 8×16 | 154.1 ns / 9 | 528.0 ns / 9 | 16.7 ns / 1 | 60.9 ns / 4 |
+| 32×64 | 1,689.7 / 9 | 5,771.2 / 9 | 16.6 / 1 | 67.5 / 4 |
+| 128×256 | 266,255.6 / 9 | 313,733.5 / 9 | 18.7 / 1 | 76.6 / 4 |
+| 256×512 | 1,108,244.6 / 9 | 1,401,386.1 / 9 | 37.7 / 1 | 149.8 / 4 |
+
+`Gru::new` adds no allocations (9 → 9): the 9 `params-clone` allocations are
+the parameter tensors. `streaming-init` includes the caller's `Vector::zeros`
+initial state (1 allocation); `gru-executor-init` includes the State and the
+private workspace (4 allocations). All are setup, not per-observation.
+
+**Consolidated trade-offs** (see the ownership hypothesis above and
+[`src/models/recurrent/README.md`](../src/models/recurrent/README.md) §9.2-§9.3).
+The immutable `&Gru` is shared by independent execution contexts; each execution
+owns one authoritative State; the GRU workspace is private to the `GruExecutor`
+and lives for that execution. The workspace payload is a **calculated** `3 × H`
+`f32` scratch — 192 / 768 / 3,072 / 6,144 bytes at `H` = 16 / 64 / 256 / 512 —
+distinct from the State payload (`H × 4` = 64 / 256 / 1,024 / 2,048 bytes) and
+from container/allocator overhead, which is not measured here. The dual
+reference/optimized paths carry maintenance cost, and no automatic execution
+selection is implemented (#21 is design-only). Sharing an immutable model is
+not evidence of tested parallel execution.
+
+**Limitations.** These are historical measurements, not reproduced for this
+entry, from a single machine and 20 windows; the 256×512 result varies across
+runs. The corrected comparison's **p95** is unavailable, and **allocated
+bytes/observation** is unavailable (only allocation counts were retained).
+`GruParameters::deterministic` is a test/benchmark fixture, not production
+initialization (#20). This entry advances #18 but does not complete it: the
+missing bytes/observation measurement requires a later authorized, uncontended
+release capture using the existing benchmark.
+
 ## Matrix growth rule
 
 > **The matrix is not expanded without evidence.**

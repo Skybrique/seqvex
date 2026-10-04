@@ -137,6 +137,19 @@ The analogous pure-prediction path `Rls::predict` computes `wᵀx` with the same
 no-output-validation behaviour; each model documents its own envelope rather than
 sharing a rule or abstraction.
 
+## Linear regression applicability
+
+Linear regression in this slice is fixed-coefficient prediction: `ŷ = w·x + b`
+is evaluated against caller-supplied immutable coefficients. It performs no
+fitting, adaptation, or parameter update. Evaluating the prediction equation
+does not require inputs to be IID, stationary, or exchangeable; each prediction
+depends only on its own observation and the fixed coefficients. How the
+coefficients were estimated, predictive validity, uncertainty, and
+distribution-shift behaviour are separate questions outside this slice. The
+f32 numerical envelope above is unchanged: finite parameters and finite inputs
+do not guarantee a finite output, and callers keep products and sums
+representable.
+
 ## Measured evidence (#23)
 
 Release-mode benchmark (`cargo bench --bench linear_regression`), median of 20

@@ -572,6 +572,19 @@ The implementation should be validated against:
 
 The optimized path is only useful if it remains semantically equivalent to the reference path.
 
+## 13.1 Applicability
+
+The GRU executes an ordered recurrence: the hidden state at step `t` is a
+function of the parameters, the initial hidden state, and observations through
+`t`, preserving temporal state and causality by construction. Recurrence
+correctness does not establish training quality, generalization, adaptation, or
+universal suitability for non-IID data. This implementation provides no training
+procedure: initialization is not training, hidden-state evolution is not
+parameter learning, and caller-supplied parameters may have been trained
+externally. The documented numerical and failure boundaries remain as recorded
+(hidden state bounded from a zero start up to f32 rounding; non-finite input or
+candidate rejected while committed state is preserved).
+
 ---
 
 # 14. Performance

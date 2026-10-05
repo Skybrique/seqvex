@@ -21,8 +21,8 @@ on the evaluated `main`), `[DEV]` (present only on `rust-development`), `[HIST]`
 (historical/reported), `[MISSING]`, and `[N/A — reason]`.
 
 Delivery: the evaluated baseline lacked this report and the LR/GRU applicability
-subsections; this delivery adds them; independent review and integration remain
-pending.
+subsections; this delivery adds them. Independent review is complete (recorded
+in #27 comment 8); integration remains pending.
 
 Optimization: CLOSED — not authorized by this report.
 
@@ -30,16 +30,16 @@ Optimization: CLOSED — not authorized by this report.
 
 ## 1. Executive findings
 
-- Mandatory initial scope is LR, GRU and RLS. Decision Tree and KNN are
-  supplementary and their inclusion as mandatory audited algorithms is an open
-  scope question (see §20).
+- Mandatory initial scope is LR, GRU and RLS. Decision Tree and KNN coverage is
+  supplementary; their missing full-audit coverage does not block #27's original
+  scope (scope ruling recorded in §20).
 - No defect identified within this review's scope (§16).
 - Status by baseline: the durable structured report and the LR/GRU applicability
   subsections were missing at the evaluated baseline; this delivery adds them.
-- Status pending: independent review and integration of this report and the two
-  README subsections; the Decision Tree/KNN scope decision; a revision-of-record
-  statement for future #27 work; development-only bounded GRU/RLS evidence; and
-  the optimization-time architecture question.
+- Status pending: integration of this report and the two README subsections;
+  development-only bounded GRU/RLS evidence; and the optimization-time
+  architecture question. The Decision Tree/KNN scope ruling and the
+  revision-of-record statement are recorded in §20.
 - Optimization remains closed (§19).
 
 ## 2. Repository/code surfaces inspected
@@ -279,7 +279,8 @@ Implemented fitting-related capabilities (FACT, per inspected source):
   behavior, prequential evaluation, and a written applicability contract.
 - DT/KNN (supplementary): DT has an independent closed-form oracle but no
   permutation/non-IID/long-run suite; KNN has an independent oracle, reordering
-  and isolation checks. Their mandatory scope is unresolved.
+  and isolation checks. They are not mandatory #27 scope; full-audit coverage is
+  future work (§20) and does not block #27's original scope.
 
 ## 15. Cross-algorithm recurring requirements
 
@@ -307,8 +308,9 @@ envelope, not defects.
 - Added only on `rust-development`: GRU bounded `bounded_batch_*` and RLS bounded
   `bounded_reference_*` tests, and the bounded reference APIs they exercise.
   [DEV]
-- Recommended: none mandatory for LR/GRU/RLS. Any DT/KNN additions depend on the
-  unresolved scope decision (§20) and are not created here.
+- Recommended: none mandatory for LR/GRU/RLS. DT/KNN full-audit additions belong
+  to future scope (§20); none are created here, and their absence does not block
+  #27's original scope.
 
 ## 18. Architecture implications
 
@@ -334,14 +336,31 @@ profiling → identified bottleneck → measured benefit
 
 ## 20. Remaining unresolved questions
 
-- The durable report and LR/GRU applicability subsections were absent at the
-  evaluated baseline and are added by this delivery. Independent review and
-  integration remain pending. DT/KNN scope clarification remains open.
-- Decision Tree / KNN scope: whether #27's acceptance binds them as "current
-  algorithms" is an Architect decision. Recorded here, not resolved.
-- Revision of record: future #27 evidence should state whether it is evaluated
-  against `main` or `rust-development`, because GRU/RLS bounded micro-batch
-  evidence is development-only.
+**Scope ruling (Architect decision record; recorded 2026-10-05).** #27's mandatory
+audit scope is Linear Regression, GRU, and Recursive Least Squares, as enumerated
+under Initial algorithms. Decision Tree and KNN coverage in this delivery is
+supplementary. Their missing full-audit coverage does not block completion of
+#27's original scope. Relevant correctness gates must still be satisfied before
+future DT/KNN optimization.
+
+**Review status.** Independent documentation review is complete (recorded in #27
+comment 8). Integration of this report and the LR/GRU applicability subsections
+remains pending.
+
+**Revision of record.** Audit delivery commit
+`b63136f5b5aa19f03a4c34ab7b4c4b863195ed40` (this report and the two applicability
+subsections). Original audited checkpoints: `main` @
+`cf95cd08b7f6b87b1d116acdbd947bc3ff92c10b` (inspected via git objects; no tests
+run) and `rust-development` @
+`276fcc5b36a14c78efd90c623970a6b6e98567a8` (inspected; focused tests executed).
+Later evidence commits were not covered by the original audit and are recorded
+separately: `b63da4f` (Decision Tree, #24), `6a38fec` (RLS, #26), `04e7d1e` (GRU
+bounded, #34), and `4b2ae91` (GRU allocated-bytes, #18).
+
+Remaining unresolved questions:
+
 - Development-only bounded GRU/RLS APIs and tests are not on `main`.
 - Optimization-time architecture (optimized `P` buffer placement, memory/device
   representation) remains a separate, deferred architecture question.
+- Future #27 evidence should state whether it is evaluated against `main` or
+  `rust-development`, because bounded GRU/RLS evidence is development-only.

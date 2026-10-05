@@ -482,7 +482,9 @@ Contract:
 
 This is the selected minimal contract for #34. It adds no generic batching
 framework, scheduler, or executor change, and it does not alter model
-ownership. Performance and allocation measurement is pending.
+ownership. Performance and allocation measurement for the bounded reference
+batch is recorded separately in `docs/ML_VERTICAL_SLICES.md` (GRU bounded
+micro-batch, #34).
 
 ---
 

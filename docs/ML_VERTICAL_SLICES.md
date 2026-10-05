@@ -61,7 +61,7 @@ this matrix does not create or close Issues.
 | **Linear Regression** | #23 | Closed-form prediction `ŷ = w · x + b`; prediction only | None during prediction (immutable weights) | None | Streaming per-observation; independent observations may micro-batch | Implemented (reference/streaming/micro-batch) |
 | **Decision Tree** | #24 | Read-only traversal from a trained tree | None (immutable at inference) | None, or a small traversal path | Streaming per-observation traversal; independent observations may micro-batch | Implemented (reference/streaming/micro-batch; regression only, classification deferred) |
 | **K-Nearest Neighbors** | #25 | Brute-force distance + neighbor selection | Stored reference observations + `k` | Per-query distance scratch `O(N)`; neighbor set `O(k)` | Streaming per-query; independent queries may micro-batch | Implemented (reference/streaming/micro-batch; regression only, classification deferred) |
-| **GRU bounded micro-batch** | #34 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Implemented (reference streaming + bounded fold); measurement pending |
+| **GRU bounded micro-batch** | #34 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Implemented (reference streaming + bounded fold); release bounded batch-size sweep recorded |
 | **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Implemented (reference/streaming + RLS-local bounded reference batching); release batch-size sweep recorded |
 
 Two families emerge from the matrix and are the point of the exercise:
@@ -394,6 +394,105 @@ bytes/observation** is unavailable (only allocation counts were retained).
 initialization (#20). This entry advances #18 but does not complete it: the
 missing bytes/observation measurement requires a later authorized, uncontended
 release capture using the existing benchmark.
+
+### GRU bounded micro-batch (#34)
+
+**Compared paths and source version.** A release capture at recorded run-time
+revision `6a38fec` (branch `rust-development`, clean working tree, upstream
+`+0 -0`), command `cargo bench --bench gru -j 2`, `[profile.bench]` (release).
+Toolchain rustc/cargo `1.97.1` (LLVM `22.1.6`); Linux
+`6.18.40.1-microsoft-standard-WSL2` x86_64; Intel Core i7-12700H, 20 logical
+CPUs. `parallelism=20` is available parallelism, not benchmark threading. 20
+measurement windows per cell. Three paths process the **same** prepared ordered
+prefix `obs[..B]` (smaller `B` are prefixes of larger `B`), each starting from
+`Vector::zeros(H)` and carrying State across calls: `bounded grouped exec` (B ×
+`StreamingExecutor::process_one`), `bounded ref batch` (one
+`Gru::process_batch_reference(state, &obs[..B], B)`), and `foundation
+process_batch` (a **labelled control** that consumes owned observations, so its
+timed body includes `iter().cloned()`). The primary comparison is grouped vs
+bounded reference batch; both borrow observations and use no workspace. Cross-path
+bitwise prechecks (`precheck_calls = 4`) run outside timing and passed (the run
+exited `0`). `(256,512)` is excluded from this block as the optional dimension
+(the existing per-step block above still covers it).
+
+**Methodology.** `common::measure(label, steps, work_per_call = B, …)` normalises
+by `steps × B`, the actual observations processed; `steps = window_budget / B`
+keeps the observation count equal across paths and `B` within a dimension
+(8×16 / 32×64 / 128×256 budgets 8,192 / 2,048 / 256). Reported `ns/obs`
+(median, p95, IQR), `obs/s`, `allocs/obs`, and `bytes/obs` are **measured**;
+`ns/batch = ns/obs × B` and `batches/s` are **harness-derived** from the same
+window (amortized batch-call duration, not an individual-call latency
+percentile). `p95`/`IQR` describe variability across the normalized measurement
+windows, not per-call latency. `bytes/obs` is allocator allocation/reallocation
+traffic, not live/peak memory.
+
+**Measured results** (`median ns/obs`; p95 / IQR; `obs/s`; `allocs/obs`;
+`bytes/obs`; derived `ns/batch`):
+
+| dim | B | path | ns/obs | p95 | IQR | obs/s | allocs/obs | bytes/obs | ns/batch |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 8×16 | 1 | grouped | 899.1 | 1012.0 | 48.7 | 1112167 | 20.000 | 1280.0 | 899.1 |
+| 8×16 | 1 | bounded-ref | 948.3 | 974.3 | 28.1 | 1054542 | 20.000 | 1280.0 | 948.3 |
+| 8×16 | 1 | foundation | 975.0 | 1094.1 | 74.6 | 1025667 | 21.000 | 1312.0 | 975.0 |
+| 8×16 | 8 | grouped | 958.6 | 1206.3 | 89.9 | 1043208 | 20.000 | 1280.0 | 7668.7 |
+| 8×16 | 8 | bounded-ref | 995.2 | 1130.9 | 100.2 | 1004821 | 20.000 | 1280.0 | 7961.6 |
+| 8×16 | 8 | foundation | 975.3 | 1040.1 | 55.5 | 1025372 | 21.000 | 1312.0 | 7802.0 |
+| 8×16 | 32 | grouped | 984.5 | 1039.8 | 51.2 | 1015697 | 20.000 | 1280.0 | 31505.5 |
+| 8×16 | 32 | bounded-ref | 955.5 | 982.9 | 22.2 | 1046553 | 20.000 | 1280.0 | 30576.6 |
+| 8×16 | 32 | foundation | 1046.3 | 1101.6 | 24.0 | 955792 | 21.000 | 1312.0 | 33480.1 |
+| 8×16 | 128 | grouped | 955.6 | 973.9 | 10.4 | 1046473 | 20.000 | 1280.0 | 122315.6 |
+| 8×16 | 128 | bounded-ref | 1028.6 | 1410.7 | 76.7 | 972148 | 20.000 | 1280.0 | 131667.2 |
+| 8×16 | 128 | foundation | 986.8 | 1003.9 | 49.2 | 1013410 | 21.000 | 1312.0 | 126306.2 |
+| 32×64 | 1 | grouped | 6836.2 | 7171.8 | 564.6 | 146280 | 20.000 | 5120.0 | 6836.2 |
+| 32×64 | 1 | bounded-ref | 6268.6 | 6445.1 | 226.2 | 159526 | 20.000 | 5120.0 | 6268.6 |
+| 32×64 | 1 | foundation | 6192.5 | 6881.3 | 207.6 | 161485 | 21.000 | 5248.0 | 6192.5 |
+| 32×64 | 8 | grouped | 6340.4 | 6582.6 | 143.0 | 157718 | 20.000 | 5120.0 | 50723.5 |
+| 32×64 | 8 | bounded-ref | 6140.0 | 6642.2 | 244.0 | 162867 | 20.000 | 5120.0 | 49119.9 |
+| 32×64 | 8 | foundation | 6348.6 | 6549.7 | 416.5 | 157514 | 21.000 | 5248.0 | 50789.1 |
+| 32×64 | 32 | grouped | 6166.6 | 6363.8 | 103.5 | 162164 | 20.000 | 5120.0 | 197331.3 |
+| 32×64 | 32 | bounded-ref | 6229.7 | 6606.9 | 298.9 | 160522 | 20.000 | 5120.0 | 199350.1 |
+| 32×64 | 32 | foundation | 6160.2 | 6547.5 | 388.6 | 162332 | 21.000 | 5248.0 | 197126.6 |
+| 32×64 | 128 | grouped | 6518.2 | 7409.1 | 793.6 | 153417 | 20.000 | 5120.0 | 834325.3 |
+| 32×64 | 128 | bounded-ref | 6293.0 | 6695.8 | 273.6 | 158908 | 20.000 | 5120.0 | 805499.9 |
+| 32×64 | 128 | foundation | 6475.8 | 6761.1 | 141.6 | 154422 | 21.000 | 5248.0 | 828899.9 |
+| 128×256 | 1 | grouped | 108407.0 | 114628.1 | 7741.8 | 9224 | 20.000 | 20480.0 | 108407.0 |
+| 128×256 | 1 | bounded-ref | 108035.9 | 112999.2 | 4373.8 | 9256 | 20.000 | 20480.0 | 108035.9 |
+| 128×256 | 1 | foundation | 104586.3 | 110072.2 | 4634.8 | 9561 | 21.000 | 20992.0 | 104586.3 |
+| 128×256 | 8 | grouped | 108277.4 | 115883.2 | 3739.8 | 9236 | 20.000 | 20480.0 | 866218.9 |
+| 128×256 | 8 | bounded-ref | 104538.7 | 112510.6 | 4873.0 | 9566 | 20.000 | 20480.0 | 836309.5 |
+| 128×256 | 8 | foundation | 109281.3 | 116963.3 | 5554.3 | 9151 | 21.000 | 20992.0 | 874250.2 |
+| 128×256 | 32 | grouped | 108190.3 | 111623.9 | 4628.5 | 9243 | 20.000 | 20480.0 | 3462088.1 |
+| 128×256 | 32 | bounded-ref | 106441.0 | 115118.8 | 1775.4 | 9395 | 20.000 | 20480.0 | 3406113.0 |
+| 128×256 | 32 | foundation | 109931.3 | 114271.1 | 5432.4 | 9097 | 21.000 | 20992.0 | 3517800.5 |
+| 128×256 | 128 | grouped | 111275.4 | 117372.6 | 9976.6 | 8987 | 20.000 | 20480.0 | 14243248.0 |
+| 128×256 | 128 | bounded-ref | 110645.7 | 127501.6 | 8048.4 | 9038 | 20.000 | 20480.0 | 14162648.0 |
+| 128×256 | 128 | foundation | 107568.0 | 111574.6 | 3758.6 | 9296 | 21.000 | 20992.0 | 13768698.0 |
+
+**Materiality** (harness rule `difference > 2·max(IQR)` AND
+`difference > 5%·max(median)`). Primary comparison grouped vs bounded reference
+batch: **no clearly measurable difference at any (dimension, B)**; differences
+are *not materially different* except **borderline/noisy** at 8×16 B=1
+(49.2 ns against 2·IQR 97.4 and 5% 47.4), 8×16 B=128 (73.0 vs 153.4, 51.4), and
+32×64 B=1 (567.6 vs 1,129.2, 341.8). No grouping benefit or slowdown is
+established. Against the foundation control, the only clearly measurable case is
+8×16 B=32 (bounded-ref 955.5 vs foundation 1,046.3; 90.8 vs 48.0 and 52.3). The
+foundation control, which includes observation cloning, is slower under the
+materiality rule at (8,16), B=32 in this capture. Allocation counts are
+B-invariant: grouped and bounded-ref are `20.000` allocs/obs and the foundation
+control `21.000`; the control's extra allocator traffic is the cloned
+observation (`input_dim × 4` bytes/obs = 32 / 128 / 512 at input dimension
+8 / 32 / 128).
+
+**Limitations.** Single deterministic `Lcg` fixture (128 observations per
+dimension, prefix `obs[..B]`); single machine; one capture with 20 windows and no
+independent repeat; the machine is shared (editor/service processes present,
+lightly loaded; the benchmark itself drove the load). These are single-run
+**directional** outcomes, not acceptance-grade comparative performance
+conclusions. No general speedup is claimed.
+
+The reference path is retained; optimization and profiling are deferred. This
+run does not establish a CPU profile, a bottleneck identification, or production
+readiness.
 
 ## Matrix growth rule
 

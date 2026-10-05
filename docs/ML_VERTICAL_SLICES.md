@@ -345,6 +345,38 @@ the same comparison, medians only (ns):
 Run B's dispersion was not retained; Run A's IQR and throughput must not be
 attached to Run B's medians. The two runs are reported separately.
 
+**Run C (`MEASURED EVIDENCE`, new release capture; supplies the previously
+missing p95 and allocated bytes/observation).** A distinct release capture at
+recorded run-time revision `6a38fec` (branch `rust-development`, clean working
+tree, upstream `+0 -0`), command `cargo bench --bench gru -j 2`,
+`[profile.bench]`; rustc/cargo `1.97.1` (LLVM `22.1.6`); Linux WSL2 x86_64;
+Intel Core i7-12700H, 20 logical CPUs; 20 measurement windows. It is **not**
+merged with Run A or Run B. It exercises the same per-step comparison and the
+same `benches/gru.rs` per-step block; the benchmark source is unchanged between
+`6a38fec` and the inspected revision `04e7d1e` (the only intervening commit is
+documentation). Each cell is median / p95 / IQR (ns/obs) — derived obs/s —
+allocs/obs — bytes/obs:
+
+| size (steps) | ref `StreamingExecutor` | opt `GruExecutor` | ref allocs/obs; bytes/obs | opt allocs/obs; bytes/obs |
+|---|---|---|---|---|
+| 8×16 (100k) | 945.2 / 971.9 / 21.3 — 1,057,965 | 555.7 / 569.8 / 16.5 — 1,799,633 | 20.000; 1,280.0 | 0.000; 0.0 |
+| 32×64 (50k) | 6,609.1 / 7,223.2 / 314.7 — 151,306 | 6,013.9 / 6,588.8 / 365.6 — 166,282 | 20.000; 5,120.0 | 0.000; 0.0 |
+| 128×256 (5k) | 106,833.4 / 109,734.6 / 1,387.1 — 9,360 | 104,096.5 / 109,959.7 / 2,346.0 — 9,606 | 20.000; 20,480.0 | 0.000; 0.0 |
+| 256×512 (2k) | 503,533.7 / 577,850.0 / 19,121.9 — 1,986 | 532,487.1 / 731,483.2 / 48,584.6 — 1,878 | 20.000; 40,960.0 | 0.000; 0.0 |
+
+`allocs/obs` and `bytes/obs` are the harness's counting-allocator measurements;
+`bytes/obs` is allocation/reallocation traffic, **not** live/peak memory. The
+optimized path's `0.000`/`0.0` reflect its allocation-free steady state.
+`p95`/`IQR` are variability across the 20 normalized measurement windows, not
+per-call latency percentiles.
+
+**Materiality (Run C; same rule).** 8×16 diff 389.5 ns (`2·max(IQR)` 42.6,
+`5%·max(median)` 47.3) → **clearly measurable**; 32×64 diff 595.2 (731.2, 330.5)
+→ **borderline/noisy**; 128×256 diff 2,736.9 (4,692.0, 5,341.7) → **not
+materially different**; 256×512 diff 28,953.4 (97,169.2, 26,624.4) →
+**borderline/noisy**. As in Run A, the latency benefit is clear only at the
+smallest size; **no universal speedup** is claimed.
+
 **Materiality (Run A; harness rule `difference > 2·max(IQR)` AND
 `difference > 5%·max(median)`).** 8×16: difference 303.5 ns (2·IQR 33.4, 5%
 39.3) → **clearly measurable** (~39%). 32×64: difference 532.9 ns (477.2,
@@ -386,14 +418,15 @@ reference/optimized paths carry maintenance cost, and no automatic execution
 selection is implemented (#21 is design-only). Sharing an immutable model is
 not evidence of tested parallel execution.
 
-**Limitations.** These are historical measurements, not reproduced for this
-entry, from a single machine and 20 windows; the 256×512 result varies across
-runs. The corrected comparison's **p95** is unavailable, and **allocated
-bytes/observation** is unavailable (only allocation counts were retained).
-`GruParameters::deterministic` is a test/benchmark fixture, not production
-initialization (#20). This entry advances #18 but does not complete it: the
-missing bytes/observation measurement requires a later authorized, uncontended
-release capture using the existing benchmark.
+**Limitations.** Run A and Run B are historical measurements, not reproduced for
+this entry, from a single machine and 20 windows; the 256×512 result varies
+across runs. Run A's corrected-comparison **p95** and **allocated
+bytes/observation** were not retained; **Run C records both** for the corrected
+comparison and is reported separately. `GruParameters::deterministic` is a
+test/benchmark fixture, not production initialization (#20). Run C is a single
+capture on a shared machine and is not merged with Run A or Run B. The
+allocated-bytes/observation gap previously recorded for #18 is addressed by Run
+C; whether #18 is complete is a separate decision. #17 remains open.
 
 ### GRU bounded micro-batch (#34)
 

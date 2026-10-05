@@ -246,11 +246,17 @@ It must not silently violate:
 
 The buffering policy, batch size, scheduler, and automatic batching heuristics remain undecided.
 
-Today bounded micro-batching has only **reference fold semantics**
-(`process_batch` in `src/foundation/state`): an unbounded,
-stop-on-first-failure ordered fold, not a bounded micro-batch executor. There is
-no generic micro-batch API or executor, and none is added until the vertical
-slices demonstrate a recurring need (`docs/ML_VERTICAL_SLICES.md`).
+The foundation `process_batch` in `src/foundation/state` remains an **unbounded,
+stop-on-first-failure ordered fold** — not a bounded micro-batch executor. The
+vertical slices also provide algorithm-local bounded batching: LR, Decision Tree,
+and KNN evaluate independent predictions over a bounded group (classification and
+training remain out of scope), while GRU and RLS expose bounded ordered reference
+APIs (`process_batch_reference`) that preserve sequential state-transition
+semantics over borrowed observations. Grouping dependent updates does not
+authorize independent or parallel updates. There is still no generic micro-batch
+executor/runtime, buffering policy, scheduler, or automatic execution selection,
+and none is added until the vertical slices demonstrate a recurring need
+(`docs/ML_VERTICAL_SLICES.md`).
 
 ### 6.4 Larger batch operations
 

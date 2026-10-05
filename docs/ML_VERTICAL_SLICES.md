@@ -262,8 +262,9 @@ obs `209920`; `D = 32` obs `168960`). Within this capture, bounded-reference
 per-observation cost does not change materially across `B` at either dimension;
 grouped streaming and the bounded reference do not differ materially
 (`D = 32, B = 1` is borderline/noisy); the foundation-fold control is clearly
-measurable only at `D = 8, B = 128` (247.0 vs 227.3 ns/obs) and always costs
-`6.000` allocs/obs and `+32` bytes/obs. No clearly measurable grouping benefit
+measurable only at `D = 8, B = 128` (247.0 vs 227.3 ns/obs) and costs `6.000`
+allocs/obs with additional allocator traffic of `+32` bytes/obs at `D = 8` and
+`+128` bytes/obs at `D = 32`. No clearly measurable grouping benefit
 is observed. The fixture is a fixed-target cyclic replay (period `2048`) on one
 machine over 20 windows within the `D ∈ {8, 32}` `λ = 0.999` numerical envelope
 (the full-horizon validator passed with no guard failure; larger `D` remain
@@ -374,8 +375,9 @@ per-call latency percentiles.
 `5%·max(median)` 47.3) → **clearly measurable**; 32×64 diff 595.2 (731.2, 330.5)
 → **borderline/noisy**; 128×256 diff 2,736.9 (4,692.0, 5,341.7) → **not
 materially different**; 256×512 diff 28,953.4 (97,169.2, 26,624.4) →
-**borderline/noisy**. As in Run A, the latency benefit is clear only at the
-smallest size; **no universal speedup** is claimed.
+**borderline/noisy**. Unlike Run A (clearly measurable at both 8×16 and 32×64),
+Run C shows a clearly measurable latency difference only at 8×16; **no universal
+speedup** is claimed.
 
 **Materiality (Run A; harness rule `difference > 2·max(IQR)` AND
 `difference > 5%·max(median)`).** 8×16: difference 303.5 ns (2·IQR 33.4, 5%

@@ -418,6 +418,13 @@ the RLS bounded path.
 
 ## Measured evidence (#26)
 
+Two separate runs are recorded here and are not merged: the historical
+fixed-observation foundation-fold baseline ([historical]) and the release
+batch-size sweep of the RLS-local bounded reference API ([new run], revision
+`b63da4f`). Historical values below are unchanged.
+
+### Historical baseline ([historical])
+
 `cargo bench --bench rls`, release, median of 20 runs. The benchmark uses `λ = 1`
 because it replays a single fixed observation vector.
 
@@ -431,6 +438,12 @@ point the implementation's denominator/candidate finiteness guards reject the
 update. Those guards are implementation-level numerical protections, not a
 statement that `λ < 1` is invalid. The update path and its `O(D²)` work are
 unchanged; the correctness tests cover `λ < 1` over varying, exciting inputs.
+
+This historical table keeps the benchmark's original `bounded-fold` label for
+the foundation **unbounded** ordered fold (`src/foundation/state::process_batch`,
+consuming owned observations). It is **not** the RLS-local bounded reference API
+`Rls::process_batch_reference`, which is measured separately below; historical
+values are unchanged and are not attributed to the new API.
 
 | features | path | ns/obs | allocs/obs | bytes/obs |
 |---:|---|---:|---:|---:|
@@ -476,6 +489,108 @@ The long-run test (`tests/rls.rs`) runs 10,000 deterministic observations at
 `D = 4`, `λ = 0.999`, and asserts every state stays finite, matches the
 independent scalar reference bitwise, and remains exactly symmetric. Symmetry is
 preserved because `v_i v_j == v_j v_i` exactly in IEEE `f32`.
+
+### Release batch-size sweep ([new run], recorded run-time revision `b63da4f`)
+
+Release run `cargo bench --bench rls -j 2` at the recorded run-time revision
+`b63da4f056c24b3475daf1adaf8ea1655060e827` (branch `rust-development`, clean
+working tree), `env os=linux arch=x86_64 profile=release parallelism=20`, 20
+normalized measurement windows per cell, single machine (12th Gen Intel Core
+i7-12700H, 20 logical CPUs), rustc/cargo `1.97.1`, Linux
+`6.18.40.1-microsoft-standard-WSL2`. The run-time revision, toolchain, and
+working-tree status were captured in the run metadata (from `git rev-parse HEAD`
+and the same-session `git status`), not inferred. `SEQVEX_EVIDENCE_ONLY` was
+unset, so the full benchmark executed.
+
+Full-horizon numerical validation passed **before** any timing: `D = 8`
+obs `209920` (102 wrap crossings) and `D = 32` obs `168960` (82 wrap crossings).
+The release validator aborts on the first failed update or non-finite state;
+there was no reset, skip, retry, or shortened horizon. Matrix: `λ = 0.999`,
+`D ∈ {8, 32}`, `B ∈ {1, 8, 32, 128}`, `outer = 128`
+(`work_per_call = OUTER = 128`). `grouped` is
+`StreamingExecutor::process_one`; `bounded-ref` is `Rls::process_batch_reference`;
+`foundation-fold` is the foundation `process_batch` cloning control, labelled
+separately.
+
+Fixture limitation: one deterministic persistent-excitation observation is
+replayed cyclically (period `2048`), so this is a fixed-target cyclic-replay
+grouping-cost experiment, not input-distribution performance and not a claim of
+statistical applicability. `ns/obs`, `p95`, `IQR`, `obs/s`, `allocs/obs`, and
+`bytes/obs` are the harness's measured values; `p95`/`IQR` describe variability
+across the normalized measurement windows, **not** individual-call or event
+latency; `bytes/obs` is allocator allocation/reallocation traffic, **not**
+live/peak memory. `derived ns/batch = median × B` is **harness-derived**.
+Committed payload is the **calculated** `(D + D²) × 4` bytes.
+
+**D = 8** (`outer_invocations/run` = 32, `timed_obs` = 4096):
+
+| path | B | ns/obs | p95 | IQR | obs/s | allocs/obs | bytes/obs | derived ns/batch |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| grouped | – | 226.2 | 233.1 | 4.4 | 4420739 | 5.000 | 384.0 | – |
+| bounded-ref | 1 | 228.4 | 242.3 | 3.6 | 4379147 | 5.000 | 384.0 | 228.4 |
+| bounded-ref | 8 | 230.3 | 236.0 | 4.2 | 4341853 | 5.000 | 384.0 | 1842.5 |
+| bounded-ref | 32 | 226.9 | 233.5 | 8.0 | 4407087 | 5.000 | 384.0 | 7261.0 |
+| bounded-ref | 128 | 227.3 | 234.1 | 1.4 | 4399396 | 5.000 | 384.0 | 29094.9 |
+| foundation-fold | 1 | 227.6 | 246.8 | 8.1 | 4393525 | 6.000 | 416.0 | 227.6 |
+| foundation-fold | 8 | 238.5 | 368.3 | 12.9 | 4193057 | 6.000 | 416.0 | 1907.9 |
+| foundation-fold | 32 | 239.1 | 253.1 | 8.3 | 4182003 | 6.000 | 416.0 | 7651.8 |
+| foundation-fold | 128 | 247.0 | 252.7 | 5.6 | 4048371 | 6.000 | 416.0 | 31617.7 |
+
+**D = 32** (`outer_invocations/run` = 16, `timed_obs` = 2048):
+
+| path | B | ns/obs | p95 | IQR | obs/s | allocs/obs | bytes/obs | derived ns/batch |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| grouped | – | 2330.0 | 2399.2 | 66.8 | 429181 | 5.000 | 4608.0 | – |
+| bounded-ref | 1 | 2197.7 | 2273.1 | 89.2 | 455019 | 5.000 | 4608.0 | 2197.7 |
+| bounded-ref | 8 | 2252.8 | 2279.0 | 25.4 | 443897 | 5.000 | 4608.0 | 18022.2 |
+| bounded-ref | 32 | 2244.2 | 2285.0 | 39.0 | 445597 | 5.000 | 4608.0 | 71813.7 |
+| bounded-ref | 128 | 2296.5 | 2404.9 | 77.0 | 435439 | 5.000 | 4608.0 | 293956.2 |
+| foundation-fold | 1 | 2275.3 | 2882.4 | 212.3 | 439506 | 6.000 | 4736.0 | 2275.3 |
+| foundation-fold | 8 | 2275.2 | 2298.4 | 19.8 | 439515 | 6.000 | 4736.0 | 18201.9 |
+| foundation-fold | 32 | 2282.6 | 2366.2 | 49.3 | 438094 | 6.000 | 4736.0 | 73043.7 |
+| foundation-fold | 128 | 2184.2 | 2281.6 | 101.4 | 457840 | 6.000 | 4736.0 | 279573.7 |
+
+Applying the harness materiality rule (`difference > 2·max(IQR)` AND
+`difference > 5%·max(median)` → clearly measurable; exactly one → borderline/noisy;
+neither → not materially different):
+
+- Bounded-reference per-observation cost does not differ materially across
+  `B ∈ {1, 8, 32, 128}` at either dimension. Grouping the bounded reference does
+  not change `allocs/obs` (`5.000`) or `bytes/obs` (`384.0` at `D = 8`, `4608.0`
+  at `D = 32`).
+- Grouped streaming and the bounded reference do not differ materially, except
+  `D = 32, B = 1`, which is borderline/noisy (2330.0 vs 2197.7 ns/obs).
+- The foundation-fold cloning control meets the materiality rule only at
+  `D = 8, B = 128` (247.0 vs 227.3 ns/obs; clearly measurable). `D = 8, B = 32`
+  is borderline/noisy (difference `12.2` ns/obs against `2·max(IQR)` `16.6` and
+  `5%·max(median)` `11.96`). At `D = 32, B = 128` the difference is `112.3`
+  ns/obs against `2·max(IQR)` `202.8` and `5%·max(median)` ≈ `114.8`: neither
+  threshold is exceeded, so it is **not materially different** under the rule in
+  this capture; this does not establish equivalence or absence of a useful
+  improvement. The foundation-fold control records `6.000` allocations/obs
+  versus `5.000` for the bounded reference, with additional allocator-counted
+  traffic of `32` bytes/obs at `D = 8` and `128` bytes/obs at `D = 32`.
+- No clearly measurable grouping benefit is observed in this capture.
+
+Limitations: fixed-target cyclic replay (period `2048`); `λ = 0.999`; single
+machine; one capture with 20 windows and no independent repeat; background
+editor/service processes were present (load average ≈ `1` before the run, and
+the benchmark itself drove load to ≈ `4`). The measured numerical envelope is
+`D ∈ {8, 32}` under the `λ = 0.999` persistent-excitation design; the
+full-horizon validator traversed the complete intended trajectory with no guard
+failure, but larger `D` remain subject to the finite-precision `λ < 1`
+covariance-inflation envelope described above (`D = 128` is deferred). These
+comparative outcomes are single-run **directional** evidence, not
+acceptance-grade comparative performance conclusions.
+
+The same run re-executed the unchanged `λ = 1` control, the decision-grade A/B/C
+workloads, and the Category B evidence decomposition; those are not the subject
+of this record.
+
+The reference path is retained; optimization and profiling are deferred. This
+run does not establish a CPU profile, a bottleneck identification, a universal
+speedup, or production readiness, and it does not alter the RLS
+production-readiness gates.
 
 ## Major deferred decisions
 

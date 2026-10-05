@@ -62,7 +62,7 @@ this matrix does not create or close Issues.
 | **Decision Tree** | #24 | Read-only traversal from a trained tree | None (immutable at inference) | None, or a small traversal path | Streaming per-observation traversal; independent observations may micro-batch | Implemented (reference/streaming/micro-batch; regression only, classification deferred) |
 | **K-Nearest Neighbors** | #25 | Brute-force distance + neighbor selection | Stored reference observations + `k` | Per-query distance scratch `O(N)`; neighbor set `O(k)` | Streaming per-query; independent queries may micro-batch | Implemented (reference/streaming/micro-batch; regression only, classification deferred) |
 | **GRU bounded micro-batch** | #34 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Implemented (reference streaming + bounded fold); measurement pending |
-| **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Implemented (reference/streaming + RLS-local bounded reference batching); measurement pending |
+| **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Implemented (reference/streaming + RLS-local bounded reference batching); release batch-size sweep recorded |
 
 Two families emerge from the matrix and are the point of the exercise:
 
@@ -246,13 +246,44 @@ so the steady cost is 5 allocations/observation dominated by `P'`, and
 bytes/observation scale with `D²` (`384` at `D = 8`, `266240` at `D = 256`).
 Streaming and the foundation (unbounded) ordered fold are **not** faster than
 the direct reference; the fold additionally costs one extra
-allocation/observation because it consumes owned observations. The RLS-local
-bounded reference API (`Rls::process_batch_reference`) preserves the same
-ordered transition semantics through direct `Rls::update` calls over borrowed
-observations — not by calling the foundation fold — and has no separate
-measurement yet; measurement is pending. The `O(D²)` candidate allocation is the
-RLS-specific evidence, reported rather than optimized — a double-buffered `P`
-would raise an unresolved workspace-ownership question.
+allocation/observation because it consumes owned observations. These are
+**historical** measurements of the foundation **unbounded** ordered fold, not
+the RLS-local bounded API measured below.
+
+**[new run]** A release batch-size sweep at the recorded run-time revision
+`b63da4f` (clean worktree; rustc/cargo `1.97.1`;
+Linux WSL2 x86_64; i7-12700H, 20 logical CPUs; `cargo bench --bench rls -j 2`)
+executed the reviewed matrix `λ = 0.999`, `D ∈ {8, 32}`, `B ∈ {1, 8, 32, 128}`,
+`outer = 128` (`work_per_call = OUTER`), comparing grouped
+`StreamingExecutor::process_one` with
+`Rls::process_batch_reference` and a separately labelled foundation-fold cloning
+control. Full-horizon numerical validation passed **before** timing (`D = 8`
+obs `209920`; `D = 32` obs `168960`). Within this capture, bounded-reference
+per-observation cost does not change materially across `B` at either dimension;
+grouped streaming and the bounded reference do not differ materially
+(`D = 32, B = 1` is borderline/noisy); the foundation-fold control is clearly
+measurable only at `D = 8, B = 128` (247.0 vs 227.3 ns/obs) and always costs
+`6.000` allocs/obs and `+32` bytes/obs. No clearly measurable grouping benefit
+is observed. The fixture is a fixed-target cyclic replay (period `2048`) on one
+machine over 20 windows within the `D ∈ {8, 32}` `λ = 0.999` numerical envelope
+(the full-horizon validator passed with no guard failure; larger `D` remain
+subject to the `λ < 1` covariance-inflation envelope, and `D = 128` is deferred);
+these are single-run directional outcomes, not acceptance-grade comparative
+performance conclusions. The full table, the
+separated measured/harness-derived/calculated quantities, and the provenance are
+in `src/models/online/README.md` ("Release batch-size sweep").
+
+The RLS-local bounded reference API (`Rls::process_batch_reference`) preserves
+the same ordered transition semantics through direct `Rls::update` calls over
+borrowed observations — not by calling the foundation fold. The `O(D²)`
+candidate allocation is the RLS-specific evidence, reported rather than
+optimized — a double-buffered `P` would raise an unresolved workspace-ownership
+question.
+
+The reference path is retained; optimization and profiling are deferred. No CPU
+profiling, bottleneck identification, universal speedup, or production readiness
+is established by this run, and the RLS production-readiness gates are
+unchanged.
 
 RLS also confirms the ownership rule: adaptive state belongs to the stream, not
 the model. One immutable `&Rls` can now drive independent per-stream states both

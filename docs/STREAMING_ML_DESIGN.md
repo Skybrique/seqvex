@@ -8,6 +8,10 @@
 > **Purpose:** Establish a usable ML programme and its shared contracts before detailed algorithm designs, implementation plans and a final roadmap.
 > **Authority:** This draft records agreed discussion direction and proposals. It does not override the canonical development contract, close issues, declare production readiness, or modify existing APIs.
 
+## Publication boundary
+
+Public repository documents, code comments and issue records should contain project requirements, contracts, decisions and relevant evidence. Do not include personal filesystem paths, account identities, access privileges, connection or session settings, private authorization discussions, or assistant/plugin/tool branding unless explicitly requested for publication. Describe responsibilities using project roles and distinguish reported evidence from independently verified evidence without identifying private tooling.
+
 ## 1. User objective and document boundaries
 
 Seqvex is an open-source Rust ML library whose primary intended beneficiaries are the Maintainer and a small quantitative research/trading team. Users need complete, understandable learning and deployment workflows for selected common algorithms, with streaming first and bounded micro-batching as the additional public execution mode.
@@ -832,7 +836,7 @@ AGREED DIRECTION: this guide does not authorize algorithm implementation.
 3. Produce formal issue-linked technical analysis; perform relevant architecture review.
 4. Review and approve the written design.
 5. Produce implementation plan and conditional children/checklists; obtain approval.
-6. Authorize implementation scope/branch and involve KiloCode roles.
+6. Review implementation scope/branch and assign the architect, planner, implementation and independent-review responsibilities.
 7. Implement, independently review, verify and integrate under separate gates.
 
 The runbook requires an open parent during formal technical design. Preliminary scoping before issue creation is not the formal implementation-ready design. Do not invent issue numbers in draft filenames.
@@ -1027,7 +1031,7 @@ Inserted the confirmed feature/family/functional/project diagram and explained t
 
 ## 23. Sources and drafting provenance
 
-Repository documents in Section 2 were read through the GitHub connector at the stated branch checkpoint. CI and the manifest were also inspected. This turn did not rerun Rust checks, benchmarks or issue acceptance reviews. No repository files, issues, commits, PRs or branch history were modified.
+The technical comparison uses the repository documents, CI configuration and manifest at the stated historical checkpoint. It supplies no new Rust-check, benchmark or issue-acceptance evidence.
 
 Technical references used to ground the discussion:
 

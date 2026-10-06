@@ -22,8 +22,13 @@ harness = false
 name = "gru"
 harness = false
 
+[[test]]
+name = "linear_regression"
+path = "src/models/linear/ols/tests/public_contract.rs"
+
 [[bench]]
 name = "linear_regression"
+path = "src/models/linear/ols/benches/execution.rs"
 harness = false
 
 [[bench]]

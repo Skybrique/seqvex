@@ -6,6 +6,13 @@ Holds the classic (non-recurrent) ML vertical slices. The first is linear
 regression prediction; the second is decision tree prediction; the third is
 K-nearest-neighbors prediction.
 
+> **Linear-regression relocation (issue #23).** The supplied-parameter
+> predictor now lives in the linear family at
+> [`models::linear::ols`](../linear/ols/README.md); that file is the canonical
+> linear-regression/OLS document. The `models::classic::linear_regression` path
+> is retained as a compatibility re-export of the same types. The historical
+> linear-regression material below is preserved.
+
 ## Responsibility
 
 - `linear_regression` — the immutable model `ŷ = w · x + b`, its reference
@@ -106,7 +113,8 @@ first element failure returns `Err` for the whole call with no partial output.
 
 ## Current tests / specification
 
-- `tests/linear_regression.rs`
+- `src/models/linear/ols/tests/public_contract.rs` (registered as the
+  `linear_regression` test target)
 - `tests/decision_tree.rs`
 - `tests/knn.rs`
 

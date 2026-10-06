@@ -18,6 +18,7 @@ use seqvex::foundation::state::process_one;
 use seqvex::models::classic::LinearRegression;
 
 #[allow(dead_code)]
+#[path = "../../../../../benches/common/mod.rs"]
 mod common;
 
 /// Existing fixed-observation control model (unchanged formula).

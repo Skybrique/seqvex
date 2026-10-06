@@ -1,18 +1,16 @@
 # Linear Regression — OLS requirements and issue lifecycle
 
-**PREPARATION PACKET v5 — live issue reconciliation, 2026-10-06.** This packet combines the OLS teaching README prototype, four detailed workstream bodies, the document–issue lifecycle and a bounded folder-preparation plan. It follows `FEATURE_DEVELOPMENT.md`. The user authorized preparation and the planned issue actions in chat; the technical fitting design and new algorithm implementation still require review. No commit, push, PR, merge or closure authorization is implied.
+**OLS requirements and issue lifecycle — v5, 2026-10-06.** This document combines the OLS teaching contract, four workstream snapshots, the document–issue lifecycle and the bounded folder-preparation plan. It follows `FEATURE_DEVELOPMENT.md`. Supplied-parameter prediction and its locality migration are implemented; the fitting design and new algorithm implementation remain subject to review.
 
-**Repository evidence checkpoint (freshly verified 2026-10-06):** `rust-development` @ `61bca3156997b90671599fbeb48121c8284be899`; `main` @ `cf95cd08b7f6b87b1d116acdbd947bc3ff92c10b`. The branch comparison is diverged (development 15 commits ahead, 2 behind). Do not merge/rebase to synchronize ancestry. The supplied-parameter predictor exists; OLS fitting/artifact/publication workflow and the proposed OLS folder are absent from the inspected remote tree.
+**Historical baseline evidence checkpoint (2026-10-06, before locality publication):** `rust-development` @ `61bca3156997b90671599fbeb48121c8284be899`; `main` @ `cf95cd08b7f6b87b1d116acdbd947bc3ff92c10b`. The branch comparison is diverged (development 15 commits ahead, 2 behind). Do not merge/rebase to synchronize ancestry. The supplied-parameter predictor exists; OLS fitting/artifact/publication workflow and the proposed OLS folder are absent from the inspected remote tree.
 
-## How to use this document
+## Document structure
 
 Read Part I for the algorithm contract and verified requirement owners, Part II for the reconciled live issue snapshots, Part III for the lifecycle, and Part IV for the exact repository map and bounded preparation tasks.
 
-**Verified GitHub access:** connector identity `boyboi86`; repository permissions include admin/pull/push/triage. GitHub override is **Allow all actions**; global default is **Allow low-risk actions**; this session declares approval policy **never**. The authorized state-only patch submitted `state=open` to #23 and succeeded; a fresh read confirmed its body, title and metadata were unchanged. This demonstrates access for that operation, not the cause of the prior restriction being resolved or authorization for Git actions.
-
 **Verified issue state:** #23 and #43–#46 are open. The native sub-issue API returns exactly #43, #44, #45 and #46 under #23. Parent Type is Feature; children Type is Task; all use milestone #3. Their bodies declare Planning, which is not a verified Project-board field. An all-state inventory contained 35 non-PR issues; no additional OLS fitting owner was identified. The existing four children were created before this reconciliation turn; this turn did not create or reopen them.
 
-**Canonical repository destination (PLANNED):** move the downloaded repository-root input `LINEAR_REGRESSION_REVIEW_PACKET.md` to `src/models/linear/ols/README.md`, renaming it to README.md. That path is not yet present at the remote checkpoint. Preserve the full reviewed contract and issue mappings; Parts II–IV remain its issue/design/preparation appendices. Keep one algorithm-local canonical document and no duplicate root/docs packet. The general guides retain `docs/STREAMING_ML_DESIGN.md` and `docs/CORRECTNESS.md` as their destinations.
+**Canonical repository document:** `src/models/linear/ols/README.md`, published with the locality refactor at `6fd691c33243c7342586b50e3c0394be984b8e36`. Keep one algorithm-local canonical document. Parts II–IV retain issue/design/preparation material; historical snapshots and preparation instructions do not establish current fitting capability. The general guides remain at `docs/STREAMING_ML_DESIGN.md` and `docs/CORRECTNESS.md`.
 
 | Requirement owner | Verified responsibility |
 |---|---|
@@ -24,7 +22,7 @@ Read Part I for the algorithm contract and verified requirement owners, Part II 
 
 Issue links indicate ownership, not completion. Documentation is required within each workstream; no separate documentation child is needed.
 
-**Source availability:** no repository AGENTS.md appears in the inspected remote tree. The ChatGPT project AGENTS.md protects `sources/`; KiloCode must separately inspect all applicable instructions in the actual checkout. Neither general guide is present remotely. Current discussion drafts were read by stable identity (STREAMING_ML_DESIGN text v4 / saved version 6; CORRECTNESS text v1). Actual local checkout copies and working-tree state remain unverified. Preserve them; do not silently create or rewrite a missing standing guide.
+**Repository guidance:** inspect applicable `AGENTS.md` instructions in the checkout. General design and correctness guides are available at `docs/STREAMING_ML_DESIGN.md` and `docs/CORRECTNESS.md`.
 
 **Preparation verification limit:** no code move, fitter, Rust test or benchmark was executed in this review. The handoff forbids benchmark execution. Because `cargo test --all-targets` can run the custom `harness=false` benchmark binaries, Part IV uses benchmark-free test execution and compile-only target checks; the standing all-target execution gate remains NOT RUN/deferred, not waived.
 
@@ -225,7 +223,6 @@ These values are candidates, not a required blind Cartesian sweep or newly colle
 - Audit avoidable copying/allocation, fitting workspace reuse, prediction hot loops and independent multicore opportunities before proposing optimization. Check numerical order, ownership, capacities and future layout/device compatibility. **([#46](https://github.com/Skybrique/seqvex/issues/46))**
 - Keep reference semantics intact; any SIMD/parallel reduction, new precision, custom allocator, build profile or hardware backend requires its own justified design/evidence. CPU/software opportunities precede layout/device work; GPU remains later. No optimization is authorized by this measurement child. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
-
 ### Ownership of later optimization — keep four workstreams
 
 | Concern | Primary owner | Supporting verification |
@@ -355,7 +352,6 @@ CPU optimization follows execution coverage and profiling.
 - Any recurring abstraction requirement is documented rather than generalized prematurely.
 - fmt, tests, and Clippy pass.
 
-
 ---
 
 ## OLS extension — reopened 2026-10-06
@@ -402,7 +398,6 @@ CPU optimization follows execution coverage and profiling.
 **Classification:** Type Feature (set through the supported issue-type metadata operation); existing labels `enhancement`, `experimental`, `area::execution` and milestone #3 preserved. Area/label review for the expanded scope is deferred to Maintainer approval.
 
 All four issue bodies declare **Planning**; the technical design review remains pending. This describes the written stage, not a verified GitHub Project-board status. Passing folder-preparation checks does not constitute mathematical acceptance of a fitter that does not yet exist.
-
 
 ---
 
@@ -465,7 +460,6 @@ Type: Task. Area: unassigned pending an accurate existing classification. Nature
 
 A coherent code/API/failure deliverable with independent review and the ability to block #23; documentation and local refactor steps stay within it.
 
-
 ---
 
 ## #44 — Independently validate OLS mathematics and numerical behavior
@@ -517,7 +511,6 @@ Type: Task. Area: `area::test`. Nature: none proposed. Milestone: #3 (Sequential
 ## Why this issue
 
 Distinct mathematical evidence can reject a functional implementation; individual tests remain checklist tasks within this workstream.
-
 
 ---
 
@@ -572,7 +565,6 @@ Type: Task. Area: `area::test`. Nature: `experimental` for the explicit validati
 ## Why this issue
 
 Causal/regime evidence is distinct from algebra and independently blocks the claimed workflow.
-
 
 ---
 
@@ -630,7 +622,6 @@ Type: Task. Area: `area::benchmark`. Nature: none proposed. Milestone: #3 (Seque
 ## Why this issue
 
 Operational acceptance is a distinct blocking category; one run or group size is not another issue.
-
 
 **Review boundary:** these records declare Planning; technical design review and implementation remain pending. Parent Feature/child Task metadata and native relationships were verified through API reads; Project-board status was not inspected. For non-trivial code, an independent Code Reviewer is still required. This packet's author review does not satisfy that gate. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
@@ -734,7 +725,7 @@ Prefer feasible options that improve resource efficiency and correctness/accurac
 
 **Historical v4 changes:** removed the agent handoff text; retained requirements, prepared bodies, lifecycle and folder/Cargo map. At v4 preparation time, issue writes were reported blocked and owner links were pending.
 
-**v5 changes:** freshly read the stable packet and repository; verified existing #23/#43–#46 and native links; replaced pending owners with real IDs; reconciled live issue snapshots without overwriting later valid decisions; clarified the planned README destination, written-stage versus Project status and each workstream's documentation requirement; corrected the removed-Part-V reference and benchmark-execution conflict. No solver/API/artifact policy was selected.
+**v5 changes:** compared the OLS contract with repository evidence; verified existing #23/#43–#46 and native links; replaced pending owners with real IDs; reconciled live issue snapshots without overwriting later valid decisions; clarified the planned README destination, written-stage versus Project status and each workstream's documentation requirement; corrected the removed-Part-V reference and benchmark-execution conflict. No solver/API/artifact policy was selected.
 
 **Evidence status:** this reconciliation freshly inspected the pinned repository docs, predictor, exports, tests, benchmark, Cargo/CI, current general discussion drafts, all-state issue inventory, comments and native links. The minimal state-only GitHub probe succeeded and was read back. Scope-preserving body updates to #23/#43–#46 were each read back, preserving metadata/relationships. No Rust command, benchmark, Git mutation, critical-document edit, folder move, fitter implementation or independent completion audit occurred. The prior approval error is historical; its cause is not established.
 
@@ -742,7 +733,7 @@ Prefer feasible options that improve resource efficiency and correctness/accurac
 
 **Implementation/evidence references:** [predictor source](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/src/models/classic/linear_regression.rs), [classic README](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/src/models/classic/README.md), [existing tests](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/tests/linear_regression.rs), [benchmark](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/benches/linear_regression.rs), [historical audit](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/docs/ALGORITHM_CORRECTNESS_AUDIT.md), and [#23 original completion record](https://github.com/Skybrique/seqvex/issues/23#issuecomment-5796329062).
 
-**Design references:** local copies of the [streaming design draft](sandbox:/C:/Users/Wei_X/.codex/.chatgpt-projects/g-p-6ab7d911894c8191b2dbcf7358f40ef8/artifacts/seqvex-design-v1/STREAMING_ML_DESIGN.md) and [correctness guide draft](sandbox:/C:/Users/Wei_X/.codex/.chatgpt-projects/g-p-6ab7d911894c8191b2dbcf7358f40ef8/artifacts/seqvex-design-v1/CORRECTNESS.md). [LAPACK's least-squares guide](https://www.netlib.org/lapack/lug/node27.html) supports the distinction between full-rank and rank-deficient solution policies/factorizations; no LAPACK backend adoption is proposed.
+**Design references:** [streaming design draft](../../../../docs/STREAMING_ML_DESIGN.md) and [correctness guide draft](../../../../docs/CORRECTNESS.md). [LAPACK's least-squares guide](https://www.netlib.org/lapack/lug/node27.html) supports the distinction between full-rank and rank-deficient solution policies/factorizations; no LAPACK backend adoption is proposed.
 
 **Review focus:** confirm the four issue scopes, canonical README destination, compatible local migration and preparation boundary. Issue IDs #43–#46 and native relationships are now verified; link ownership does not establish implementation. Solver/API/artifact/capacity decisions remain for formal design; this packet is not evidence of a trainable production model.
 
@@ -750,7 +741,7 @@ Prefer feasible options that improve resource efficiency and correctness/accurac
 
 # Part IV — OLS-local structure and implementation readiness
 
-**Goal:** prepare a discoverable, compatible algorithm-local home and an issue-linked task plan before implementing the new OLS fitter. This review prepares instructions only; KiloCode performs the approved behavior-preserving locality refactor when the prompt is invoked. This is local organization for one algorithm, not a repository-wide restructure.
+**Goal:** provide a discoverable, compatible algorithm-local home and an issue-linked task plan before implementing the OLS fitter. The behavior-preserving locality refactor is published at `6fd691c33243c7342586b50e3c0394be984b8e36`; the preparation steps below retain the migration plan and require evidence-based status reconciliation. This is local organization for one algorithm, not a repository-wide restructure.
 
 **Architecture:** keep immutable prediction separate from fitting resources, candidate validation and application-controlled model acceptance. Preserve current public paths through re-exports. Keep genuine cross-component tests/benchmarks centralized.
 
@@ -818,7 +809,7 @@ Private unit tests in tests/unit.rs require module wiring from the appropriate s
 
 - [ ] Verify live open/closed issue inventory, #23 scope/history/native children, current refs and user-supplied local guides.
 - [ ] Record source/module/test/benchmark hashes and Cargo target names before moves; record original tests listed by cargo test --test linear_regression -- --list.
-- [x] GitHub reconciliation verified #43–#46 as native children of #23 and replaced pending owner links. KiloCode uses these records; GitHub mutations stay with ChatGPT.
+- [x] GitHub reconciliation verified #43–#46 as native children of #23 and replaced pending owner links. Implementation follows these records; issue reconciliation remains a separate responsibility.
 - [ ] Preserve the existing main/development content synchronization and ancestry divergence; no merge/rebase is part of this task.
 
 **Owner:** #23 planning; migration tasks belong to #43. A stale or unexplained working tree is reported under §24.9; user-provided documentation is inventoried and preserved rather than discarded.
@@ -911,7 +902,7 @@ Do not keep the old root test/bench file as another independently compiled copy.
 - [ ] Convert sandbox-only references into valid repository references; validate local links.
 - [ ] Add the concise family README and a link from the classic README without deleting historical evidence.
 - [ ] Keep user-provided docs/STREAMING_ML_DESIGN.md and docs/CORRECTNESS.md in docs/, preserving contents.
-- [x] ChatGPT reconciled the canonical README destination and existing dependencies in #23 and each child. KiloCode reports local results in chat; it does not mutate GitHub.
+- [x] The canonical README destination and existing dependencies were reconciled in #23 and each child. Local implementation evidence and issue reconciliation have separate review responsibilities.
 - [ ] Any needed change to critical architecture/development/runbook content is presented separately before editing.
 
 **Owner:** #43 implementation for teaching/interface/locality facts; supporting workstreams maintain their own evidence; #23 owns scope and overall traceability.

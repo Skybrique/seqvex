@@ -142,7 +142,7 @@ impl LinearRegression {
     /// aggregating observations cannot change any individual result; the tests
     /// assert bitwise equality with repeated single-observation prediction.
     ///
-    /// ponytail: a straightforward sequential map, not a vectorized kernel.
+    /// A straightforward sequential map, not a vectorized kernel.
     /// There is no measured LR bottleneck justifying SIMD, so none is added.
     pub fn predict_batch(
         &self,

@@ -1,36 +1,20 @@
-# Linear Regression — OLS requirements and issue lifecycle
+# Linear Regression — ordinary least squares
 
-**OLS requirements and issue lifecycle — v5, 2026-10-06.** This document combines the OLS teaching contract, four workstream snapshots, the document–issue lifecycle and the bounded folder-preparation plan. It follows `FEATURE_DEVELOPMENT.md`. Supplied-parameter prediction and its locality migration are implemented; the fitting design and new algorithm implementation remain subject to review.
+This is the canonical OLS algorithm document. It describes user behavior, mathematical requirements, supported boundaries, issue ownership and evidence. Supplied-parameter prediction is implemented. OLS fitting, fitting diagnostics, versioned artifacts and the refitting/replacement workflow remain design requirements; no solver, fitting precision or public fitting API is selected here.
 
-**Historical baseline evidence checkpoint (2026-10-06, before locality publication):** `rust-development` @ `61bca3156997b90671599fbeb48121c8284be899`; `main` @ `cf95cd08b7f6b87b1d116acdbd947bc3ff92c10b`. The branch comparison is diverged (development 15 commits ahead, 2 behind). Do not merge/rebase to synchronize ancestry. The supplied-parameter predictor exists; OLS fitting/artifact/publication workflow and the proposed OLS folder are absent from the inspected remote tree.
+The initial scope is dense, unweighted ordinary least squares with one scalar numeric response per observation, any supported number of input features and an optional intercept. Serving uses an immutable predictor, with streaming first and caller-bounded micro-batching as the additional execution mode. Periodic refitting and deliberate model acceptance are distinct from incremental learning. Ridge, Lasso, logistic classification with declared regularization support and RLS retain their own contracts. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
-## Document structure
+This README does not replace the Architect technical design or the Planner implementation plan. Those are separate, issue-linked deliverables reviewed before the Coder starts the affected implementation. References to issues identify requirement owners, not completion.
 
-Read Part I for the algorithm contract and verified requirement owners, Part II for the reconciled live issue snapshots, Part III for the lifecycle, and Part IV for the exact repository map and bounded preparation tasks.
-
-**Verified issue state:** #23 and #43–#46 are open. The native sub-issue API returns exactly #43, #44, #45 and #46 under #23. Parent Type is Feature; children Type is Task; all use milestone #3. Their bodies declare Planning, which is not a verified Project-board field. An all-state inventory contained 35 non-PR issues; no additional OLS fitting owner was identified. The existing four children were created before this reconciliation turn; this turn did not create or reopen them.
-
-**Canonical repository document:** `src/models/linear/ols/README.md`, published with the locality refactor at `6fd691c33243c7342586b50e3c0394be984b8e36`. Keep one algorithm-local canonical document. Parts II–IV retain issue/design/preparation material; historical snapshots and preparation instructions do not establish current fitting capability. The general guides remain at `docs/STREAMING_ML_DESIGN.md` and `docs/CORRECTNESS.md`.
-
-| Requirement owner | Verified responsibility |
+| Requirement owner | Responsibility |
 |---|---|
-| [#23](https://github.com/Skybrique/seqvex/issues/23) | Scope/design decisions, architecture boundaries, overall acceptance and separately authorized integration/closure |
-| [#43](https://github.com/Skybrique/seqvex/issues/43) | Fitting/lifecycle, diagnostics, artifacts/recovery/API, local migration, ordinary tests and documentation |
-| [#44](https://github.com/Skybrique/seqvex/issues/44) | Independent mathematics, rank/conditioning, conversion and numerical validation |
-| [#45](https://github.com/Skybrique/seqvex/issues/45) | Temporal eligibility/causality, sequential/non-IID and regime-shift validation |
-| [#46](https://github.com/Skybrique/seqvex/issues/46) | Latency/throughput, allocations/allocator bytes, memory/scaling/tails, profiling and before/after audits |
+| [#23](https://github.com/Skybrique/seqvex/issues/23) | Scope, accepted design decisions, architecture boundaries, overall acceptance and integration |
+| [#43](https://github.com/Skybrique/seqvex/issues/43) | Fitting/lifecycle, API, diagnostics, artifacts/recovery, local code/tests, rustdoc and runnable teaching examples |
+| [#44](https://github.com/Skybrique/seqvex/issues/44) | Independent mathematics, rank/conditioning, precision/conversion and numerical validation |
+| [#45](https://github.com/Skybrique/seqvex/issues/45) | Availability/causality, sequential/non-IID validation and regime-shift evidence |
+| [#46](https://github.com/Skybrique/seqvex/issues/46) | Latency, throughput, allocations/allocator bytes, memory/scaling/tails, profiling and before/after audits |
 
-Issue links indicate ownership, not completion. Documentation is required within each workstream; no separate documentation child is needed.
-
-**Repository guidance:** inspect applicable `AGENTS.md` instructions in the checkout. General design and correctness guides are available at `docs/STREAMING_ML_DESIGN.md` and `docs/CORRECTNESS.md`.
-
-**Preparation verification limit:** no code move, fitter, Rust test or benchmark was executed in this review. The handoff forbids benchmark execution. Because `cargo test --all-targets` can run the custom `harness=false` benchmark binaries, Part IV uses benchmark-free test execution and compile-only target checks; the standing all-target execution gate remains NOT RUN/deferred, not waived.
-
-**Review scope:** dense, unweighted, single-target OLS; optional intercept; frozen prediction and periodic refitting. Single-target means one numeric output from multiple input features. This is the agreed trial direction; numerical/API/resource decisions remain subject to the final technical design review. Ridge, Lasso, logistic classification and RLS retain separate algorithm/task contracts. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
-
----
-
-# Part I — OLS algorithm README prototype
+Documentation is a completion requirement within each workstream. A separate documentation child is not required.
 
 ## 1. What this algorithm provides
 
@@ -38,7 +22,7 @@ OLS learns a linear predictor from a declared training dataset. For a new featur
 
 **Illustrative quant use:** fit a relationship between features known at an observation's origin and a specified future return, then stream predictions using fixed coefficients until an explicitly accepted refit replaces them. The application defines the features, target horizon and business acceptance; this example is not a profitability claim.
 
-| Capability | At the inspected checkpoint | Requirement / owner |
+| Capability | Current capability | Requirement / owner |
 |---|---|---|
 | Predict with supplied weights and bias | Implemented | Preserve the public prediction contract. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
 | Streaming and caller-bounded grouped prediction | Implemented | Demonstrate both paths with fitted parameters. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
@@ -55,7 +39,7 @@ This example uses the existing API, not a proposed fitting interface:
 
 ```rust
 use seqvex::foundation::numerical::Vector;
-use seqvex::models::classic::{LinearRegression, RegressionError};
+use seqvex::models::linear::ols::{LinearRegression, RegressionError};
 
 fn main() -> Result<(), RegressionError> {
     let model = LinearRegression::new(
@@ -68,7 +52,9 @@ fn main() -> Result<(), RegressionError> {
 }
 ```
 
-The API was checked against source in v1; this example was not compiled for either draft. Existing `weights()` and `bias()` expose parameters but do not establish a durable artifact format. Historical implementation owner: [#23](https://github.com/Skybrique/seqvex/issues/23).
+`weights()` and `bias()` expose the supplied parameters; they do not establish a durable artifact format. Both historical imports, `seqvex::models::classic::{LinearRegression, RegressionError}` and `seqvex::models::classic::linear_regression::{LinearRegression, RegressionError}`, remain compatibility re-exports of the canonical types. User-facing examples and rustdoc belong to [#43](https://github.com/Skybrique/seqvex/issues/43).
+
+The model requires nonempty, finite weights and a finite bias. `predict` checks feature dimension before feature finiteness. The existing errors are `ZeroDimension`, `NonFiniteParameter`, `DimensionMismatch { expected, actual }` and `NonFiniteInput`. The scalar response does not restrict the number of input features. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
 - Define fitting inputs as \(N\) rows of \(d\) features and \(N\) numeric targets, with explicit ownership and shape validation. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 - Provide the approved concrete path from fitting result and diagnostics to an immutable predictor; do not invent a public `fit` API before its design is accepted. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
@@ -141,7 +127,7 @@ The existing predictor owns immutable weights/bias and needs no mutable predicti
 - Measure model/workspace footprint, fitting peak memory and serving/refit overlap separately from allocated-byte traffic. **([#46](https://github.com/Skybrique/seqvex/issues/46))**
 - Perform necessary local moves with a before/after module/target map, compatible exports and discoverable tests/benchmarks. Family extraction requires concrete consumers and a demonstrated benefit. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
-**Illustrative locality map — proposed paths, not existing files:**
+**Locality responsibilities:** the OLS module, predictor, public-contract tests and prediction benchmark exist at the algorithm-local paths below. Fitting, numerical/temporal fixtures and fitting examples remain requirements rather than current capabilities.
 
 | Level / path | Contents | Owning issue |
 |---|---|---|
@@ -261,725 +247,65 @@ The current crate forbids unsafe code, while standing policy permits justified l
 - Maintain performance tables, workload/provenance links and memory distinctions beside the measurement delivery. **([#46](https://github.com/Skybrique/seqvex/issues/46))**
 - Maintain the parent acceptance/dependency/milestone map and final integration review. A linked issue alone is not proof that its requirement is implemented or validated. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
-The 12 sections cover the runbook's 17 README topics: algorithm/problem, mathematics, assumptions/regimes, learning, execution/state, streaming/grouping, validation, performance/memory, API/examples, limitations and edge cases.
+The sections address the runbook's algorithm/problem, mathematics, assumptions/regimes, learning, execution/state, streaming/grouping, validation, performance/memory, API/examples, limitations and edge-case requirements.
 
----
+## 13. Architect design and Planner plan
 
-# Part II — reconciled issue records and completion ownership
+The governing lifecycle is defined by [FEATURE_DEVELOPMENT.md](../../../../FEATURE_DEVELOPMENT.md), particularly its roles, lifecycle and documentation sections, and [DEVELOPMENT.md](../../../../docs/DEVELOPMENT.md). The README supplies requirements and declared user behavior; its tables and candidate options are inputs to design, not approval to implement.
 
-**Live snapshots, verified after body updates on 2026-10-06.** These preserve the current #23 history rather than substituting an old parent draft. They are issue records and planned requirements, not implementation evidence. Subsequent live issue decisions require fresh reconciliation.
-
-| Issue | State/type | Native relationship | Documentation/evidence owner | Reconciliation outcome |
-|---|---|---|---|---|
-| #23 | Open / Feature | Parent of #43–#46 | Scope, design, acceptance and integration | Historical prediction scope retained; planned README destination and written-stage boundary clarified |
-| #43 | Open / Task | Child of #23 | API, lifecycle, errors, examples and local migration | Existing scope retained; fitting error precedence remains design-pending; benchmark-free preparation checks clarified |
-| #44 | Open / Task | Child of #23 | Mathematics, tolerances, rank, oracle and numerical limits | Existing scope retained; explicit §12 documentation acceptance added |
-| #45 | Open / Task | Child of #23 | Availability, assumptions, regimes and temporal limits | Existing scope retained; explicit §12 documentation acceptance added |
-| #46 | Open / Task | Child of #23 | Performance tables, provenance, memory and measurement limits | Existing scope retained; explicit §12 documentation acceptance added |
-
-All states, labels, assignees, milestone and native relationships were preserved. No additional issue was needed. #27 is related historical audit evidence; #28 is existing shared benchmark infrastructure. Neither replaces the new fitter's own acceptance evidence.
-
-## #23 — Establish Linear Regression streaming and micro-batch execution
-
-## Objective
-
-Establish Linear Regression as the first classical-ML vertical slice and use it to test whether Seqvex's execution model generalizes beyond recurrent neural networks.
-
-The issue covers the basic/reference algorithm plus the first two concrete execution strategies: streaming and bounded micro-batching.
-
-**GitHub Issue Type intended: Feature**
-
-## Scope
-
-### Reference/basic algorithm
-
-Implement a minimal, mathematically transparent Linear Regression model suitable for Seqvex's sequential execution experiments.
-
-Establish:
-
-- parameter representation;
-- prediction;
-- input/dimension validation;
-- numerical behavior;
-- deterministic reference tests.
-
-Regression is the initial task formulation. Do not create a separate classification abstraction merely because a related linear score could later support classification.
-
-### Streaming
-
-Provide ordered single-observation execution suitable for repeated inference and, where the chosen slice requires it, clearly separate prediction from any parameter-update operation.
-
-### Micro-batching
-
-Provide bounded micro-batch execution over the same model semantics.
-
-For this algorithm, micro-batching may expose useful independent computation across observations. Do not assume a particular vectorized kernel before measurement.
-
-### Validation and measurement
-
-Compare streaming and micro-batch behavior for:
-
-- numerical equivalence;
-- ordering;
-- failure behavior;
-- latency;
-- throughput;
-- allocations/bytes;
-- workspace/memory behavior;
-- batch-size sensitivity.
-
-## Constraints
-
-Do NOT:
-
-- build a generalized supervised-learning trait hierarchy;
-- build a generalized batch scheduler;
-- introduce automatic execution selection;
-- introduce a generalized workspace abstraction;
-- add GPU/SIMD/unsafe optimization before profiling;
-- turn this issue into a complete training framework.
-
-CPU optimization follows execution coverage and profiling.
-
-## Acceptance criteria
-
-- Reference implementation is independently testable.
-- Streaming execution is implemented and tested.
-- Bounded micro-batch execution is implemented and tested.
-- Both paths preserve the defined numerical contract.
-- Representative batch sizes are measured.
-- Allocation and latency results are recorded separately.
-- Any recurring abstraction requirement is documented rather than generalized prematurely.
-- fmt, tests, and Clippy pass.
-
----
-
-## OLS extension — reopened 2026-10-06
-
-**Status:** Reopened to extend the completed prediction slice with OLS fitting and periodic refitting, per the approved locality plan whose canonical destination is `src/models/linear/ols/README.md` (not yet present at the verified remote checkpoint). The original objective, scope and completion record above are preserved unchanged as the historical prediction record.
-
-**Objective:** deliver the approved minimum complete dense, single-target, unweighted OLS fitting-to-streaming workflow, building on the completed supplied-parameter prediction slice.
-
-**Parent of (native children, verified through the sub-issues API):**
-
-- #43 — Implement OLS fitting and deployment contract.
-- #44 — Independently validate OLS mathematics and numerical behavior.
-- #45 — Validate OLS refitting on sequential and non-IID data.
-- #46 — Audit OLS fitting and prediction latency, allocation and memory.
-
-**Mathematical/technical contract:** Part I §§3–8 of the OLS README, finalized by the approved technical design; preserve existing prediction compatibility and document fitting/rank/precision/failure boundaries. The technical fitting design is a proposal requiring Maintainer approval before implementation.
-
-**Alternatives considered:** rank-aware pivoted QR baseline versus SVD least squares; defined rank rejection versus minimum-norm support; f64 fitting workspace versus the current f32 predictor substrate; caller-owned data versus necessary retained solver input; concrete artifact/handoff versus a premature generic registry. Record the chosen approach, rejected alternatives, evidence and reversal costs in the parent design record.
-
-**Workstreams and repository map:**
-
-- Fitting, diagnostics, artifact/handoff, existing prediction integration and local migration map — #43.
-- Independent OLS oracle, rank/conditioning and prediction-contract verification — #44.
-- Eligible refit windows, training-only transformations and temporal/regime fixtures — #45.
-- Local component benchmarks and integrated fitting/serving resource evidence — #46.
-- Overall README completeness, shared dependencies and feature integration — #23.
-
-**Risks:** poor conditioning, accidental numerical-semantic changes, input retention/fit peaks, incoherent transform/model replacement, leakage, recovery assumptions and speculative abstraction. Route each discovery to the relevant document passage and owning issue; contract conflicts require resolution before affected implementation continues.
-
-**Deferred decisions requiring resolution before affected implementation:** solver/dependency, precision/rank policy, public fitting API, resource envelope, artifact schema, replacement/retry boundary and temporal/performance acceptance. Future algorithm variants and device/runtime frameworks remain out of scope.
-
-**Acceptance criteria and owners:**
-
-- Approve OLS objective, intercept, numerical/rank/data envelope and material architecture/API decisions — #23.
-- Implement fitting, approved diagnostics and immutable predictor construction; validate shape/value/rank failures — #43.
-- Implement the minimum artifact and coherent replacement/recovery behavior; preserve serving state on failed candidate operations — #43.
-- Independently validate coefficients/residuals, numerical edge cases, conversion and required prediction equivalence — #44.
-- Validate eligible temporal fitting/refitting, transformation boundaries and declared non-IID regimes — #45.
-- Record release latency/throughput, allocations/bytes, fitting/serving memory, scaling and relevant tails with provenance/limitations — #46.
-- Pass required Rust checks for the code delivery; deliver usable README/rustdoc and practical API examples — #43.
-- Resolve independent mathematical review findings and document the tested numerical envelope — #44.
-- Resolve applicable architecture and independent code-review findings; verify required children, documentation, integration and final parent completion before separately authorized closure — #23.
-
-**Classification:** Type Feature (set through the supported issue-type metadata operation); existing labels `enhancement`, `experimental`, `area::execution` and milestone #3 preserved. Area/label review for the expanded scope is deferred to Maintainer approval.
-
-All four issue bodies declare **Planning**; the technical design review remains pending. This describes the written stage, not a verified GitHub Project-board status. Passing folder-preparation checks does not constitute mathematical acceptance of a fitter that does not yet exist.
-
----
-
-## #43 — Implement OLS fitting and deployment contract
-
-## Parent
-
-Native sub-issue of #23 (native linkage established and read back after creation). Canonical design and task-plan destination: `src/models/linear/ols/README.md`. At remote `rust-development` @ `61bca3156997b90671599fbeb48121c8284be899`, this path is not yet present; the reviewed packet is the preparation input. Folder preparation must place that packet there and leave one canonical README.
-
-## Stage
-
-**Planning** — technical design review pending. This body records the approved preparation scope; it does not authorize implementation on its own.
-
-## Category
-
-Implementation.
-
-## Objective
-
-Make the approved dense, single-target, unweighted OLS fitting-to-prediction contract usable, building on the completed supplied-parameter prediction slice.
-
-## Scope / planned change
-
-Implement the requirements owned by this workstream in Part I §§2–8 and 11–12 of the canonical OLS README:
-
-- OLS fitting and rank/numerical diagnostics under the approved numerical contract;
-- input validation covering empty inputs, zero features, mismatched row/target counts, inconsistent dimensions and non-finite features/targets; finalize fitting error precedence in the approved technical design;
-- construction of an immutable predictor from a validated fit result (weights + intercept), with no silent regularization, feature dropping or sample weighting;
-- minimal versioned artifact validation/import/export: encoding/version/limits, coefficients/intercept, dimensions, feature order/schema and transform linkage; reject malformed/truncated/incompatible input before installation;
-- candidate acceptance/recovery: the active predictor remains unchanged on failed fit or import; document the in-flight version policy, retry expectations and supervision boundary;
-- streaming and bounded grouped prediction integration with fitted parameters;
-- local module/test/benchmark wiring, ordinary code tests and teaching examples;
-- carry the approved local migration and any later approved same-objective optimization code in this workstream. Do not open a child issue per refactor, loop, execution mode or optimization stage.
-
-## Evidence required
-
-Working API/example; fit and diagnostic fixtures; candidate/import/retry failure tests; existing predictor regression tests; Cargo target discovery; required build/test/fmt/Clippy/MSRV results.
-
-## Planned Rust checks (NOT RUN yet; later implementation scope)
-
-`cargo fmt --all -- --check`; `cargo build --locked --all-targets --all-features -j 2`; `cargo test --locked --all-targets --all-features -j 2`; `cargo clippy --locked --all-targets --all-features -j 2 -- -D warnings`; `cargo +1.85.1 test --locked --all-targets --all-features -j 2`.
-
-Folder-preparation authorization excludes benchmark execution. For that preparation, use `cargo test --locked --all-features --lib --tests --examples -j 2` and its Rust 1.85.1 equivalent, plus `cargo build --locked --all-targets --all-features -j 2`, Clippy and benchmark `--no-run`. `cargo test --all-targets` can execute the current `harness=false` benchmark binaries; defer those all-target execution checks until separately authorized and report the gap. This does not amend CI or the standing development contract.
-
-## Acceptance criteria
-
-All linked implementation requirements satisfied; no silent numerical repair; documented resource/error boundaries; existing prediction compatibility preserved or explicitly approved; README/rustdoc match actual behavior.
-
-Maintain README/rustdoc, migration/current API facts, errors, lifecycle and practical examples for this workstream (Part I §12).
-
-## Dependencies
-
-Approved #23 scope, approved technical design and the applicable critical architecture review; numerical/temporal findings resolved before the corresponding behavior is claimed.
-
-## Classification
-
-Type: Task. Area: unassigned pending an accurate existing classification. Nature: `enhancement`. Milestone: #3 (Sequential ML Slice - Classic ML).
-
-## Why this issue
-
-A coherent code/API/failure deliverable with independent review and the ability to block #23; documentation and local refactor steps stay within it.
-
----
-
-## #44 — Independently validate OLS mathematics and numerical behavior
-
-## Parent
-
-Native sub-issue of #23 (native linkage established and read back after creation). Canonical design and task-plan destination: `src/models/linear/ols/README.md`. At remote `rust-development` @ `61bca3156997b90671599fbeb48121c8284be899`, this path is not yet present; the reviewed packet is the preparation input. Folder preparation must place that packet there and leave one canonical README.
-
-## Stage
-
-**Planning** — technical design review pending. Controls can be designed before the fitter exists; final evidence requires the executable implementation.
-
-## Category
-
-Mathematical correctness.
-
-## Objective
-
-Independently verify the accepted OLS and prediction numerical contracts.
-
-## Scope / planned change
-
-Linked requirements in Part I §§3, 4, 6, 8, 9 and 12:
-
-- analytic exact and nonzero-residual fits with matched objective, intercept, rank policy and precision;
-- an independent oracle (for example a scalar closed-form control for a single feature and a separately justified reference for multiple features), supplementing rather than replacing residual/optimality checks;
-- rank and conditioning boundaries: duplicate columns, constant feature plus enabled intercept, row count below coefficient count, nearly dependent columns, scale extremes, and fit-to-prediction `f32` conversion boundaries;
-- existing prediction regression: reduction order, public imports, dimension/finiteness checks, and single/stream/group equivalence;
-- numerical failure outcomes and the limitations of those checks.
-
-## Evidence required
-
-Matched mathematical controls; tolerance justification distinguishing conditioning-aware fit tolerances from bitwise prediction requirements; supported/rejected boundary fixtures; reproducible revision and commands; scoped audit findings.
-
-## Acceptance criteria
-
-Independent evidence establishes the supported numerical envelope; violations are resolved; fitting tolerance and prediction bitwise requirements are distinguished; no "defect-free everywhere" claim.
-
-Maintain the README mathematics, approved tolerances/rank policy, oracle links, tested revision and numerical limitations for this workstream (Part I §12).
-
-## Dependencies
-
-Approved numerical design; the implementation workstream for final evidence. Analytical controls can be designed beforehand.
-
-## Classification
-
-Type: Task. Area: `area::test`. Nature: none proposed. Milestone: #3 (Sequential ML Slice - Classic ML).
-
-## Why this issue
-
-Distinct mathematical evidence can reject a functional implementation; individual tests remain checklist tasks within this workstream.
-
----
-
-## #45 — Validate OLS refitting on sequential and non-IID data
-
-## Parent
-
-Native sub-issue of #23 (native linkage established and read back after creation). Canonical design and task-plan destination: `src/models/linear/ols/README.md`. At remote `rust-development` @ `61bca3156997b90671599fbeb48121c8284be899`, this path is not yet present; the reviewed packet is the preparation input. Folder preparation must place that packet there and leave one canonical README.
-
-## Stage
-
-**Planning** — the target/availability example contract and workflow design must be agreed before final validation. Positive/negative fixtures can be specified beforehand.
-
-## Category
-
-Statistical / non-IID validation.
-
-## Objective
-
-Verify causal refitting/evaluation and document supported regime behavior.
-
-## Scope / planned change
-
-Linked requirements in Part I §§4–5, 8–9 and 11–12:
-
-- feature/target availability timelines: only rows whose features and labels are available at the declared cutoff are eligible;
-- training-only transformations: fit preprocessing on eligible training rows and apply the corresponding transformation at prediction time;
-- chronological/walk-forward evaluation with an explicit baseline and a suitable prediction-error metric (constant-target behavior defined if `R²` is offered);
-- overlapping label intervals and purging/embargo handling tied to target construction, not a universal gap;
-- positive eligibility test and negative leakage control from the illustrative timeline;
-- regime/dependence fixtures: correlated features, serially dependent (AR-like) observations, repeated rows, scale changes, abrupt and gradual shifts;
-- keep numerical solvability, leakage prevention and predictive usefulness distinct.
-
-## Evidence required
-
-Inspectable cutoffs; positive and negative leakage controls; explicit baseline/metrics; supported scenarios and limitations; reproducible revision and commands.
-
-## Acceptance criteria
-
-Unavailable information is excluded; the declared fitting/refit workflow holds; regime results and numerical solvability remain distinct; no universal prediction or profitability claim.
-
-Maintain the README availability/eligibility examples, temporal assumptions, evaluated regimes, tested revision and statistical limitations for this workstream (Part I §12).
-
-## Dependencies
-
-Agreed task/horizon example and workflow design; the implementation workstream for final workflow validation. No market-data service or backtester is required.
-
-## Classification
-
-Type: Task. Area: `area::test`. Nature: `experimental` for the explicit validation hypotheses. Milestone: #3 (Sequential ML Slice - Classic ML).
-
-## Why this issue
-
-Causal/regime evidence is distinct from algebra and independently blocks the claimed workflow.
-
----
-
-## #46 — Audit OLS fitting and prediction latency, allocation and memory
-
-## Parent
-
-Native sub-issue of #23 (native linkage established and read back after creation). Canonical design and task-plan destination: `src/models/linear/ols/README.md`. At remote `rust-development` @ `61bca3156997b90671599fbeb48121c8284be899`, this path is not yet present; the reviewed packet is the preparation input. Folder preparation must place that packet there and leave one canonical README.
-
-## Stage
-
-**Planning** — workload/resource acceptance budgets must be agreed before claims. Harness preparation can proceed earlier within scope.
-
-## Category
-
-Benchmark / allocation / latency audit.
-
-## Objective
-
-Establish release performance/resource evidence for OLS fitting and serving, and audit concrete optimization opportunities.
-
-## Scope / planned change
-
-Linked requirements in Part I §§7, 10 and 12:
-
-- separate cold fit/import cost from steady-state serving;
-- fit workloads across representative row counts and feature dimensions, including a full-rank baseline and representative conditioning cases;
-- streaming/grouped prediction workloads with per-observation and per-call normalization;
-- model/workspace footprint, fitting peak memory and serving/refit overlap, reported separately from allocated-byte traffic;
-- record distributions, throughput, allocations and allocated bytes, scaling, raw provenance and repeat limitations;
-- audit avoidable copying/allocation, fitting workspace reuse, prediction hot loops and independent multicore opportunities before proposing optimization, checking numerical order, ownership, capacities and future layout/device compatibility.
-
-## Evidence required
-
-Comparable work definitions; correctness guards outside timing; distributions/throughput; allocation/bytes; memory accounting; scaling; raw provenance and repeat limitations.
-
-## Planned benchmark check (NOT RUN yet)
-
-`cargo bench --locked --no-run -j 2`, followed by approved release captures using the final registered OLS benchmark target. No new target name or capture is asserted here.
-
-## Acceptance criteria
-
-Representative cases and budgets assessed; compute versus regime evidence separated; quantities/tails labeled correctly; fitting/cold costs separated from serving; no optimization or universal speedup claimed without its own evidence.
-
-Maintain the README measured performance tables, workload/provenance links, memory distinctions, tested revision and measurement limitations for this workstream (Part I §12).
-
-## Dependencies
-
-Approved workloads/resource targets and stable code; correctness/regime gates precede optimization decisions. Harness preparation can proceed earlier within scope.
-
-## Classification
-
-Type: Task. Area: `area::benchmark`. Nature: none proposed. Milestone: #3 (Sequential ML Slice - Classic ML).
-
-## Why this issue
-
-Operational acceptance is a distinct blocking category; one run or group size is not another issue.
-
-**Review boundary:** these records declare Planning; technical design review and implementation remain pending. Parent Feature/child Task metadata and native relationships were verified through API reads; Project-board status was not inspected. For non-trivial code, an independent Code Reviewer is still required. This packet's author review does not satisfy that gate. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
-
----
-
-# Part III — documents and issues as the project lifecycle
-
-## The functional loop
-
-The algorithm document explains the requirement and contract. The owning issue manages its tasks, dependencies, milestone and acceptance. Source/tests/benchmarks establish implementation and evidence. Review feeds discoveries back into the appropriate document and issue.
-
-```mermaid
-flowchart TD
-    A["Algorithm requirement and owner link"] --> B["Issue: tasks, milestone and dependencies"]
-    B --> C["Approved design and implementation"]
-    C --> D["Tests, benchmarks and independent review"]
-    D --> E{"Missing link or mismatch?"}
-    E -->|Yes| F["Revise relevant document for review"]
-    F --> G["Reconcile owning issue and affected plan"]
-    G --> B
-    E -->|No| H["Record validated evidence and integration state"]
-    H --> A
-```
-
-This is a project-management feedback loop, not an alternative approval policy. Proposed corrections remain labelled until approved; critical contract changes receive the required notification/review.
-
-## What each artifact owns
-
-| Artifact | Role | Connection to issues |
-|---|---|---|
-| `STREAMING_ML_DESIGN.md` | Programme/family direction and boundaries | Links selected algorithm parents and roadmap decisions |
-| OLS README / this prototype | Mathematics, user behavior, requirements, limitations and evidence | Each actionable point links its primary owner |
-| Issue-linked technical design | Solver/precision/rank, API/ownership, recovery and alternatives | Parent #23 records accepted decisions and affected children |
-| Issue-linked implementation plan | Coherent tasks, file/target map, sequence, commands and review handoff | Each task belongs to a parent/child; not a separate issue by default |
-| Standing correctness/failure guides | Reusable validation/failure principles | Algorithm evidence applies them; proposed gaps return to the relevant guide owner |
-| GitHub parent/children | Approved scope, dependencies, acceptance and actual workflow state | Native hierarchy and existing milestone connect the work |
-| Tests/benchmarks/review records | What was actually verified/measured, at which revision | Links back to requirement and owning issue |
-| Roadmap/milestone | Sequence and delivery/integration stage across algorithms | References real parents/dependencies; not another issue-ID system |
-
-Keep detailed design/plans issue-linked without creating another Markdown file merely for each small concern. Decide a durable location when the plan is approved; this packet creates no additional repository files.
-
-## When a missing link is discovered
-
-1. **Identify the exact gap:** missing requirement, mathematical ambiguity, failure assumption, task owner, dependency, evidence or stale implementation claim. Link the source/test/review evidence. **([#23](https://github.com/Skybrique/seqvex/issues/23), then the affected child)**
-2. **Revise the relevant document first for review:** the OLS passage for a local contract; the programme guide for cross-family direction; the appropriate standing guide for a reusable principle. Keep proposals distinct from accepted behavior. Critical docs are not silently amended. **(Existing document/workstream owner; otherwise ownership proposal under #23)**
-3. **Reconcile the owning issue:** link the exact changed passage, reason/evidence, acceptance impact, added/removed tasks, dependencies and affected milestone/sequence. Preserve earlier evidence and its scope. **(Same owning parent/child where objective and category remain the same)**
-4. **Update the affected plan and then implement/verify the approved correction:** no new child for one test, rerun or documentation correction. Propose different ownership only when the objective/category becomes independently meaningful. **(Affected child; issue creation/update approval where required)**
-5. **Close the loop:** record the tested revision/results, update the README's actual capability/evidence links, and reconcile issue/project/roadmap stage. Delivery completion and integration completion remain different facts. **(Affected child; #23 for overall completion)**
-
-A material contract contradiction is recorded as a blocker and resolved before continuing affected work, following `DEVELOPMENT.md` §24.11–§24.12. Independent work proceeds only within its approved scope and without crossing that boundary.
-
-**OLS example — proposed:** review finds that a constant input column plus enabled intercept produces an undocumented rank outcome. Update §3's rank contract for review; reconcile the implementation child's error/solution tasks and the mathematics child's independent fixture; record the accepted policy in #23's design; correct/test the code; then link the result in both issues and the README. Do not create an issue merely for this one fixture.
-
-## Milestone, sequence and dependency view
-
-**Trial milestone proposal:** use existing #3, **Sequential ML Slice - Classic ML**. Final family roadmap/milestones are reviewed after design; this trial does not create a new milestone or mark the existing one complete.
-
-| Step / checkpoint | Primary owner | Necessary input | Progress shown in issues |
+| Deliverable | Responsible role | Required contents | Review boundary |
 |---|---|---|---|
-| Scope and issue action review | #23 | This packet, existing implementation/ownership | Issue reconciliation verified; fitting design review pending |
-| Formal OLS design and applicable critical review | #23 | Authorized open parent and approved scope | Decisions/risks recorded; affected children identified |
-| Child/task planning | #23 and #43–#46 | Agreed categories; detailed design reviewed before affected implementation | Four IDs, verified native relationships and issue-linked tasks |
-| Fit/API/failure implementation | OLS implementation | Design/branch/implementation authorization | Code delivery and required checks |
-| Independent numerical evidence | OLS mathematics | Approved contract and executable implementation | Oracle/rank/tolerance findings and acceptance |
-| Temporal workflow evidence | OLS sequential validation | Target/availability contract and executable workflow | Leakage/regime findings and acceptance |
-| Release resource evidence | OLS performance | Stable code, approved workloads and guards | Captures, limits and budget assessment |
-| Final feature review/integration | #23 | Required child evidence and resolved findings | Parent validation, separate integration/closure gates |
-| Trial retrospective/template improvement | #23 initially | Completed trial evidence | Proposed visible runbook/process update |
+| Technical design | Architect | Exact mathematics and supported envelope; public API; solver alternatives; precision/rank policy; ownership/lifetimes/capacities; artifact and failure/recovery contracts; architecture impact; risks, evidence and deferred decisions | Reviewed before Planner implementation sequencing; accepted decisions recorded or linked in #23 |
+| Implementation plan | Planner | Approved design revision; issue-owned tasks; concrete source/module/Cargo target map; dependencies and order; meaningful validation/oracles; acceptance evidence; example/documentation work; independent-review handoff and stop conditions | Reviewed before Coder implementation; cannot redesign or silently settle unresolved choices |
+| Implementation and evidence | Coder | Only the approved design and plan; code, tests, user examples and accurate documentation | Independent Code Reviewer assesses applicable correctness, architecture, mathematics, temporal and operational evidence |
 
-This table is a dependency guide, not a requirement to wait for all code before designing oracles, timelines or benchmark cases. GitHub project stages use the existing **Planning → Implementation → Validation → Integrated** meanings when applicable. No project-board changes are performed here.
+The full technical design and implementation plan each have an identifiable revision and a durable issue-linked location. [#23](https://github.com/Skybrique/seqvex/issues/23) is the decision/traceability entry point; [#43](https://github.com/Skybrique/seqvex/issues/43) links the affected implementation tasks. A requirements checklist, folder map, generated example or passing test run does not substitute for either deliverable. For a small change, both layers may be concise, but their responsibilities and reviews remain explicit. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
-The parent normally supplies one feature branch; commits reference the child owning their delivered category. Source placement does not determine whether an issue is a parent, child, dependency or related record.
+Before implementing fitting, the Architect must resolve the following questions; candidate directions are not accepted decisions:
 
-## Decision register with issue ownership
-
-| Decision needed before affected implementation | Why it matters specifically to OLS | Owner |
+| Design question | Required decision/evidence | Owner |
 |---|---|---|
-| Dense/single-target/unweighted scope and intercept | Shapes objective, coefficient count and validation | [#23](https://github.com/Skybrique/seqvex/issues/23) |
-| Solver, rank threshold and unsupported cases | Defines coefficient identification and rank-failure behavior | [#23](https://github.com/Skybrique/seqvex/issues/23); evidence: [#44](https://github.com/Skybrique/seqvex/issues/44) |
-| Fit precision and conversion | Current deployed predictor uses ordered `f32` arithmetic | [#23](https://github.com/Skybrique/seqvex/issues/23); implementation: [#43](https://github.com/Skybrique/seqvex/issues/43) |
-| Retention, capacity and workspace | Factorization may need retained/multipass input and fit-time memory | [#23](https://github.com/Skybrique/seqvex/issues/23); measurements: [#46](https://github.com/Skybrique/seqvex/issues/46) |
-| Artifact, feature schema and replacement boundary | Same weights with different feature ordering/transformation mean a different model | [#23](https://github.com/Skybrique/seqvex/issues/23); implementation: [#43](https://github.com/Skybrique/seqvex/issues/43) |
-| Availability, cutoff and evaluation controls | Future-horizon labels become trainable later than feature origin | [#23](https://github.com/Skybrique/seqvex/issues/23); evidence: [#45](https://github.com/Skybrique/seqvex/issues/45) |
-| Workload and latency/resource budgets | Training latency/memory and serving tails require different acceptance | [#23](https://github.com/Skybrique/seqvex/issues/23); evidence: [#46](https://github.com/Skybrique/seqvex/issues/46) |
+| Objective, input and intercept | Row/target ownership and shapes, feature count, optional intercept, supported data sizes and capacity | #23; implementation #43 |
+| Solver and rank | Compare rank-aware QR and SVD approaches, dependency/resource cost and reversal cost; define threshold/scale interpretation and rank-deficient/underdetermined outcomes; no default inversion of normal equations | #23; validation #44 |
+| Fitting precision and conversion | Evaluate numerical need/cost of a separate fitting precision, including a possible f64 workspace; preserve the current ordered f32 predictor and validate conversion | #23; implementation #43; validation #44; measurements #46 |
+| Resource ownership | Immutable active parameters; isolated mutable fitting resources; retention, passes, lifetimes, bounds, release points and old/candidate overlap | #23; implementation #43; measurements #46 |
+| Public API and failures | Concrete local fit/result/diagnostic types, error precedence, capacity/allocation limits and unsupported inputs | #23; implementation #43 |
+| Artifact and acceptance | Format/version/precision/limits; feature order and transform linkage; validation before installation; failed-candidate preservation; in-flight model policy and retry/restart boundaries | #23; implementation #43 |
+| Temporal workflow | Task/horizon, availability, cutoff, training-only transforms, overlapping evaluation and declared statistical assumptions | #23; validation #45 |
+| Performance acceptance | Representative fitting/serving workloads and budgets, memory distinctions, sampling/provenance and justified repeats | #23; evidence #46 |
 
-Prefer feasible options that improve resource efficiency and correctness/accuracy while reducing reversal cost. No unresolved entry may be silently settled by code. Material architecture questions receive critical review before the affected choice is implemented.
+Run the applicable critical architecture review before choices affecting ownership, workspace, synchronization, memory/device placement or other governed architectural boundaries are implemented. A scoped OLS artifact/recovery contract must not silently standardize storage, supervision or publication for the whole project. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
-## Issue and evidence synchronization rules for this trial
+## 14. Local code, tests and examples
 
-- The algorithm document links requirements to owning issues; issues link back to the specific passages, approved design/plan and evidence.
-- Keep one primary owner per requirement. Supporting correctness/performance issues are linked separately rather than duplicating code ownership.
-- Check existing open and closed issues before creating ownership. Shared infrastructure is a dependency only when genuinely needed; historical #27 evidence is related, not a new-fitter audit.
-- A documentation link is not a native child relationship. Establish actual native relationships only when authorized.
-- Updating a document does not authorize an issue mutation, code, commit, push, PR, merge or closure. Apply the standing gates.
-- Do not change critical `FEATURE_DEVELOPMENT.md`, `DEVELOPMENT.md` or `ARCHITECTURE.md` through this packet. After the trial, present a focused visible change for the confirmed README/issue lifecycle.
-- Preserve user-reported local `docs/STREAMING_ML_DESIGN.md` and `docs/CORRECTNESS.md`; inspect/include them in an appropriately scoped authorized future delivery without invented issue IDs.
-
----
-
-# Source and revision record
-
-**Historical v4 changes:** removed the agent handoff text; retained requirements, prepared bodies, lifecycle and folder/Cargo map. At v4 preparation time, issue writes were reported blocked and owner links were pending.
-
-**v5 changes:** compared the OLS contract with repository evidence; verified existing #23/#43–#46 and native links; replaced pending owners with real IDs; reconciled live issue snapshots without overwriting later valid decisions; clarified the planned README destination, written-stage versus Project status and each workstream's documentation requirement; corrected the removed-Part-V reference and benchmark-execution conflict. No solver/API/artifact policy was selected.
-
-**Evidence status:** this reconciliation freshly inspected the pinned repository docs, predictor, exports, tests, benchmark, Cargo/CI, current general discussion drafts, all-state issue inventory, comments and native links. The minimal state-only GitHub probe succeeded and was read back. Scope-preserving body updates to #23/#43–#46 were each read back, preserving metadata/relationships. No Rust command, benchmark, Git mutation, critical-document edit, folder move, fitter implementation or independent completion audit occurred. The prior approval error is historical; its cause is not established.
-
-**Standing references:** [FEATURE_DEVELOPMENT.md](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/FEATURE_DEVELOPMENT.md), [DEVELOPMENT.md](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/docs/DEVELOPMENT.md), [CONTRIBUTING.md](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/CONTRIBUTING.md), [ARCHITECTURE.md](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/ARCHITECTURE.md), and [FAILURE_AND_RECOVERY.md](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/docs/FAILURE_AND_RECOVERY.md).
-
-**Implementation/evidence references:** [predictor source](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/src/models/classic/linear_regression.rs), [classic README](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/src/models/classic/README.md), [existing tests](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/tests/linear_regression.rs), [benchmark](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/benches/linear_regression.rs), [historical audit](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/docs/ALGORITHM_CORRECTNESS_AUDIT.md), and [#23 original completion record](https://github.com/Skybrique/seqvex/issues/23#issuecomment-5796329062).
-
-**Design references:** [streaming design draft](../../../../docs/STREAMING_ML_DESIGN.md) and [correctness guide draft](../../../../docs/CORRECTNESS.md). [LAPACK's least-squares guide](https://www.netlib.org/lapack/lug/node27.html) supports the distinction between full-rank and rank-deficient solution policies/factorizations; no LAPACK backend adoption is proposed.
-
-**Review focus:** confirm the four issue scopes, canonical README destination, compatible local migration and preparation boundary. Issue IDs #43–#46 and native relationships are now verified; link ownership does not establish implementation. Solver/API/artifact/capacity decisions remain for formal design; this packet is not evidence of a trainable production model.
-
----
-
-# Part IV — OLS-local structure and implementation readiness
-
-**Goal:** provide a discoverable, compatible algorithm-local home and an issue-linked task plan before implementing the OLS fitter. The behavior-preserving locality refactor is published at `6fd691c33243c7342586b50e3c0394be984b8e36`; the preparation steps below retain the migration plan and require evidence-based status reconciliation. This is local organization for one algorithm, not a repository-wide restructure.
-
-**Architecture:** keep immutable prediction separate from fitting resources, candidate validation and application-controlled model acceptance. Preserve current public paths through re-exports. Keep genuine cross-component tests/benchmarks centralized.
-
-**Technology baseline:** one Cargo package; edition 2024; declared Rust 1.85 compiler line; CI verifies 1.85.1. Use the existing Vector/Observation/StateModel, stable test harness and benchmark measurement support. No new dependency/backend/profile/unsafe change is selected here.
-
-**Specification:** Parts I–III and the parent #23 design record. Existing workstreams #43–#46 are verified native children of #23; their fitting design and evidence remain pending. Folder tasks belong to OLS implementation; independent numerical, temporal and resource evidence belongs to its respective workstream.
-
-## A. Exact location of this Markdown file
-
-After downloading LINEAR_REGRESSION_REVIEW_PACKET.md into the actual repository root for preparation, move it to:
-
-**src/models/linear/ols/README.md**
-
-Rename it to README.md at that destination; the repository-root packet is a temporary input, not a second canonical document. It is initially the teaching/design README with an explicit “planned fitting; current prediction only” status. After preparation, update its current file/export/issue facts; after implementation, update actual capabilities and evidence. Keep design and task appendices here rather than creating another mandatory packet/plan file. Historical approved revisions remain recoverable through Git once commit is separately authorized.
-
-Do not also place the packet in docs/. The standing guides keep their own purpose:
-
-- docs/STREAMING_ML_DESIGN.md — programme/family direction and boundaries.
-- docs/CORRECTNESS.md — reusable correctness methodology.
-- docs/ALGORITHM_CORRECTNESS_AUDIT.md — the historical #27 audit and its revision of record.
-
-The two first guides are user-reported local additions and were absent from the remotely inspected tree. Inspect the actual local files before using them; preserve their content. This preparation does not authorize rewriting them.
-
-When making the packet the repository README, change its sandbox-only design references to the real relative paths ../../../../docs/STREAMING_ML_DESIGN.md and ../../../../docs/CORRECTNESS.md, provided those files are present. Standing references can use ../../../../FEATURE_DEVELOPMENT.md and ../../../../docs/DEVELOPMENT.md. Keep pinned historical source/evidence URLs pinned; a historical old path is not a reason to alter an audit.
-
-## B. Folder contents by responsibility
-
-**Prepare now** means behavior-preserving migration within separately authorized preparation. **Later** means a proposed placement when the approved implementation creates that responsibility. Do not create empty directories, helper files or unimplemented stubs simply to match this map.
-
-| Repository-relative path | Responsibility | Stage / owner |
+| Current repository path | Responsibility | Owner |
 |---|---|---|
-| src/models/mod.rs | Existing model namespace; add linear alongside unchanged classic/online/recurrent | Prepare now; #43 implementation |
-| src/models/linear/mod.rs | Family namespace and OLS module declaration | Prepare now; #43 implementation |
-| src/models/linear/README.md | Short family guide: existing OLS behavior, selected future variants and links, clearly distinguish implemented/planned | Prepare now; #43 implementation |
-| src/models/linear/ols/mod.rs | Algorithm module/rustdoc and public exports | Prepare now; #43 implementation |
-| src/models/linear/ols/README.md | This teaching/design/issue/task packet | Prepare now; each workstream maintains its passages |
-| src/models/linear/ols/predict.rs | Existing supplied-parameter predictor and RegressionError | Prepare now; #43 implementation |
-| src/models/linear/ols/tests/public_contract.rs | Existing public integration tests, registered as the linear_regression target | Prepare now; #43 implementation; mathematics checks prediction invariants |
-| src/models/linear/ols/benches/execution.rs | Existing prediction benchmark, still named linear_regression | Prepare now; #43 migration; #46 benchmark-method owner |
-| src/models/linear/ols/fit.rs | Approved OLS fitting and isolated mutable fitting resources | Later; #43 implementation |
-| src/models/linear/ols/diagnostics.rs | Coherent diagnostics module if complexity warrants it; may initially remain beside fitting | Later; #43 implementation |
-| src/models/linear/ols/artifact.rs | Approved validation/encoding/import/export; no storage service | Later; #43 implementation |
-| src/models/linear/ols/tests/unit.rs | Meaningful private implementation tests | Later; #43 implementation |
-| src/models/linear/ols/tests/numerical.rs | Independent OLS oracles, rank/precision fixtures | Later; #44 mathematics |
-| src/models/linear/ols/tests/temporal.rs | Algorithm-local eligibility/regime fixtures | Later; #45 sequential validation |
-| src/models/linear/ols/benches/fit.rs | Component fitting/diagnostic measurements with explicit Cargo target | Later; #46 performance |
-| src/models/linear/ols/examples/fit_then_stream.rs | Working fit → immutable serving → accepted refit example, explicitly registered | Later; #43 implementation and sequential validation |
-| src/models/linear/tests/ and benches/ | Family-level interactions/helpers only when concrete variants justify them | Later; appropriate existing owner or approved shared concern |
-| src/models/classic/mod.rs | Preserve existing DT/KNN and both historical LinearRegression import paths | Prepare now; #43 implementation |
-| src/models/classic/README.md | Keep historical evidence and DT/KNN material; link the canonical OLS README and mark current prediction status | Prepare now; #43 implementation |
-| tests/streaming.rs and tests/streaming_execution.rs | Existing project-level integration across execution/state/models | Preserve; #43 implementation verifies whole-package regressions |
-| tests/ols_workflow.rs | Cross-component fit/transform/handoff/recovery integration, if that integration really exists | Later; #43 implementation and sequential validation |
-| benches/ols_workflow.rs | Integrated user-path performance; separate from component targets | Later; #46 performance |
-| benches/common/mod.rs | Shared measurement/counting allocator and workload support | Preserve; no algorithm code moves into it |
-| tests/common/mod.rs | Existing genuinely shared test support | Preserve; use only where already justified |
-| src/execution/, src/foundation/, other models | Existing functional/project infrastructure | Preserve; no broad reorganization |
+| `src/models/linear/mod.rs` and family README | Family namespace and orientation | #43 |
+| `src/models/linear/ols/mod.rs` | Canonical public exports | #43 |
+| `src/models/linear/ols/predict.rs` | Supplied-parameter prediction and existing errors | #43 |
+| `src/models/linear/ols/tests/public_contract.rs` | Public-contract integration tests; Cargo target `linear_regression` | #43; numerical support #44 |
+| `src/models/linear/ols/benches/execution.rs` | Prediction benchmark; Cargo target `linear_regression`, `harness = false` | #43 for wiring; #46 for methodology/evidence |
+| `src/models/classic/mod.rs` | Historical compatibility re-exports of the same canonical types | #43 |
+| `benches/common/mod.rs` | Shared measurement support | #46 |
 
-Family/project mod.rs, errors or helpers are permissible when their responsibility is demonstrated. This plan does not introduce a project-wide error type, common solver or linear-family workspace based on the first OLS consumer.
+Algorithm-local unit/component tests and examples stay with their algorithm where practical. Cross-component integration belongs at the appropriate family/functional/project level. Nested integration tests, benchmarks and examples require actual Cargo/module wiring; a directory does not establish discovery. Introduce shared family helpers only for demonstrated concrete consumers. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
-Private unit tests in tests/unit.rs require module wiring from the appropriate source module. Public-contract/numerical tests compiled as separate Cargo integration targets can access only public APIs. Explicit target registration is necessary for nested integration tests, examples and benchmarks; directory placement does not make Cargo discover them automatically.
+User examples must show canonical imports, feature order/shapes, construction or the actual accepted fitting API, single/stream/group usage, expected outputs, errors and operating limits. A supplied-coefficient example must not imply that coefficients were learned. Register runnable examples explicitly, document their actual commands and verify their results; add useful compiled rustdoc where appropriate. Fitting/refit/artifact examples must follow approved executable APIs. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
-## C. Behavior-preserving migration — concrete task plan
+## 15. Evidence and requirement reconciliation
 
-### Task 1 — preflight and owner map
+Evidence names the capability, checked revision, fixture/workload, command/method, result and practical limits. Historical prediction evidence does not establish correctness or performance of an absent fitter. Required mathematical, temporal and resource acceptance stay with their respective owners.
 
-- [ ] Verify live open/closed issue inventory, #23 scope/history/native children, current refs and user-supplied local guides.
-- [ ] Record source/module/test/benchmark hashes and Cargo target names before moves; record original tests listed by cargo test --test linear_regression -- --list.
-- [x] GitHub reconciliation verified #43–#46 as native children of #23 and replaced pending owner links. Implementation follows these records; issue reconciliation remains a separate responsibility.
-- [ ] Preserve the existing main/development content synchronization and ancestry divergence; no merge/rebase is part of this task.
+When a mismatch is found: identify the exact contract/evidence gap; revise the affected requirement for review; reconcile its existing issue; obtain the affected Architect design and Planner plan updates; implement and independently verify the accepted correction; update the README's actual behavior and evidence links. Do not create a child for one fixture, rerun or documentation correction. **([#23](https://github.com/Skybrique/seqvex/issues/23), supporting #43–#46)**
 
-**Owner:** #23 planning; migration tasks belong to #43. A stale or unexplained working tree is reported under §24.9; user-provided documentation is inventoried and preserved rather than discarded.
+## References
 
-### Task 2 — namespace and compatible source placement
-
-Move src/models/classic/linear_regression.rs to src/models/linear/ols/predict.rs. Preserve executable code, validation order, error values, reduction order and documented f32 overflow envelope. OLS fitting is still absent.
-
-Add the small namespace files:
-
-~~~rust
-// src/models/linear/mod.rs
-pub mod ols;
-~~~
-
-~~~rust
-// src/models/linear/ols/mod.rs
-//! Ordinary least-squares regression: supplied-parameter prediction is
-//! implemented; fitting/lifecycle additions are planned under #23.
-mod predict;
-
-pub use predict::{LinearRegression, RegressionError};
-~~~
-
-Add pub mod linear; to src/models/mod.rs without moving other families.
-
-Keep src/models/classic/mod.rs's existing DT/KNN declarations and exports. Replace only pub mod linear_regression; with the compatibility module:
-
-~~~rust
-/// Compatibility path for the linear-regression predictor.
-pub mod linear_regression {
-    pub use crate::models::linear::ols::{LinearRegression, RegressionError};
-}
-~~~
-
-Retain the existing pub use linear_regression::{LinearRegression, RegressionError};. This keeps both models::classic::LinearRegression and models::classic::linear_regression::LinearRegression as re-exports of the same type, alongside models::linear::ols::LinearRegression. Do not maintain two predictor implementations.
-
-Rustdoc/source location changes are expected. Qualified Rust type-name strings are not assumed to be durable artifact identities; inspect any actual consumer before relying on a rename as compatible.
-
-- [ ] Compare executable predictor bodies before/after; explain any non-location change separately.
-- [ ] Confirm the former module path and top-level classic export compile.
-- [ ] Confirm the canonical OLS export compiles and denotes the same type.
-
-**Owner:** #43 implementation. Add only the small public-path compatibility verification needed for the move; existing tests already cover arithmetic.
-
-### Task 3 — keep tests and component benchmark local and discoverable
-
-Move tests/linear_regression.rs to src/models/linear/ols/tests/public_contract.rs. Preserve existing fixtures/assertions and their public classic imports for compatibility coverage.
-
-Register the existing integration-target name explicitly:
-
-~~~toml
-[[test]]
-name = "linear_regression"
-path = "src/models/linear/ols/tests/public_contract.rs"
-~~~
-
-Move benches/linear_regression.rs to src/models/linear/ols/benches/execution.rs. In its current mod common; declaration, add the path attribute below; keep the existing allow(dead_code) attribute:
-
-~~~rust
-#[allow(dead_code)]
-#[path = "../../../../../benches/common/mod.rs"]
-mod common;
-~~~
-
-The five parent traversals are relative to the actual new bench source directory. Verify the resolved file is the existing root benches/common/mod.rs. Do not clone the counting allocator/harness into the algorithm folder.
-
-Edit the existing benchmark entry, rather than adding a duplicate:
-
-~~~toml
-[[bench]]
-name = "linear_regression"
-path = "src/models/linear/ols/benches/execution.rs"
-harness = false
-~~~
-
-Do not keep the old root test/bench file as another independently compiled copy. Preserve other auto-discovered tests and existing benchmark entries. Later nested numerical tests and fitting examples/benches receive real targets when their code exists; no dangling manifest entry or cfg(test) module declaration.
-
-- [ ] cargo metadata --no-deps --format-version 1 shows exactly one linear_regression test and one benchmark with the new source paths.
-- [ ] Test list/fixtures remain present.
-- [ ] Benchmark workload, labels, measurement normalization, prechecks and release/debug behavior are unchanged.
-- [ ] Global integration tests and other benchmark targets are still discoverable.
-
-**Owner:** #43 implementation for migration/wiring; performance for future benchmark-method changes. This task collects no new performance evidence.
-
-### Task 4 — place the teaching README and connect issue records
-
-- [ ] Move the downloaded repository-root packet to src/models/linear/ols/README.md, retaining explicit fitting/design status.
-- [ ] Preserve verified issue IDs/native-link record and update only actual local preparation facts; preserve historical evidence.
-- [ ] Convert sandbox-only references into valid repository references; validate local links.
-- [ ] Add the concise family README and a link from the classic README without deleting historical evidence.
-- [ ] Keep user-provided docs/STREAMING_ML_DESIGN.md and docs/CORRECTNESS.md in docs/, preserving contents.
-- [x] The canonical README destination and existing dependencies were reconciled in #23 and each child. Local implementation evidence and issue reconciliation have separate review responsibilities.
-- [ ] Any needed change to critical architecture/development/runbook content is presented separately before editing.
-
-**Owner:** #43 implementation for teaching/interface/locality facts; supporting workstreams maintain their own evidence; #23 owns scope and overall traceability.
-
-### Task 5 — verification and preparation handoff
-
-Planned commands in the actual repository (not run by the packet author):
-
-~~~text
-cargo metadata --no-deps --format-version 1
-cargo test --locked --test linear_regression -j 2 -- --list
-cargo fmt --all -- --check
-cargo build --locked --all-targets --all-features -j 2
-cargo test --locked --all-features --lib --tests --examples -j 2
-cargo clippy --locked --all-targets --all-features -j 2 -- -D warnings
-cargo +1.85.1 test --locked --all-features --lib --tests --examples -j 2
-cargo +1.85.1 test --locked --all-targets --all-features --no-run -j 2
-cargo bench --locked --bench linear_regression --no-run -j 2
-cargo test --locked --doc -j 2
-cargo doc --locked --no-deps -j 2
-git diff --check
-~~~
-
-Do not execute `cargo test --all-targets` in preparation: it can run the `harness=false` benchmark binaries even in debug. Use the benchmark-free tests above, plus all-target build/Clippy and MSRV compile-only coverage. `cargo bench --no-run` compiles without executing a benchmark. Report the standing all-target execution gate as NOT RUN/deferred under this handoff; do not amend CI or claim that gate passed. No debug or release timing capture is authorized.
-
-- [ ] Review the final move-aware diff, manifest target discovery, public imports and unchanged predictor arithmetic/benchmark bodies.
-- [ ] Report baseline versus preparation checks, missing toolchain or unavailable evidence explicitly.
-- [ ] Obtain independent review for the non-trivial preparation change; author verification is not independent review.
-- [ ] Leave changes unstaged. Do not commit, push, open a PR, merge, close issues, or delete branches.
-
-**Owner:** #43 implementation; #23 receives the overall preparation status. Passing these checks establishes a reviewed migration, not mathematical acceptance of an absent fitter.
-
-## D. Prepare the fitting implementation without silently choosing its contract
-
-A folder arrangement alone is insufficient to start fitting. The Architect/Planner must finish the following concrete design record in this README, link it from #23, and obtain review before the affected code is implemented. Recommended options are proposals, not accepted repository facts.
-
-| Design item | Recommended direction to review | Required decision/evidence | Owner |
-|---|---|---|---|
-| Objective and input | Dense unweighted one-target OLS, optional intercept; separate frozen serving/refit | Exact row/target API, feature count, intercept configuration, minimum data/capacity | #23; #43 implementation |
-| Solver and rank | Review pivoted QR as a full-rank baseline; reject unsupported rank-deficient/underdetermined cases initially | Compare stable QR/SVD and small justified dependencies/internal code; rank threshold, tolerances, stable pivot policy and reported diagnostics. Do not form/invert normal equations by default | #23; #44 mathematics |
-| Fitting precision | Evaluate f64 fitting resources separately from the existing f32 predictor | Numerical benefit and cost; checked conversion/representability; pre/post-conversion diagnostics; no change to ordered prediction | #23; #44 mathematics; performance |
-| Ownership | Immutable active predictor; isolated fitting/candidate resources | Lifetimes, borrowed/retained rows, bounded workspace, release points, old/candidate overlap and reuse | #23; #43 implementation; performance |
-| Public API and errors | Algorithm-local fit/result/diagnostic contract | Validate shapes/values and rank outcomes; error precedence; explicit resource failure limits; no generic training trait | #23; #43 implementation |
-| Artifact | One minimal versioned OLS parameter/schema contract | Encoding/version/limits, feature-order and transform linkage, malformed/truncated input, incompatible version/shape and validation-before-acceptance | #23; #43 implementation |
-| Acceptance/recovery | Application-controlled candidate acceptance at a declared boundary | Active model preserved on failure; in-flight version policy, retry idempotence where relevant, restart expectations and supervision boundary | #23; #43 implementation |
-| Temporal workflow | Frozen prediction and periodic causal refit example | Availability timeline, label horizon, cutoff, training-only transforms, overlapping evaluation and explicit baseline | #23; #45 sequential validation |
-| Resource/performance envelope | Representative fit and serving budgets | Host/fixture capacities, fit latency/memory versus serving latency/throughput, true request tails if claimed, justified repeats | #23; #46 performance |
-
-The current predictor explicitly says it adds no f64 primitive without a measured requirement. A proposed f64 fitting workspace does not silently widen the prediction substrate; justify its numerical need in the fitter design and review the resulting local documentation. No solver precision is selected just by this table.
-
-For fitting, storage/versioned artifact, publication or workspace decisions, run the applicable critical architecture review before affected implementation. The standing failure guide leaves general checkpoint/runtime policy deferred; a scoped OLS candidate/artifact contract must not silently standardize it for the entire project.
-
-### Initial implementation sequence after design approval
-
-Keep these as detailed tasks in the four workstreams, not additional issues:
-
-1. **Implementation:** land the approved fit input/validation and solver/result contract with meaningful tests; construct a new immutable predictor from a validated fit. **Mathematics:** verify analytical and independent-reference controls, rank decisions and f32 conversion separately.
-2. **Implementation:** implement the approved minimal artifact validation/import/export and candidate acceptance example; deliberately test malformed/incompatible imports, failed fitting and unchanged active model. Do not build storage/supervision infrastructure.
-3. **Sequential validation:** exercise feature/label availability and chronological refits with positive/negative leakage controls and specified dependent/regime-shift fixtures. These checks establish the declared workflow, not profitability.
-4. **Performance:** collect separate baseline fit/cold/artifact and serving/grouped/workflow evidence with resource/provenance limits. Verify guards before timing.
-5. **#23:** review a measured optimization proposal. Approved same-objective code remains with implementation; before/after evidence stays with performance and affected mathematical/temporal regressions are rerun. Prefer Rust/process/CPU opportunities before layout/device changes. GPU is a later family-level decision, not an implicit requirement of this preparation.
-6. **#23:** assemble independent findings and the tested README, confirm parent acceptance and separately authorized integration/closure.
-
-Each task plan must name the actual child ID, files/API affected, exact approved contract, meaningful validation commands, evidence/review owner and stop condition. Do not present “run all tests” alone as an OLS correctness plan.
-
-## E. Preparation completion criteria and review
-
-Preparation is ready for the next design/implementation discussion when:
-
-- The four real issues exist with accurate bodies, intended classification and independently verified native links; any unavailable metadata is disclosed.
-- The algorithm README, issue bodies and task owners agree; one canonical file location is used.
-- The existing predictor imports/arithmetic/error/failure semantics and benchmark method survive the local migration.
-- Cargo discovers local tests/benchmark exactly once and whole-package/MSRV checks have the stated results.
-- No fitting/artifact/temporal/performance readiness is falsely claimed, and unresolved design entries remain explicit.
-- Critical documents, unrelated algorithms, existing evidence and the PR/merge deferral are preserved.
-- An independent reviewer can inspect the bounded diff and the exact next implementation decisions.
-
-**Author review of this packet:** checked the plan against the current module exports, predictor, tests, benchmark, Cargo/CI and standing runbook/development/failure rules. The packet adds no standing principle. The known current-policy distinction is preserved: docs permit justified reviewed unsafe while src/lib.rs currently forbids it; neither is changed. Folder/Cargo snippets are instructions for future execution, not compiled evidence.
-
-**Technical references:** [Cargo target configuration](https://doc.rust-lang.org/cargo/reference/cargo-targets.html) and [GitHub native sub-issue REST endpoints](https://docs.github.com/en/rest/issues/sub-issues). Use the installed tooling's supported API; verify results, do not infer them from textual parent links.
+- [Feature development runbook](../../../../FEATURE_DEVELOPMENT.md)
+- [Development contract](../../../../docs/DEVELOPMENT.md)
+- [Architecture](../../../../ARCHITECTURE.md)
+- [Failure and recovery](../../../../docs/FAILURE_AND_RECOVERY.md)
+- [Streaming ML programme draft](../../../../docs/STREAMING_ML_DESIGN.md)
+- [Correctness methodology draft](../../../../docs/CORRECTNESS.md)
+- [Current predictor](predict.rs), [public-contract tests](tests/public_contract.rs) and [prediction benchmark](benches/execution.rs)
+- [Historical algorithm correctness audit](../../../../docs/ALGORITHM_CORRECTNESS_AUDIT.md) — historical evidence, not fitter acceptance
+- [LAPACK least-squares guide](https://www.netlib.org/lapack/lug/node27.html) — solver-policy background, not a backend selection

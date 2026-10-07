@@ -449,6 +449,12 @@ Existing harness: [`benches/common/mod.rs`](benches/common/mod.rs). Decision num
 
 ## 14. Documentation requirements
 
+### Training-to-inference and failure gate
+
+Apply the mandatory model-training and calculation-failure rules in [the development contract](docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory). Every model delivery and user demonstration must ingest data, execute its declared training/learning procedure, validate the learned result and perform inference from that result. Prediction-only slices, preset-parameter demonstrations and authored outputs do not satisfy completion.
+
+The Architect defines the learning, numerical/error and recovery contracts; the Planner includes the end-to-end data/training/inference evidence and user examples. The Coder implements only the accepted design and plan. Independent review verifies that training actually occurs, outputs use learned parameters and failures are reported without fabricated/default predictions. Existing incomplete components remain incomplete until the requirements are met.
+
 Documentation is part of the feature, not an afterthought. Each model `README.md` should eventually answer:
 
 1. What the algorithm is.

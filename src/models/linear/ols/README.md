@@ -1,6 +1,6 @@
 # Linear Regression — ordinary least squares
 
-This is the canonical OLS algorithm document. It describes user behavior, mathematical requirements, supported boundaries, issue ownership and evidence. Supplied-parameter prediction is implemented. OLS fitting, fitting diagnostics, versioned artifacts and the refitting/replacement workflow remain design requirements; no solver, fitting precision or public fitting API is selected here.
+This is the canonical OLS algorithm document. It describes user behavior, mathematical requirements, supported boundaries, issue ownership and evidence. A supplied-parameter prediction primitive is implemented, but OLS is incomplete: it cannot yet train on data and is not a complete usable ML model. OLS fitting, fitting diagnostics, versioned artifacts and the refitting/replacement workflow remain design requirements; no solver, fitting precision or public fitting API is selected here.
 
 The initial scope is dense, unweighted ordinary least squares with one scalar numeric response per observation, any supported number of input features and an optional intercept. Serving uses an immutable predictor, with streaming first and caller-bounded micro-batching as the additional execution mode. Periodic refitting and deliberate model acceptance are distinct from incremental learning. Ridge, Lasso, logistic classification with declared regularization support and RLS retain their own contracts. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
@@ -24,8 +24,8 @@ OLS learns a linear predictor from a declared training dataset. For a new featur
 
 | Capability | Current capability | Requirement / owner |
 |---|---|---|
-| Predict with supplied weights and bias | Implemented | Preserve the public prediction contract. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
-| Streaming and caller-bounded grouped prediction | Implemented | Demonstrate both paths with fitted parameters. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
+| Existing supplied-parameter prediction primitive | Implemented component; not a complete trained model | Preserve the public prediction contract. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
+| Streaming and caller-bounded grouped prediction | Implemented on the incomplete primitive | Demonstrate both paths with fitted parameters. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
 | Fit weights/intercept from labelled rows | Not implemented | Add OLS fitting under an approved numerical contract. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
 | Rank/numerical diagnostics | No fitting diagnostics | Define and independently verify solver outcomes. ([#44](https://github.com/Skybrique/seqvex/issues/44)) |
 | Causal periodic refitting | No fitting workflow | Demonstrate eligible training windows and training-only transformations. ([#45](https://github.com/Skybrique/seqvex/issues/45)) |
@@ -35,22 +35,9 @@ OLS learns a linear predictor from a declared training dataset. For a new featur
 
 ## 2. Existing prediction API and proposed user flow
 
-This example uses the existing API, not a proposed fitting interface:
+The existing constructor accepts parameters and does not learn them. It is an incomplete prediction primitive, not a valid end-to-end ML usage example. Preset-coefficient demonstrations do not satisfy the mandatory [training-to-inference contract](../../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory).
 
-```rust
-use seqvex::foundation::numerical::Vector;
-use seqvex::models::linear::ols::{LinearRegression, RegressionError};
-
-fn main() -> Result<(), RegressionError> {
-    let model = LinearRegression::new(
-        Vector::from_slice(&[1.0, 2.0]),
-        0.5,
-    )?;
-    let prediction = model.predict(&Vector::from_slice(&[3.0, 4.0]))?;
-    assert_eq!(prediction, 11.5);
-    Ok(())
-}
-```
+An accepted OLS demonstration must ingest labelled training data, execute the reviewed fitting procedure, validate the learned coefficients/diagnostics, and calculate predictions from that fit. No working example is claimed until the fitting implementation and evidence exist. Do not invent a fitting API to hide the gap. **([#43](https://github.com/Skybrique/seqvex/issues/43), supporting #44–#45)**
 
 `weights()` and `bias()` expose the supplied parameters; they do not establish a durable artifact format. Both historical imports, `seqvex::models::classic::{LinearRegression, RegressionError}` and `seqvex::models::classic::linear_regression::{LinearRegression, RegressionError}`, remain compatibility re-exports of the canonical types. User-facing examples and rustdoc belong to [#43](https://github.com/Skybrique/seqvex/issues/43).
 
@@ -290,7 +277,7 @@ Run the applicable critical architecture review before choices affecting ownersh
 
 Algorithm-local unit/component tests and examples stay with their algorithm where practical. Cross-component integration belongs at the appropriate family/functional/project level. Nested integration tests, benchmarks and examples require actual Cargo/module wiring; a directory does not establish discovery. Introduce shared family helpers only for demonstrated concrete consumers. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
-User examples must show canonical imports, feature order/shapes, construction or the actual accepted fitting API, single/stream/group usage, expected outputs, errors and operating limits. A supplied-coefficient example must not imply that coefficients were learned. Register runnable examples explicitly, document their actual commands and verify their results; add useful compiled rustdoc where appropriate. Fitting/refit/artifact examples must follow approved executable APIs. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
+User examples must ingest training data, execute the actual accepted fitting API, validate the learned result and demonstrate single/stream/group prediction from that result. Show canonical imports, feature order/shapes, expected outputs, errors and operating limits. Preset-coefficient demonstrations do not qualify. Register runnable examples explicitly and verify actual results; add useful compiled rustdoc where appropriate. Fitting/refit/artifact examples must follow approved executable APIs. Never replace a failed calculation with a fabricated/default prediction. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
 ## 15. Evidence and requirement reconciliation
 

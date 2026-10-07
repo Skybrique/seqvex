@@ -26,6 +26,10 @@ harness = false
 name = "linear_regression"
 path = "src/models/linear/ols/tests/public_contract.rs"
 
+[[example]]
+name = "ols_predict"
+path = "src/models/linear/ols/examples/predict.rs"
+
 [[bench]]
 name = "linear_regression"
 path = "src/models/linear/ols/benches/execution.rs"

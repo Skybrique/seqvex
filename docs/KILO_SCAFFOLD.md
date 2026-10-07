@@ -1,5 +1,7 @@
 # Seqvex — Foundation Scaffold
 
+> **Historical reference — superseded execution instructions:** retain this record for its original scope and evidence; do not execute it as current implementation authorization. Any earlier prediction-only scope, preset-parameter demonstration or completion claim must be assessed under the [mandatory training-to-inference contract](DEVELOPMENT.md#model-training-and-valid-inference--mandatory) and current Architect → Planner → Coder gates. Raise unresolved failure decisions to the maintainer.
+
 ## Mission
 
 This is the **execution specification** for KiloCode after reading `docs/KILOCODE_CONTEXT.md` and the existing Seqvex documentation.

@@ -1,5 +1,7 @@
 # Seqvex — KiloCode Architectural Context
 
+> **Current model requirement:** every ML model must ingest data, train/learn, validate and calculate inference from the learned result under the [mandatory training-to-inference contract](DEVELOPMENT.md#model-training-and-valid-inference--mandatory). A reference slice, imported parameters or initialization alone does not establish complete model acceptance. Read this as architectural context, not an implementation authorization or replacement for separate Architect design and Planner plan. Raise any unknown failure/recovery policy to the maintainer.
+
 ## Purpose
 
 This is a **context and comprehension brief** for KiloCode. Read it before any implementation work.

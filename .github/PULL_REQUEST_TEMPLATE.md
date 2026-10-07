@@ -33,13 +33,21 @@ Individual test cases are not GitHub issues; do not create one for traceability.
 
 <!-- Commands run and actual results. State NOT RUN / NOT APPLICABLE explicitly. -->
 
+## Model lifecycle evidence
+
+<!-- For a model delivery, link actual data ingestion → fit/train → validation → inference evidence and the accepted Architect design/Planner plan. Preset parameters or prediction-only kernels do not satisfy completion. Component-only changes must state the missing capabilities; do not claim a complete model. -->
+
+## Failure decisions
+
+<!-- List errors, numerical/resource boundaries and explicit recovery/continuation policies. Raise unresolved cases to the maintainer; do not assume fallback outputs, retry, skip or reset. -->
+
 ## Mathematical validation
 
 <!-- Independent oracle / hand-derived / invariant evidence. If not applicable, say why. -->
 
 ## Statistical / non-IID validation
 
-<!-- Required only where the claims or data regime require it. If not applicable, say why (e.g. deterministic pointwise model). -->
+<!-- Required only where the claims or data regime require it. If not applicable, say why; determinism alone is not a statistical-validation exemption. -->
 
 ## Benchmark / performance evidence
 

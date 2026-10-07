@@ -97,6 +97,8 @@ Low reversal cost is reasoned from concrete boundaries, not guaranteed by a labe
 
 ## 4. Complete workflow and production readiness
 
+If any error, failure, numerical limit or recovery action is unspecified or contradictory, bring it to the maintainer before affected implementation proceeds. Do not infer fallback, substitution, continuation or retry. Existing draft recommendations are not approval of failure policies.
+
 AGREED DIRECTION: complete a selected algorithm/task end to end, review its local architecture, then advance through the selected family catalogue. A family milestone covers an agreed finite catalogue, not every algorithm in that family.
 
 The smallest complete implementation includes the necessary components for its declared production workflow. It handles common edge cases and explicit unsupported cases. It has no known unresolved blocking findings within its reviewed operating envelope; this is not a guarantee that undiscovered defects cannot exist.
@@ -116,7 +118,7 @@ Each delivery must establish:
 - Teaching README, rustdoc and practical examples.
 - Independent review, required checks and separately authorized integration.
 
-No blanket requirement makes every algorithm learn online. No existing inference-only issue is retroactively enlarged into a training delivery.
+Every ML model delivery must support actual data ingestion and its declared training/learning procedure before inference; a prediction-only slice is incomplete and cannot be an accepted user demonstration. This does not require every algorithm to learn online. Historical issue scopes remain historical records; missing training must be reconciled with the owning objective rather than waived. Follow the [mandatory development contract](DEVELOPMENT.md#model-training-and-valid-inference--mandatory).
 
 ## 5. Proposed algorithm catalogue and task ownership
 

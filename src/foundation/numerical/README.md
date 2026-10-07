@@ -1,5 +1,7 @@
 # Numerical
 
+> **Failure boundary:** the documented primitive panic/IEEE behavior below must not be assumed to be an acceptable model-level recovery policy. Model designs must declare validated numerical limits and raise unresolved failure cases to the maintainer under the [failure decision rule](../../../docs/DEVELOPMENT.md#calculation-failures-and-error-handling--mandatory). This documentation update does not change primitive APIs or authorize silent numeric substitution.
+
 ## Purpose
 
 Owns the minimal numerical computation required by Seqvex's own ML/RL methods,

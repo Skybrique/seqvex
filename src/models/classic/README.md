@@ -1,5 +1,7 @@
 # Classic ML
 
+> **Completeness:** this document includes historical inference-component evidence. Those components do not satisfy complete-model acceptance by themselves. Every model must ingest data, fit/learn, validate and predict from the learned result under the [mandatory training-to-inference contract](../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory). Decision Tree training and the OLS fitter are required capabilities, not permanent exclusions. KNN reference-data ingestion must be assessed as its actual fitting mechanism, with end-to-end evidence. Report missing capabilities and unresolved failure policies before proceeding.
+
 ## Purpose
 
 Holds the classic (non-recurrent) ML vertical slices. The first is linear
@@ -67,8 +69,9 @@ belonged to the executor/workspace review, not to this slice.
 
 ## Decision Tree (read-only inference)
 
-Inference traverses a trained tree supplied by the caller; training/fitting is
-deliberately out of scope. The first task variant is **regression** (finite `f32`
+The current primitive traverses a tree supplied by the caller; it does not
+implement fitting from data. That missing capability is required for a complete
+Decision Tree model. The first task variant is **regression** (finite `f32`
 leaves); classification is deferred. A split routes **left** when
 `feature <= threshold` and right otherwise. Construction validates the graph
 (empty/zero-dimension, feature index, child range, finite threshold and leaf,
@@ -80,9 +83,12 @@ is returned.
 
 ## K-Nearest Neighbors (stored-reference inference)
 
-Prediction uses a caller-supplied reference set; training/fitting is deliberately
-out of scope and the first task variant is **regression** (classification is
-deferred). With `N` references, `k` neighbors, and query `x`, the model selects
+Construction validates and stores labelled reference observations. Retaining
+training observations can constitute KNN fitting; it does not require a
+parameter optimizer. The accepted user workflow must demonstrate data ingestion,
+reference-set fitting and validated predictions from that fitted reference set.
+The first task variant is **regression** (classification is deferred). With `N`
+references, `k` neighbors, and query `x`, the model selects
 the first `k` references under `(squared_distance, reference_index)` ascending
 and returns the unweighted mean of their targets. `sqrt` is strictly increasing
 on `[0, ∞)`, so squared distance orders neighbors identically to Euclidean
@@ -96,13 +102,14 @@ distances and duplicate references are deterministic via the reference-index
 tiebreak and are never collapsed. `predict_batch` preserves input order; the
 first element failure returns `Err` for the whole call with no partial output.
 
-## Outside
+## Missing capabilities and separate scope
 
-- Online parameter updating, training, optimizers, and autodiff. Prediction is
-  deliberately separate from learning; the online update is a later, ordered
-  concern (RLS, Issue #26).
-- Decision Tree training/fitting and classification; the slice is read-only
-  regression traversal until those are explicitly approved.
+- OLS fitting is missing from the historical prediction component and is required
+  for complete OLS delivery. Sequential online estimation is a separate RLS
+  contract (Issue #26); OLS does not inherently require an optimizer or autodiff.
+- Decision Tree training/fitting is missing from the historical read-only
+  component and is required for complete model delivery. Classification is a
+  separate task; neither this note nor historical evidence approves implementation.
 - KNN classification, distance-weighted prediction, configurable metrics, and
   any approximate or indexed neighbor search (ANN, KD-tree, ball tree, HNSW); the
   slice is brute-force regression search only.
@@ -138,8 +145,10 @@ multiplication or summation and produce `±inf`; a subsequent `inf + (-inf)` can
 produce `NaN`. Finite parameters and finite inputs therefore do **not** guarantee
 a finite prediction. Callers are responsible for keeping the products and sums
 representable, for example by scaling features and coefficients. No numeric
-threshold is imposed or implied: this is expected IEEE-754 `f32` behaviour, not a
-defect, and Seqvex does not invent a magnitude cutoff.
+threshold is currently imposed or implied. This records the existing primitive's
+IEEE-754 `f32` behavior; it does not establish an acceptable model-level failure
+policy. Non-finite predictions and the appropriate error/recovery contract must
+be brought to the maintainer for review before affected implementation.
 
 The analogous pure-prediction path `Rls::predict` computes `wᵀx` with the same
 no-output-validation behaviour; each model documents its own envelope rather than

@@ -354,7 +354,7 @@ These principles are design tools, not patterns to apply mechanically.
 
 Every Seqvex ML model must support actual data ingestion and its declared training/learning procedure, then calculate inference outputs from the learned result. Training must precede user-facing inference or prediction. This is a project-wide completion and delivery requirement with no prediction-only model exception.
 
-- A delivered model must provide a usable data → train/learn → validate → infer/predict path. The Architect defines the algorithm-specific learning and validation contract; the Planner specifies its implementation and evidence.
+- A delivered model must provide a usable data → train/learn → validate → infer/predict path, with mathematically correct calculations, independent numerical checks and task/regime-appropriate prediction-quality evidence. There is no completion waiver for a basic/reference implementation. The Architect defines the algorithm-specific learning and validation contract; the Planner specifies its implementation and evidence.
 - Preset coefficients, authored outputs, dummy models and partial prediction primitives must not stand in for a working trained model in user demonstrations or feature acceptance. A demonstration must execute the declared training procedure on data and use its learned result; printing predetermined expectations is not learning.
 - Imported parameters alone do not establish this capability. The model must support training, and any separate inference deployment must have a validated link to an actual trained result.
 - Existing prediction-only slices are incomplete development components, not exceptions, complete ML deliveries or acceptable training-to-prediction demonstrations. Preserve their history and report the missing capability; do not imply it has been implemented.
@@ -368,7 +368,7 @@ Model operations must implement their accepted mathematics within explicit input
 - Propagate an error or handle it explicitly at the application boundary. Reject invalid observations/candidates; preserve previously valid state where the contract requires it. Retry only under a defined, meaningful recovery policy. Do not label a failed observation's previous state as its prediction.
 - Error enums identify failure classes; they do not justify panicking on recoverable input failures. User demonstrations must teach the approved handling, and incorrect expected results/errors must fail verification.
 - Declare and validate the supported numerical envelope. An invalid/non-finite result must not be passed off as a valid model prediction. Existing primitive overflow semantics require review and an explicit implementation decision before change; documentation of a limitation is not model-completion evidence.
-- No silent fallback is authorized. Required numerical/API/recovery changes follow Architect design, Planner plan and scope approval before Coder implementation.
+- No silent fallback is authorized. If an error/failure behavior, numerical boundary, continuation, retry, rejection, reset or resource policy is missing, ambiguous or contradicted, bring the exact case, impact and available options to the maintainer before affected work proceeds. Do not infer a policy or choose a substitute output. Existing documented behavior must be reported as fact, not treated as permission for an unreviewed new policy. Required numerical/API/recovery changes follow Architect design, Planner plan and scope approval before Coder implementation.
 
 ## Unsafe Rust
 

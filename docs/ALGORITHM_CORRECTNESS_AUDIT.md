@@ -1,5 +1,7 @@
 # Algorithm Correctness Audit — Issue #27
 
+> **Evidence boundary:** preserve the evaluated revisions and results below as historical component evidence. Oracle/recurrence checks and performance captures do not establish a complete trained model. Present model acceptance also requires the [mandatory training-to-inference contract](DEVELOPMENT.md#model-training-and-valid-inference--mandatory) and data-driven training/validation/inference evidence. Historical training exclusions do not waive that requirement. Earlier numerical-envelope acceptances are historical findings, not approval of a current model-level failure policy; apply the [failure decision rule](DEVELOPMENT.md#calculation-failures-and-error-handling--mandatory).
+
 Status: OPEN — this report records evidence and remaining gaps; it does not close
 #27.
 

@@ -1,10 +1,12 @@
 # Gated Recurrent Unit (GRU)
 
+> **Completeness:** the implemented GRU recurrence/execution paths are components, not a complete trainable ML model. The current slice has no training procedure. Complete delivery and user demonstrations require ingestion of training data, actual parameter learning, validation and inference using learned parameters under the [mandatory training-to-inference contract](../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory). Initial parameters and hidden-state evolution are not training. Unresolved numerical/failure/recovery decisions must be raised to the maintainer.
+
 The Gated Recurrent Unit (GRU) is a recurrent neural network (RNN) architecture designed for processing **sequential and temporal data**.
 
 Unlike a feed-forward model, a GRU maintains an internal hidden state that is carried from one observation to the next.
 
-In Seqvex, the GRU is implemented as a **stateful, single-observation CPU model with both a readable reference path and an allocation-free optimized execution path**.
+In Seqvex, the GRU recurrence component has **stateful, single-observation CPU execution with a readable reference path and an allocation-free optimized execution path**. It is not a complete trainable model.
 
 The reference path establishes mathematical correctness and semantic behavior. The optimized path demonstrates measured optimization without replacing the reference.
 
@@ -542,7 +544,9 @@ The current GRU provides:
 - bounded reference micro-batch (`process_batch_reference`);
 - streaming integration.
 
-The current implementation does **not** provide:
+The current component does **not** provide these capabilities. Training and its
+required objective/learning machinery are missing completion requirements, not
+permanent scope exclusions; hardware/generalization options remain separate:
 
 - training;
 - loss functions;

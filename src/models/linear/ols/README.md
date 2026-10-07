@@ -129,7 +129,9 @@ Nested tests/benches need explicit module/Cargo registration or root wrappers. V
 
 ## 8. Failure, recovery and explicit assumptions
 
-Use [`FAILURE_AND_RECOVERY.md`](https://github.com/Skybrique/seqvex/blob/61bca3156997b90671599fbeb48121c8284be899/docs/FAILURE_AND_RECOVERY.md) as the standing reference.
+Use the current [`FAILURE_AND_RECOVERY.md`](../../../../docs/FAILURE_AND_RECOVERY.md) and [mandatory failure decision rule](../../../../docs/DEVELOPMENT.md#calculation-failures-and-error-handling--mandatory) as the standing references.
+
+Bring any missing, ambiguous or contradictory failure policy to the maintainer before affected work proceeds. Report the operation, numerical/data boundary, committed progress and candidate responses; do not infer substitution, continuation, retry or reset. Existing prediction behavior is a source fact, not approval of the final model contract. **([#23](https://github.com/Skybrique/seqvex/issues/23), implementation #43)**
 
 | Failure / boundary | Required OLS behavior | Owner |
 |---|---|---|
@@ -139,6 +141,7 @@ Use [`FAILURE_AND_RECOVERY.md`](https://github.com/Skybrique/seqvex/blob/61bca31
 | Import is malformed/incompatible | Reject before installation; preserve active model | [#43](https://github.com/Skybrique/seqvex/issues/43) |
 | Model/transform pair mismatches | Reject or prevent incoherent publication under the approved schema | [#43](https://github.com/Skybrique/seqvex/issues/43) |
 | Prediction/group fails | Preserve the existing committed-state/partial-output contract | [#43](https://github.com/Skybrique/seqvex/issues/43) |
+| Finite operands yield non-finite output | Existing primitive permits this; report the boundary and obtain an approved model-level numerical/error policy before implementation changes; no substitute prediction | [#43](https://github.com/Skybrique/seqvex/issues/43), supporting [#44](https://github.com/Skybrique/seqvex/issues/44) |
 | Training row contains unavailable information | Exclude/reject it under the declared workflow policy and test that policy | [#45](https://github.com/Skybrique/seqvex/issues/45) |
 
 - Define the minimum artifact: approved format/version, coefficients/intercept, dimensions, feature-order/schema information and necessary transformation/version linkage. Document encoding precision and validate before accepting it. No durable storage service is implied. **([#43](https://github.com/Skybrique/seqvex/issues/43))**

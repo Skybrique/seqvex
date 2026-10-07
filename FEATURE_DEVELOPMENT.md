@@ -207,7 +207,7 @@ Each step names its actor, precondition, and evidence. Gate rules are authoritat
 | 8 | Checkout / sync / base verification | Coder | authorized | clean base recorded |
 | 9 | Create dedicated issue branch | Coder | base verified | `issue-XX-short-description` |
 | 10 | Implement approved scope | Coder | branch created | scoped edits |
-| 11 | Test | Coder | implementation | tests + edge cases |
+| 11 | Test | Coder | implementation | applicable tests, errors and edge cases; model deliveries also require data ingestion → actual training → validated inference, mathematics and quality evidence |
 | 12 | Benchmark (conditional) | Coder | tests pass | measured evidence |
 | 13 | Update documentation | Coder | implementation | model README / rustdoc / evidence entry |
 | 14 | Code Review | Code Reviewer | implementation + evidence | findings recorded |
@@ -452,6 +452,8 @@ Existing harness: [`benches/common/mod.rs`](benches/common/mod.rs). Decision num
 ### Training-to-inference and failure gate
 
 Apply the mandatory model-training and calculation-failure rules in [the development contract](docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory). Every model delivery and user demonstration must ingest data, execute its declared training/learning procedure, validate the learned result and perform inference from that result. Prediction-only slices, preset-parameter demonstrations and authored outputs do not satisfy completion.
+
+If any error/failure case or policy is unresolved, report it to the maintainer before affected work proceeds; do not assume a default, continuation or recovery action.
 
 The Architect defines the learning, numerical/error and recovery contracts; the Planner includes the end-to-end data/training/inference evidence and user examples. The Coder implements only the accepted design and plan. Independent review verifies that training actually occurs, outputs use learned parameters and failures are reported without fabricated/default predictions. Existing incomplete components remain incomplete until the requirements are met.
 

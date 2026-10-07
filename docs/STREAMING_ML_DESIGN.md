@@ -2,7 +2,7 @@
 
 > **Status:** DRAFT v4 - for Maintainer review; not an implementation authorization.
 > **Date:** 2026-10-06, Asia/Singapore (revision; source checkpoint unchanged).
-> **Proposed repository destination:** `docs/STREAMING_ML_DESIGN.md`.
+> **Repository location:** `docs/STREAMING_ML_DESIGN.md`.
 > **Audience:** Seqvex users, researchers, Maintainer, Architect, Planner, Coder and independent reviewers.
 > **Repository checkpoint:** `rust-development` at `61bca3156997b90671599fbeb48121c8284be899`, verified from the remote branch during drafting.
 > **Purpose:** Establish a usable ML programme and its shared contracts before detailed algorithm designs, implementation plans and a final roadmap.
@@ -10,7 +10,7 @@
 
 ## Publication boundary
 
-Public repository documents, code comments and issue records should contain project requirements, contracts, decisions and relevant evidence. Do not include personal filesystem paths, account identities, access privileges, connection or session settings, private authorization discussions, or assistant/plugin/tool branding unless explicitly requested for publication. Describe responsibilities using project roles and distinguish reported evidence from independently verified evidence without identifying private tooling.
+Public repository documents, code comments and issue records should contain project requirements, contracts, decisions and relevant evidence. Do not include personal filesystem paths, account identities, access privileges, connection or session settings, private authorization discussions, or assistant/plugin/tool branding unless explicitly requested for publication. Describe responsibilities using project roles and distinguish reported evidence from independently verified evidence without identifying private tooling. Algorithm READMEs exclude local staging, working-tree and commit/push reports, private handoffs and execution transcripts. Tested revisions and measurement provenance remain appropriate technical evidence.
 
 ## 1. User objective and document boundaries
 
@@ -829,14 +829,16 @@ Tie the result to evidence and an owning task. A necessary correction blocks its
 
 AGREED DIRECTION: this guide does not authorize algorithm implementation.
 
+The algorithm README describes requirements, user contracts, ownership and evidence. It does not replace the Architect technical design or the Planner implementation plan. Require both layers before affected implementation, including examples and refactors; scale their detail to the change while keeping separate responsibilities, review status and revisions. Existing code or a passing test run cannot replace the records.
+
 ### Sequence
 
 1. Discuss and approve preliminary scope; verify current code and existing issue ownership.
 2. With issue-planning authorization, create/reuse the meaningful parent objective.
-3. Produce formal issue-linked technical analysis; perform relevant architecture review.
+3. The Architect produces the formal issue-linked technical design and applicable architecture review.
 4. Review and approve the written design.
-5. Produce implementation plan and conditional children/checklists; obtain approval.
-6. Review implementation scope/branch and assign the architect, planner, implementation and independent-review responsibilities.
+5. The Planner derives an implementation plan from the approved design revision; review the plan and its issue-owned tasks.
+6. Confirm implementation scope and branch; the Coder then follows the approved design and plan, with independent review assigned.
 7. Implement, independently review, verify and integrate under separate gates.
 
 The runbook requires an open parent during formal technical design. Preliminary scoping before issue creation is not the formal implementation-ready design. Do not invent issue numbers in draft filenames.

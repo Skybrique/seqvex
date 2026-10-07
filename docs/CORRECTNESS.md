@@ -1,10 +1,10 @@
 # Seqvex correctness and validation guide
 
 > **Status:** PROPOSED DRAFT v1, 2026-10-06, Asia/Singapore; for review.
-> **Intended repository destination:** docs/CORRECTNESS.md.
+> **Repository location:** docs/CORRECTNESS.md.
 > **Authority:** Standing-process proposal subordinate to DEVELOPMENT.md, FEATURE_DEVELOPMENT.md, FAILURE_AND_RECOVERY.md and applicable algorithm contracts.
 > **Source checkpoint:** rust-development at 61bca3156997b90671599fbeb48121c8284be899.
-> **Boundary:** This file is a discussion artifact. It has not been added to the repository, and it does not retroactively add acceptance conditions to existing issues.
+> **Boundary:** This file is a proposed methodology guide, subordinate to the governing development and algorithm contracts. It does not retroactively add acceptance conditions to existing issues.
 
 ## 1. Purpose and evidence limits
 

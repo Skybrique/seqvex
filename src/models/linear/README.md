@@ -22,9 +22,6 @@ Implemented (relocated unchanged from
 - The immutable supplied-parameter predictor `ŷ = w · x + b`, with reference
   `predict`, bounded `predict_batch`, and streaming via the foundation
   `StateModel` contract (state = most recent prediction).
-- A runnable supplied-parameter example:
-  [`ols/examples/predict.rs`](ols/examples/predict.rs)
-  (`cargo run --example ols_predict`).
 
 Planned under [#23](https://github.com/Skybrique/seqvex/issues/23), not yet
 present:

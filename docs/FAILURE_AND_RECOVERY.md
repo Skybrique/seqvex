@@ -1,5 +1,11 @@
 # Seqvex Failure and Recovery
 
+## Mandatory escalation and valid outputs
+
+Apply the [failure decision rule](DEVELOPMENT.md#calculation-failures-and-error-handling--mandatory). Bring any missing, ambiguous or contradictory failure policy to the maintainer with the exact failing operation, valid committed state/progress, consequences and candidate responses before affected work proceeds. Do not silently infer retry, skip, reset, continuation, rollback, numeric repair or default-output behavior. Existing behavior described below is source/history evidence; it does not authorize new unresolved policies.
+
+A failed fit or prediction must not be disguised as a valid result. Preserve the defined previously valid state without labelling it as a prediction for the failed observation. Training readiness and the numerical/resource envelope must be explicit in the model design. No model is complete until the required data → train → validate → infer path and its failure evidence exist.
+
 > **Status:** Early-stage failure-handling architecture / living technical document
 
 ## 1. Purpose

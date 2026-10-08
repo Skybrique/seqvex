@@ -7,7 +7,8 @@
 //! absent until the technical design is reviewed and approved.
 //!
 //! See `README.md` in this directory for the algorithm contract, the four
-//! issue-linked workstreams and the implementation design/task plan.
+//! issue-linked requirements and references to the separate technical design and
+//! implementation plan.
 
 mod predict;
 

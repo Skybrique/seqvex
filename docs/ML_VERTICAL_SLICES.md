@@ -1,5 +1,11 @@
 # Seqvex ML Vertical Slices
 
+## Model completion boundary
+
+This matrix records implemented components and historical execution evidence, not blanket acceptance of complete ML models. Every model must satisfy the [mandatory training-to-inference contract](DEVELOPMENT.md#model-training-and-valid-inference--mandatory): actual data ingestion, training/learning, validation and predictions from the learned result. Fit-readiness, errors, numerical accuracy and task-quality evidence require Architect design and Planner plan. A prediction primitive or fixed-parameter recurrence is not a complete model; historical timing/oracle checks do not establish training.
+
+KNN reference-data ingestion and RLS supervised updates are model-specific learning mechanisms that must be assessed against the actual code and end-to-end requirements; a named fit method or a parameter optimizer is not itself the completion criterion. Do not infer acceptance from construction or an initialized state. Any unresolved failure behavior must be raised with the maintainer.
+
 > **This document describes the current vertical-slice development sequence and
 > algorithm matrix. It is a development direction, not a fixed architecture or
 > delivery commitment.**
@@ -14,8 +20,10 @@ merely an algorithm implementation.
 
 ## How to develop a slice
 
-Every algorithm follows the same sequence. Do not skip a stage, and do not begin
-optimizing before the reference behavior is correct and measured.
+Every complete model begins with the approved data/training/validation contract
+and an executable learned-result inference path. The sequence below describes
+subsequent execution/performance work on those components; it cannot waive
+training or the Architect/Planner gates.
 
 ```text
 reference implementation
@@ -58,11 +66,11 @@ this matrix does not create or close Issues.
 
 | Algorithm | Issue | Goal | State profile | Workspace / scratch | Execution strategy | Status |
 |---|---|---|---|---|---|---|
-| **Linear Regression** | #23 | Closed-form prediction `ŷ = w · x + b`; prediction only | None during prediction (immutable weights) | None | Streaming per-observation; independent observations may micro-batch | Implemented (reference/streaming/micro-batch) |
-| **Decision Tree** | #24 | Read-only traversal from a trained tree | None (immutable at inference) | None, or a small traversal path | Streaming per-observation traversal; independent observations may micro-batch | Implemented (reference/streaming/micro-batch; regression only, classification deferred) |
-| **K-Nearest Neighbors** | #25 | Brute-force distance + neighbor selection | Stored reference observations + `k` | Per-query distance scratch `O(N)`; neighbor set `O(k)` | Streaming per-query; independent queries may micro-batch | Implemented (reference/streaming/micro-batch; regression only, classification deferred) |
-| **GRU bounded micro-batch** | #34 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Implemented (reference streaming + bounded fold); release bounded batch-size sweep recorded |
-| **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Implemented (reference/streaming + RLS-local bounded reference batching); release batch-size sweep recorded |
+| **Linear Regression** | #23 | Prediction primitive `ŷ = w · x + b`; OLS fitting still required | None during prediction (immutable weights) | None | Streaming per-observation; independent observations may micro-batch | Prediction component implemented; complete trainable OLS not delivered |
+| **Decision Tree** | #24 | Read-only traversal from a trained tree | None (immutable at inference) | None, or a small traversal path | Streaming per-observation traversal; independent observations may micro-batch | Inference component implemented; full learned-data model acceptance not established |
+| **K-Nearest Neighbors** | #25 | Brute-force distance + neighbor selection | Stored reference observations + `k` | Per-query distance scratch `O(N)`; neighbor set `O(k)` | Streaming per-query; independent queries may micro-batch | Reference-data ingestion and query paths implemented; full lifecycle acceptance not established; regression only |
+| **GRU bounded micro-batch** | #34 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Recurrence/execution components implemented; training missing; historical bounded batch-size sweep recorded |
+| **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Supervised learning updates and execution paths implemented; fitted-readiness and full lifecycle acceptance require evidence; historical batch-size sweep recorded |
 
 Two families emerge from the matrix and are the point of the exercise:
 
@@ -163,7 +171,7 @@ future independent algorithms, not as a performance claim.
 
 ### Decision Tree (#24)
 
-Read-only regression traversal; classification and training remain deferred.
+Historical evidence covers read-only regression traversal, not training. Training is mandatory for complete Decision Tree delivery; classification remains a separate task.
 
 **[historical]** Reference and streaming inference allocate nothing (`0.000`
 allocations, `0` bytes per observation). The measured streaming median differed
@@ -211,8 +219,9 @@ is established by this run.
 
 ### K-Nearest Neighbors (#25)
 
-Read-only regression inference over stored references; classification and
-training remain out of scope. Unlike LR/DT prediction, the current **full-sort reference implementation** is
+Historical evidence covers regression queries over stored references. Actual
+reference-data fitting and its end-to-end evidence must meet the mandatory
+learning contract; classification remains a separate task. Unlike LR/DT prediction, the current **full-sort reference implementation** is
 not allocation-free: each query materialises all `N` candidates in one
 transient `O(N)` buffer (16 bytes per reference, so `bytes/query = 16·N`), the
 scratch this slice's profile anticipates; a distance-scan-only control allocates

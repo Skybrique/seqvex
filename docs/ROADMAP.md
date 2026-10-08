@@ -1,5 +1,7 @@
 # Seqvex Development Roadmap
 
+> **Mandatory model acceptance:** follow the [mandatory training-to-inference contract](DEVELOPMENT.md#model-training-and-valid-inference--mandatory). Historical prediction/reference slices are useful component evidence but are not completed models. Every selected model delivery must ingest training data, learn/fit, validate and infer from the learned result. No phase or optimization milestone waives this requirement.
+
 > **This roadmap describes current development direction, not a fixed
 > architecture or delivery commitment.**
 
@@ -154,9 +156,11 @@ variants where justified.
 
 ### Planned concrete slices
 
-The first classic-ML slices are **Linear Regression** (closed-form prediction;
-Issue #23), **Decision Tree** (read-only traversal; Issue #24), and
-**K-Nearest Neighbors** (brute-force query; Issue #25). They are intended to
+The first historical classic-ML components are **Linear Regression** (prediction
+primitive; Issue #23), **Decision Tree** (read-only traversal; Issue #24), and
+**K-Nearest Neighbors** (reference-data query; Issue #25). Complete model deliveries
+also require their data ingestion, algorithm-specific fitting/learning and
+validated inference workflow. These execution components were intended to
 establish the simplest ownership topology — immutable, shareable model data
 with no model-owned scratch — and the first micro-batch pattern for independent
 observations. Bounded micro-batch over the existing GRU **reference** path

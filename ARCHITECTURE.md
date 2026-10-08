@@ -249,8 +249,9 @@ The buffering policy, batch size, scheduler, and automatic batching heuristics r
 The foundation `process_batch` in `src/foundation/state` remains an **unbounded,
 stop-on-first-failure ordered fold** — not a bounded micro-batch executor. The
 vertical slices also provide algorithm-local bounded batching: LR, Decision Tree,
-and KNN evaluate independent predictions over a bounded group (classification and
-training remain out of scope), while GRU and RLS expose bounded ordered reference
+and KNN evaluate independent predictions over a bounded group (classification
+and training were excluded from those historical execution-only experiments;
+this is not a completion exception), while GRU and RLS expose bounded ordered reference
 APIs (`process_batch_reference`) that preserve sequential state-transition
 semantics over borrowed observations. Grouping dependent updates does not
 authorize independent or parallel updates. There is still no generic micro-batch
@@ -273,6 +274,21 @@ A historical dataset may be processed sequentially, with bounded micro-batches, 
 ## 7. Training and inference
 
 Training and inference can both exist inside the streaming computational context.
+
+Every delivered ML model must ingest data, perform its actual algorithm-specific
+training/learning procedure, validate the learned result and calculate inference
+from it. This applies to basic/reference models and user demonstrations without
+exception. Existing inference kernels or execution slices are incomplete model
+components until this lifecycle and its evidence are delivered; loading preset
+parameters or evolving hidden state alone does not establish learning. See the
+[mandatory development contract](docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory).
+
+The user lifecycle is data → fit/train → validate → predict/infer. This does not
+mandate a universal fit trait, optimizer or separation into training/serving
+crates. The Architect must define the algorithm-specific learning and readiness
+contract, followed by a reviewed Planner plan. Online prediction/update cycles
+below start from a learned state that meets the accepted readiness contract;
+initialization alone is not evidence of fitted readiness.
 
 ### 7.1 Historical training
 

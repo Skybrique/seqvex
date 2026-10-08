@@ -1,10 +1,16 @@
 # Seqvex correctness and validation guide
 
+## Mandatory learned-model evidence
+
+Apply the [mandatory training-to-inference contract](DEVELOPMENT.md#model-training-and-valid-inference--mandatory). Every model must demonstrate actual data ingestion, its algorithm-specific training/learning, validation of the learned result and inference from it. Separate arithmetic correctness, numerical accuracy and measured prediction quality. Preset parameters, initialized state, printed expected outputs and successful kernel tests do not substitute for fitting evidence.
+
+Raise unresolved failure cases and recovery/numerical assumptions to the maintainer before affected work proceeds; follow the [failure decision rule](DEVELOPMENT.md#calculation-failures-and-error-handling--mandatory). Record rejected operations explicitly without substituting successful predictions.
+
 > **Status:** PROPOSED DRAFT v1, 2026-10-06, Asia/Singapore; for review.
-> **Intended repository destination:** docs/CORRECTNESS.md.
+> **Repository location:** docs/CORRECTNESS.md.
 > **Authority:** Standing-process proposal subordinate to DEVELOPMENT.md, FEATURE_DEVELOPMENT.md, FAILURE_AND_RECOVERY.md and applicable algorithm contracts.
 > **Source checkpoint:** rust-development at 61bca3156997b90671599fbeb48121c8284be899.
-> **Boundary:** This file is a discussion artifact. It has not been added to the repository, and it does not retroactively add acceptance conditions to existing issues.
+> **Boundary:** This file is a proposed methodology guide, subordinate to the governing development and algorithm contracts. It does not retroactively add acceptance conditions to existing issues.
 
 ## 1. Purpose and evidence limits
 
@@ -66,7 +72,7 @@ These are design prompts, not a mandatory identical test suite for every algorit
 | Lasso | Known sparse solutions; KKT/subgradient conditions; scaling, convergence and boundary behavior |
 | Logistic classification | Stable loss/probabilities; gradient/optimality; class mapping and specified regularization |
 | RLS | Independent scalar recurrence and aligned weighted least-squares comparison; forgetting, excitation, conditioning and long horizon |
-| GRU predictor | Independent recurrence; gates/reset/order; task head; training gradients and truncation policy if training is in scope |
+| GRU predictor | Independent recurrence; gates/reset/order; task head; actual training objective, gradients and truncation policy required for complete model acceptance |
 | Decision Tree | Hand-computed split objectives and predictions; thresholds/ties, stopping, leaf values and task-specific statistics |
 | Hoeffding Tree | Statistics, split criterion and bound computation; selected variant assumptions; capacity, class growth and declared drift behavior |
 | Bagging/Random Forest | Sampling/member identity, aggregation and base-learner evidence; whole-ensemble failure and RNG progress |

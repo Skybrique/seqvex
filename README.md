@@ -1,5 +1,7 @@
 # Seqvex
 
+> **Model delivery requirement:** every ML model must ingest data, train/learn, validate the learned result and calculate predictions from it. Preset-parameter demonstrations and prediction-only components are not complete model deliveries. Current component evidence does not imply a full training workflow exists. See the [mandatory training-to-inference contract](docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory).
+
 <p align="center">
   <img src="assets/seqvex-official-display.png" alt="Seqvex" width="360">
 </p>
@@ -230,7 +232,7 @@ from aggregation.
 
 ### Online / continual learning
 
-A live stream can continuously update model state:
+After actual data-driven learning has established the approved prediction-ready state, a live stream can continuously update model state:
 
 ```text
 xₜ → predict → update → xₜ₊₁ → predict → update → ...

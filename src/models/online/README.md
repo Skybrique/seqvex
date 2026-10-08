@@ -1,5 +1,7 @@
 # Online ML
 
+> **Learning and readiness:** RLS supervised updates ingest features/targets and adapt state. Complete model delivery must demonstrate data-driven learning before user-facing prediction, with approved readiness, numerical and quality criteria under the [mandatory training-to-inference contract](../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory). An initialized/reset prior is not evidence of a learned model. Online prediction/update examples must use an eligible learned history without future-label leakage. Do not invent a warm-up, retry or reset policy; raise unresolved cases to the maintainer.
+
 ## Purpose
 
 Holds the online (ordered, supervised) ML vertical slices. The first is
@@ -152,7 +154,9 @@ Consequences, stated without creating any threshold:
   weight is frozen (`P[·,e] == 0` gives zero gain), so `w_e` does not move; under
   `λ = 1` its `P_ee` stays at the ridge `δ`, and under `λ < 1` its `P_ee` inflates
   by `1/λ` per step and can eventually overflow. This is a data/regime property,
-  not a defect, and the implementation supplies no excitation diagnostic.
+  and the implementation supplies no excitation diagnostic. The supported
+  envelope and response to lost identifiability/overflow require explicit review;
+  this observation does not authorize an assumed recovery or valid prediction.
 - `λ = 1` keeps `A_t` formally invertible forever through `(λ^t/δ)I`, but a
   direction the data never excites is determined by the **ridge**, not by
   information — formal invertibility is not statistical identifiability.

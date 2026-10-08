@@ -1,5 +1,7 @@
 # Linear models
 
+> **Completeness:** the existing parameter-based predictor is an incomplete component. Complete linear models must ingest data, fit/learn, validate and predict using the learned result. Preset-parameter examples do not satisfy the [mandatory training-to-inference contract](../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory); no working end-to-end OLS model is claimed before fitting and evidence are delivered.
+
 ## Purpose
 
 Holds the linear-model family. The first slice is ordinary least-squares (OLS)
@@ -9,7 +11,8 @@ the classic import paths remain as compatibility re-exports.
 ## Responsibility
 
 - [`ols`](ols/README.md) — the canonical OLS algorithm document: requirements,
-  issue links, and the fitting design/implementation task plan.
+  issue owners and pending design questions; separate Architect design and
+  Planner implementation plan remain required.
 
 ## Implemented versus planned
 

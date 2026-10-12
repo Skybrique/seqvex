@@ -66,7 +66,7 @@ this matrix does not create or close Issues.
 
 | Algorithm | Issue | Goal | State profile | Workspace / scratch | Execution strategy | Status |
 |---|---|---|---|---|---|---|
-| **Linear Regression** | #23 | Prediction primitive `ŷ = w · x + b`; OLS fitting still required | None during prediction (immutable weights) | None | Streaming per-observation; independent observations may micro-batch | Prediction component implemented; complete trainable OLS not delivered |
+| **Linear Regression** | #23 | Dense unweighted OLS fitting and learned-result prediction `ŷ = w · x + b` | None during prediction (immutable learned weights) | Transient fitting buffers; no prediction scratch | Batch fitting on explicit selected rows; streaming/grouped inference | OLS baseline accepted: fitting, diagnostics, artifact v1, checked serving and refit handover; preparation/ordering helpers and formal numerical certification explicitly deferred |
 | **Decision Tree** | #24 | Read-only traversal from a trained tree | None (immutable at inference) | None, or a small traversal path | Streaming per-observation traversal; independent observations may micro-batch | Inference component implemented; full learned-data model acceptance not established |
 | **K-Nearest Neighbors** | #25 | Brute-force distance + neighbor selection | Stored reference observations + `k` | Per-query distance scratch `O(N)`; neighbor set `O(k)` | Streaming per-query; independent queries may micro-batch | Reference-data ingestion and query paths implemented; full lifecycle acceptance not established; regression only |
 | **GRU bounded micro-batch** | #34 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Recurrence/execution components implemented; training missing; historical bounded batch-size sweep recorded |
@@ -159,7 +159,17 @@ storage/tensor abstraction to serve one slice.
 
 ### Linear Regression (#23)
 
-Reference and streaming prediction are allocation-free (`0.000` allocations and
+**Current OLS baseline:** fitting, artifact v1, checked serving, refit handover,
+temporal-selection tests and corrected fitting/resource evidence are implemented
+and reviewed; see the [canonical OLS README](../src/models/linear/ols/README.md).
+Preparation/partition helpers, ordering/shuffle facilities and formal numerical
+certification are explicitly deferred. OLS performs no implicit shuffle, and
+ordered workflows retain their shuffle prohibition. These checkpoints establish
+the declared baseline, not blanket production suitability or a performance
+advantage over other libraries.
+
+**Historical prediction-component measurements (predating the fitter):**
+reference and streaming prediction are allocation-free (`0.000` allocations and
 `0` bytes per observation) and consume only immutable weights through `&self` —
 the intended control case for the ownership hypothesis. The bounded micro-batch
 adds exactly one output allocation per batch (amortized `1/batch_size` per

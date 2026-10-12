@@ -1,10 +1,12 @@
 # Linear Regression — ordinary least squares
 
-This is the canonical OLS algorithm document. It describes user behavior, mathematical requirements, supported boundaries, issue ownership and evidence. A supplied-parameter prediction primitive is implemented, but OLS is incomplete: it cannot yet train on data and is not a complete usable ML model. OLS fitting, fitting diagnostics, versioned artifacts and the refitting/replacement workflow remain design requirements; no solver, fitting precision or public fitting API is selected here.
+This is the canonical OLS algorithm document. It describes user behavior, mathematical requirements, supported boundaries, issue ownership and evidence. **Current status: the implemented OLS baseline is accepted.** Dense unweighted fitting, rank/conversion checks, diagnostics, artifact v1, checked serving and deliberate refit handover are implemented and independently reviewed. This acceptance concerns the declared baseline; it does not establish suitability for every production workload.
 
 The initial scope is dense, unweighted ordinary least squares with one scalar numeric response per observation, any supported number of input features and an optional intercept. Serving uses an immutable predictor, with streaming first and caller-bounded micro-batching as the additional execution mode. Periodic refitting and deliberate model acceptance are distinct from incremental learning. Ridge, Lasso, logistic classification with declared regularization support and RLS retain their own contracts. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
 This README does not replace the Architect technical design or the Planner implementation plan. Those are separate, issue-linked deliverables reviewed before the Coder starts the affected implementation. References to issues identify requirement owners, not completion.
+
+**Explicitly deferred:** caller-side preparation/partition helpers (`PreparedData`/`WorkflowKind`, T10a), ordering/shuffle facilities (T10b), and formal cross-precision numerical-envelope certification. These do not block the accepted baseline. OLS performs no implicit shuffle; the prohibition on shuffling ordered workflows is retained. Requirement and design-question lists below preserve their original planning context alongside current-status clarifications; they do not reopen the deferred work.
 
 | Requirement owner | Responsibility |
 |---|---|
@@ -24,31 +26,54 @@ OLS learns a linear predictor from a declared training dataset. For a new featur
 
 | Capability | Current capability | Requirement / owner |
 |---|---|---|
-| Existing supplied-parameter prediction primitive | Implemented component; not a complete trained model | Preserve the public prediction contract. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
-| Streaming and caller-bounded grouped prediction | Implemented on the incomplete primitive | Demonstrate both paths with fitted parameters. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
-| Fit weights/intercept from labelled rows | Not implemented | Add OLS fitting under an approved numerical contract. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
-| Rank/numerical diagnostics | No fitting diagnostics | Define and independently verify solver outcomes. ([#44](https://github.com/Skybrique/seqvex/issues/44)) |
-| Causal periodic refitting | No fitting workflow | Demonstrate eligible training windows and training-only transformations. ([#45](https://github.com/Skybrique/seqvex/issues/45)) |
-| Artifact import/export and replacement boundary | No versioned artifact/handoff contract | Add the approved minimum recoverable model contract. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
+| Existing supplied-parameter prediction primitive | Implemented and preserved; fitting now supplies learned parameters | Preserved alongside the additive fitter. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
+| Streaming and caller-bounded grouped prediction | Implemented for fitted models; opt-in checked paths reject non-finite outputs | Demonstrated by checked-serving tests and the Salary example. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
+| Fit weights/intercept from labelled rows | Implemented: `fit`, multi-feature scalar response, optional intercept; faer column-pivoted QR, `Par::Seq` | Implemented in `fit.rs`; `tests/fitting.rs`. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
+| Rank/numerical diagnostics | Implemented: relative-pivot rank indicator and rounded-f64/f32 RSS diagnostics; formal certification deferred | Independent references, fitter tests and cross-solver comparison. ([#44](https://github.com/Skybrique/seqvex/issues/44)) |
+| Causal periodic refitting | Explicit training indices supported; temporal tests construct eligible/purged windows; automatic eligibility and transforms remain caller-owned | Selection isolation and regime-window tests; no automatic leakage detection. ([#45](https://github.com/Skybrique/seqvex/issues/45)) |
+| Artifact import/export and replacement boundary | Implemented: artifact v1, metadata/content identity, rejection and handover through a new executor | `artifact.rs`, artifact tests and Salary refit demonstration. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
 
 “Complete OLS” here includes the necessary fitting, prediction, failure, validation and documentation components. It does not include a generic trainer, model registry, market-data service or trading engine. Sparse, weighted and multi-output fitting are excluded unless explicitly added to scope. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
-## 2. Existing prediction API and proposed user flow
+## 2. Fitting and prediction user flow
 
-The existing constructor accepts parameters and does not learn them. It is an incomplete prediction primitive, not a valid end-to-end ML usage example. Preset-coefficient demonstrations do not satisfy the mandatory [training-to-inference contract](../../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory).
+The existing constructor accepts parameters and does not learn them. The implemented `fit` API learns parameters from selected labelled rows. Preset-coefficient demonstrations alone do not satisfy the mandatory [training-to-inference contract](../../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory).
 
-An accepted OLS demonstration must ingest labelled training data, execute the reviewed fitting procedure, validate the learned coefficients/diagnostics, and calculate predictions from that fit. No working example is claimed until the fitting implementation and evidence exist. Do not invent a fitting API to hide the gap. **([#43](https://github.com/Skybrique/seqvex/issues/43), supporting #44–#45)**
+An accepted OLS demonstration must ingest labelled training data, execute the reviewed fitting procedure, validate the learned coefficients/diagnostics, and calculate predictions from that fit. The registered `fit_salary` example now performs fit → diagnostics → checked single/stream/group prediction → held-out RMSE against a training-mean baseline → artifact round-trip → refit handover → failed-candidate preservation. **([#43](https://github.com/Skybrique/seqvex/issues/43), supporting #44–#45)**
+
+The canonical entry point is `seqvex::models::linear::ols::fit`:
+
+```rust
+fit(features: &[Vector], targets: &[f32], train: &[usize], config: &FitConfig)
+    -> Result<FitResult, FitError>
+```
+
+Full feature/target array lengths must agree; fitting reads values only at the explicit training indices. `FitResult::into_predictor(self) -> LinearRegression` moves learned parameters into the predictor and is infallible. `FitResult::into_trained(self, &TrainingMeta) -> Result<TrainedModel, ArtifactError>` adds caller-supplied training linkage and derived artifact metadata.
+
+Run the example with a caller-supplied CSV path (positional, not `--input`):
+
+```sh
+cargo +1.85.1 run --locked --example fit_salary -- examples/Salary_dataset.csv
+```
+
+**Salary evaluation boundary:** the example holds out zero-based CSV positions where `position % 5 == 4`; it does not shuffle or use an RNG. The 30-row sample yields 24 training and 6 held-out rows. This interleaved partition is an end-to-end demonstration, not chronological evaluation or production-readiness evidence. CSV row position and years of experience do not establish observation time. An empty held-out partition is rejected before fitting/indexing/RMSE. The synthetic benchmark's fixed-seed LCG is separate from this example and from the fitter.
 
 `weights()` and `bias()` expose the supplied parameters; they do not establish a durable artifact format. Both historical imports, `seqvex::models::classic::{LinearRegression, RegressionError}` and `seqvex::models::classic::linear_regression::{LinearRegression, RegressionError}`, remain compatibility re-exports of the canonical types. User-facing examples and rustdoc belong to [#43](https://github.com/Skybrique/seqvex/issues/43).
 
-The model requires nonempty, finite weights and a finite bias. `predict` checks feature dimension before feature finiteness. The existing errors are `ZeroDimension`, `NonFiniteParameter`, `DimensionMismatch { expected, actual }` and `NonFiniteInput`. The scalar response does not restrict the number of input features. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
+The model requires nonempty, finite weights and a finite bias. `predict` checks feature dimension before feature finiteness. The bare prediction errors remain `ZeroDimension`, `NonFiniteParameter`, `DimensionMismatch { expected, actual }` and `NonFiniteInput`. Opt-in checked serving additionally reports `NonFiniteOutput { observation: Option<usize> }`; grouped checked serving reports the zero-based position of the first non-finite output. The additive public enum variant requires a new arm in downstream exhaustive matches. The scalar response does not restrict the number of input features. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
 - Define fitting inputs as \(N\) rows of \(d\) features and \(N\) numeric targets, with explicit ownership and shape validation. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
-- Provide the approved concrete path from fitting result and diagnostics to an immutable predictor; do not invent a public `fit` API before its design is accepted. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
+- Preserve the implemented `fit`/`FitResult` path to an immutable predictor; further public API changes require the applicable design review. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 - Supply a working example covering fit → inspect → validate → predict → export/import when needed; document inputs, outputs and errors beside the actual API. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 - Keep existing imports compatible during any local reorganization, or obtain explicit approval for a compatibility change. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
 ## 3. OLS mathematics and numerical envelope
+
+**Implemented numerical policy:** finite `f32` training values are promoted exactly to `f64`; faer `=0.24.4` performs column-pivoted QR factorization/solve in `f64` with sequential execution. Promotion preserves the supplied values; it does not recover precision previously lost in their representation. Higher fitting precision reduces additional rounding during the solve. Coefficients/intercept are checked and stored as `f32`, and serving uses the existing ordered `f32` arithmetic.
+
+Rank is assessed before solve using `tau = c_rank * max(N, p) * 2^-53 * abs(R[0,0])`, with default `c_rank = 1` and `p = d + 1` when an intercept is fitted. Insufficient rows or numerical rank are rejected; no minimum-norm or silently regularized solution is substituted. This relative-pivot policy is an indicator, not a condition-number estimate. Conversion rejects overflow and, by default, nonzero coefficients/bias that become zero; `UnderflowPolicy::AllowLoss` explicitly permits that loss. Representable subnormals are retained.
+
+`FitDiagnostics` reports rank/threshold, selected-row counts and rounded-`f64` reference RSS versus actual `f32` predictor RSS. The exact-real cross-precision envelope and its acceptance checks are **deferred and not implemented**. Independent predictions/refits do not feed previous prediction errors back into OLS; rounding can still accumulate within a calculation. Neither checked serving nor the reviewed datasets establish a general finite-output accuracy guarantee.
 
 For \(X\in\mathbb R^{N\times d}\), targets \(y\in\mathbb R^N\), weights \(w\in\mathbb R^d\) and an enabled intercept \(b\),
 
@@ -66,12 +91,14 @@ With no intercept, \(b=0\). Equivalently, append a column of ones to obtain \(A=
 - Implement and report the accepted rank/outcome policy, residual diagnostics and relevant numerical failures. A condition estimate is included only if the chosen method supports a meaningful estimate. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 - Verify the selected solver and numerical boundary independently, including nearly dependent features and training-to-prediction conversion. **([#44](https://github.com/Skybrique/seqvex/issues/44))**
 
-**Existing predictor boundary:** weights/features are `f32`; the dot product reduces in weight-index order. Finite operands can produce infinity/NaN through overflow, and prediction does not check output finiteness. That behavior is documented in the current source.
+**Existing predictor boundary:** weights/features are `f32`; the dot product reduces in weight-index order. Finite operands can produce infinity/NaN through overflow. Bare `predict`/`predict_batch` preserve their existing behavior and do not check output finiteness; `predict_checked`, `predict_batch_checked` and the borrowing `CheckedLinearRegression` wrapper reject non-finite outputs without changing finite result bits. Checked serving does not certify finite accuracy or detect every underflow.
 
 - Preserve required bitwise equivalence across existing prediction paths. Fitting comparisons use separately justified, conditioning-aware tolerances. **([#44](https://github.com/Skybrique/seqvex/issues/44))**
 - If fitting uses another precision, specify conversion and validate the resulting `f32` parameters/predictions. A stricter workflow-level finite-result policy must be explicit; it must not silently change the old predictor API. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
 ## 4. Data assumptions and non-IID suitability
+
+**Implemented boundary:** the fitter honors explicit training indices and does not infer timestamps, label availability, evaluation partitions or leakage. `tests/ols_temporal.rs` constructs chronological eligibility, interval-based purging, excluded-row isolation and distinct regime windows using synthetic data. These tests verify caller construction and selected-row behavior; they do not implement automatic preprocessing, splitting or production temporal evaluation.
 
 Calculating an OLS solution does not require IID rows. It also does not establish stable predictive performance under drift or validate conventional uncertainty estimates. Confidence intervals and hypothesis-testing APIs are outside this delivery.
 
@@ -83,7 +110,7 @@ Calculating an OLS solution does not require IID rows. It also does not establis
 
 ## 5. Fitting and refitting lifecycle
 
-The proposed OLS lifecycle is: validate an eligible training window → fit a candidate → inspect diagnostics → evaluate → explicitly accept/install. Serving predictions do not train the model.
+The OLS lifecycle is: validate an eligible training window → fit a candidate → inspect diagnostics → evaluate → explicitly accept/install. Serving predictions do not train the model.
 
 - Validate empty inputs, zero features, mismatched row/target counts, inconsistent dimensions and non-finite features/targets before accepting a candidate. Declare validation order and errors. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 - Define dataset retention, solver passes and fit-time capacity. Delivering rows in bounded chunks does not by itself bound total training memory or make this an incremental estimator. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
@@ -91,7 +118,7 @@ The proposed OLS lifecycle is: validate an eligible training window → fit a ca
 - Demonstrate refitting with training-only transformations and an eligible window, keeping evaluation information out of fitting. **([#45](https://github.com/Skybrique/seqvex/issues/45))**
 - Document what reset means: existing executor reset concerns last-prediction state; it does not erase/retrain coefficients. RLS-style observation-by-observation learning remains a separate algorithm. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
-Promotion schedules, durable storage and business acceptance are application-owned. The library's replacement and artifact consistency contract must still be defined and tested. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
+Promotion schedules, durable storage and business acceptance are application-owned. Artifact v1 and failed-candidate preservation are implemented and tested. Handover constructs a new executor for the accepted candidate; no mutable replacement service is provided. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
 ## 6. Streaming, micro-batching and composition
 
@@ -114,7 +141,7 @@ The existing predictor owns immutable weights/bias and needs no mutable predicti
 - Measure model/workspace footprint, fitting peak memory and serving/refit overlap separately from allocated-byte traffic. **([#46](https://github.com/Skybrique/seqvex/issues/46))**
 - Perform necessary local moves with a before/after module/target map, compatible exports and discoverable tests/benchmarks. Family extraction requires concrete consumers and a demonstrated benefit. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
-**Locality responsibilities:** the OLS module, predictor, public-contract tests and prediction benchmark exist at the algorithm-local paths below. Fitting, numerical/temporal fixtures and fitting examples remain requirements rather than current capabilities.
+**Locality responsibilities:** the OLS module, fitter, predictor, artifact implementation, numerical/temporal fixtures, fitting example and fitting/prediction benchmarks exist at the algorithm-local paths below.
 
 | Level / path | Contents | Owning issue |
 |---|---|---|
@@ -141,7 +168,7 @@ Bring any missing, ambiguous or contradictory failure policy to the maintainer b
 | Import is malformed/incompatible | Reject before installation; preserve active model | [#43](https://github.com/Skybrique/seqvex/issues/43) |
 | Model/transform pair mismatches | Reject or prevent incoherent publication under the approved schema | [#43](https://github.com/Skybrique/seqvex/issues/43) |
 | Prediction/group fails | Preserve the existing committed-state/partial-output contract | [#43](https://github.com/Skybrique/seqvex/issues/43) |
-| Finite operands yield non-finite output | Existing primitive permits this; report the boundary and obtain an approved model-level numerical/error policy before implementation changes; no substitute prediction | [#43](https://github.com/Skybrique/seqvex/issues/43), supporting [#44](https://github.com/Skybrique/seqvex/issues/44) |
+| Finite operands yield non-finite output | Bare prediction preserves its existing behavior; opt-in checked serving returns `NonFiniteOutput`; no substitute prediction | [#43](https://github.com/Skybrique/seqvex/issues/43), supporting [#44](https://github.com/Skybrique/seqvex/issues/44) |
 | Training row contains unavailable information | Exclude/reject it under the declared workflow policy and test that policy | [#45](https://github.com/Skybrique/seqvex/issues/45) |
 
 - Define the minimum artifact: approved format/version, coefficients/intercept, dimensions, feature-order/schema information and necessary transformation/version linkage. Document encoding precision and validate before accepting it. No durable storage service is implied. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
@@ -150,11 +177,17 @@ Bring any missing, ambiguous or contradictory failure policy to the maintainer b
 - State allocation/capacity failure limits, including what can be returned as an error and what the runtime may terminate on. Do not claim that all OOM, panic or hardware failures are recoverable. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 - Independently test the material numerical failure outcomes and report limitations of those checks. **([#44](https://github.com/Skybrique/seqvex/issues/44))**
 
+**Artifact/resource limits:** artifact v1 preserves parameter bits and explicit intercept presence, validates content identity/checksum and import expectations, and rejects malformed/incompatible candidates before application installation. Publication is excluded from model identity. Import validates the implied payload against available bytes and `max_bytes` before dimension-driven coefficient reservation. `max_bytes` bounds artifact size, not total resident memory or OOM recovery; input/body buffers and the `Vector` copy still use infallible allocations. Export can leave a partial stream on writer failure and provides no filesystem atomicity/durability. The fitter's default 256 MiB requested-workspace budget is also not a physical-memory ceiling.
+
 Assumptions: the application supplies trustworthy feature/label availability, owns storage/supervision and chooses promotion policy. Any contradiction with the standing failure contract is surfaced before affected implementation continues. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
 ## 9. Independent mathematical and temporal verification
 
-**Analytical examples for planned tests, not measurements from an implemented fitter:**
+**Reviewed baseline evidence:** fitter (19 tests), independent oracle (24), artifact (21), checked serving (13), temporal selection (5), plus the existing prediction target (64 passed, one pre-existing ignored). The final integration report records passing Rust 1.85.1 debug/release checks, clean Clippy/formatting and the actual Salary run. These are scoped implementation checks, not a formal certification or universal production claim.
+
+The separately reviewed external Linfa 0.7.1 comparison uses identical `f32`-quantized values, rows, feature order and intercept. Seqvex parameters and matched-order predictions equal the Linfa parameters rounded to `f32` **numerically**; the harness did not establish bit identity. Native Linfa `f64` predictions differ by at most about `2.9e-5` on the held-out comparison. Linfa's bundled diabetes loader returns 441 rows because `has_headers(true)` consumes the first numeric observation as a header; both models receive the same loader output. This regression dataset is separate from the unused binary-target `diabetes_prediction_dataset.csv`. The comparison is useful solver evidence on the reviewed cases, not a general error bound or temporal validation.
+
+**Analytical reference examples:** the independent oracle target and fitter tests now exercise known-answer cases. Exact rational references remain separate from the production QR implementation.
 
 - With intercept, \(x=(0,1,2)\), \(y=(1,3,5)\): \(w=2,\ b=1\), squared residual sum \(0\). **([#44](https://github.com/Skybrique/seqvex/issues/44))**
 - With intercept, \(x=(0,1,2)\), \(y=(1,2,2)\): \(w=1/2,\ b=7/6\), squared residual sum \(1/6\). This tests a nonzero-residual fit rather than only exact synthetic lines. **([#44](https://github.com/Skybrique/seqvex/issues/44))**
@@ -179,6 +212,10 @@ The zero-denominator case requires the declared rank policy.
 - Keep mathematical correctness, leakage prevention and predictive usefulness distinct; a passing oracle comparison cannot substitute for temporal workflow evidence. **([#45](https://github.com/Skybrique/seqvex/issues/45))**
 
 ## 10. OLS performance and optimization evidence
+
+**Current measured baseline:** the registered `ols_fit` benchmark records fitting/resource evidence at the six `(N, d)` combinations below; checked serving uses `d = 8, 128` and groups `B = 1, 8, 32, 128`. Corrected allocation windows exclude sample-storage bookkeeping: fitting uses 11 allocations per operation, checked single/stream serving uses zero, and grouped serving allocates one `B * 4`-byte output vector. For the measured 128-feature artifact, export uses one allocation and import three. Construction timing is labelled fit plus `TrainedModel` construction; zero additional construction allocations are source-confirmed, not separately timed.
+
+Requested workspace, allocator traffic, retained bytes and peak bytes are distinct. These are instrumented local synthetic measurements, not production tail-latency guarantees or a speed comparison with Linfa. Numerical rank and scaling are observed outcomes. The earlier workload proposals below are preserved; they do not imply every proposed dimension, conditioning case or distribution was measured.
 
 **Proposed initial workload selection, subject to approved resource budgets:**
 
@@ -251,7 +288,7 @@ The governing lifecycle is defined by [FEATURE_DEVELOPMENT.md](../../../../FEATU
 
 The full technical design and implementation plan each have an identifiable revision and a durable issue-linked location. [#23](https://github.com/Skybrique/seqvex/issues/23) is the decision/traceability entry point; [#43](https://github.com/Skybrique/seqvex/issues/43) links the affected implementation tasks. A requirements checklist, folder map, generated example or passing test run does not substitute for either deliverable. For a small change, both layers may be concise, but their responsibilities and reviews remain explicit. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
-Before implementing fitting, the Architect must resolve the following questions; candidate directions are not accepted decisions:
+**Historical pre-implementation question table:** the implemented baseline is accepted following the design and scoped reviews. Preparation/partition helpers, ordering/shuffle facilities and formal numerical certification are explicitly deferred. The original questions below retain their planning context; they are not a claim that all broader lifecycle or production requirements have been implemented.
 
 | Design question | Required decision/evidence | Owner |
 |---|---|---|
@@ -272,7 +309,16 @@ Run the applicable critical architecture review before choices affecting ownersh
 |---|---|---|
 | `src/models/linear/mod.rs` and family README | Family namespace and orientation | #43 |
 | `src/models/linear/ols/mod.rs` | Canonical public exports | #43 |
-| `src/models/linear/ols/predict.rs` | Supplied-parameter prediction and existing errors | #43 |
+| `src/models/linear/ols/predict.rs` | Immutable prediction, preserved bare behavior and additive checked serving | #43 |
+| `src/models/linear/ols/fit.rs` | Selected-row fitting, rank/conversion checks and diagnostics | #43; verification #44 |
+| `src/models/linear/ols/artifact.rs` | Metadata, identity and binary artifact v1 | #43 |
+| `src/models/linear/ols/tests/oracle.rs` | Independent exact references; Cargo target `ols_oracle` | #44 |
+| `src/models/linear/ols/tests/fitting.rs` | Fitter tests; Cargo target `ols_fit` | #43; #44 |
+| `src/models/linear/ols/tests/ols_artifact.rs` | Artifact tests; Cargo target `ols_artifact` | #43 |
+| `src/models/linear/ols/tests/checked_serving.rs` | Checked serving/executor tests; Cargo target `ols_checked` | #43; #44 |
+| `src/models/linear/ols/tests/ols_temporal.rs` | Caller-constructed temporal selection tests; Cargo target `ols_temporal` | #45 |
+| `src/models/linear/ols/examples/fit_salary.rs` | CSV fit/evaluation/artifact/refit demonstration; Cargo example `fit_salary` | #43 |
+| `src/models/linear/ols/benches/fit.rs` | Fitting/checked serving/artifact/refit resource evidence; Cargo bench `ols_fit`, `harness = false` | #46 |
 | `src/models/linear/ols/tests/public_contract.rs` | Public-contract integration tests; Cargo target `linear_regression` | #43; numerical support #44 |
 | `src/models/linear/ols/benches/execution.rs` | Prediction benchmark; Cargo target `linear_regression`, `harness = false` | #43 for wiring; #46 for methodology/evidence |
 | `src/models/classic/mod.rs` | Historical compatibility re-exports of the same canonical types | #43 |
@@ -296,6 +342,8 @@ When a mismatch is found: identify the exact contract/evidence gap; revise the a
 - [Failure and recovery](../../../../docs/FAILURE_AND_RECOVERY.md)
 - [Streaming ML programme draft](../../../../docs/STREAMING_ML_DESIGN.md)
 - [Correctness methodology draft](../../../../docs/CORRECTNESS.md)
-- [Current predictor](predict.rs), [public-contract tests](tests/public_contract.rs) and [prediction benchmark](benches/execution.rs)
+- [Fitter](fit.rs), [artifact implementation](artifact.rs), [predictor and checked serving](predict.rs)
+- [Independent references](tests/oracle.rs), [fitter tests](tests/fitting.rs), [artifact tests](tests/ols_artifact.rs), [checked-serving tests](tests/checked_serving.rs) and [temporal-selection tests](tests/ols_temporal.rs)
+- [CSV workflow example](examples/fit_salary.rs), [fitting/resource benchmark](benches/fit.rs), [public-contract tests](tests/public_contract.rs) and [prediction benchmark](benches/execution.rs)
 - [Historical algorithm correctness audit](../../../../docs/ALGORITHM_CORRECTNESS_AUDIT.md) — historical evidence, not fitter acceptance
 - [LAPACK least-squares guide](https://www.netlib.org/lapack/lug/node27.html) — solver-policy background, not a backend selection

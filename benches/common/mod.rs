@@ -17,6 +17,8 @@ use std::time::Instant;
 
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
+static LIVE_BYTES: AtomicU64 = AtomicU64::new(0);
+static PEAK_BYTES: AtomicU64 = AtomicU64::new(0);
 
 struct CountingAllocator;
 
@@ -24,22 +26,59 @@ unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
         ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
+        let live =
+            LIVE_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed) + layout.size() as u64;
+        PEAK_BYTES.fetch_max(live, Ordering::Relaxed);
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        LIVE_BYTES.fetch_sub(layout.size() as u64, Ordering::Relaxed);
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
         ALLOCATED_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
+        let old_size = layout.size() as u64;
+        let new_size_u64 = new_size as u64;
+        if new_size_u64 >= old_size {
+            let delta = new_size_u64 - old_size;
+            let live = LIVE_BYTES.fetch_add(delta, Ordering::Relaxed) + delta;
+            PEAK_BYTES.fetch_max(live, Ordering::Relaxed);
+        } else {
+            LIVE_BYTES.fetch_sub(old_size - new_size_u64, Ordering::Relaxed);
+        }
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+/// Currently live bytes across the whole process.
+pub fn live_bytes() -> u64 {
+    LIVE_BYTES.load(Ordering::Relaxed)
+}
+
+/// High-water live bytes since the last [`reset_peak`] (or process start).
+pub fn peak_bytes() -> u64 {
+    PEAK_BYTES.load(Ordering::Relaxed)
+}
+
+/// Resets the peak high-water mark to the current live bytes, so the next
+/// measurement window reports its own additional peak.
+pub fn reset_peak() {
+    PEAK_BYTES.store(LIVE_BYTES.load(Ordering::Relaxed), Ordering::Relaxed);
+}
+
+/// Cumulative `(allocation count, allocated bytes)` since process start.
+pub fn allocation_totals() -> (u64, u64) {
+    (
+        ALLOCATIONS.load(Ordering::Relaxed),
+        ALLOCATED_BYTES.load(Ordering::Relaxed),
+    )
+}
 
 /// Repeated timing runs per path/configuration (release only).
 pub const RUNS: usize = if cfg!(debug_assertions) { 1 } else { 20 };

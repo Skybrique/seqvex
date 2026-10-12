@@ -1,6 +1,6 @@
 # Classic ML
 
-> **Completeness:** this document includes historical inference-component evidence. Those components do not satisfy complete-model acceptance by themselves. Every model must ingest data, fit/learn, validate and predict from the learned result under the [mandatory training-to-inference contract](../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory). Decision Tree training and the OLS fitter are required capabilities, not permanent exclusions. KNN reference-data ingestion must be assessed as its actual fitting mechanism, with end-to-end evidence. Report missing capabilities and unresolved failure policies before proceeding.
+> **Completeness:** this document includes historical inference-component evidence. Those components do not satisfy complete-model acceptance by themselves. Every model must ingest data, fit/learn, validate and predict from the learned result under the [mandatory training-to-inference contract](../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory). Decision Tree training remains a required capability. The OLS baseline now implements fitting in the linear family; its accepted scope and explicit deferrals are documented in the canonical OLS README. KNN reference-data ingestion must be assessed as its actual fitting mechanism, with end-to-end evidence. Report missing capabilities and unresolved failure policies before proceeding.
 
 ## Purpose
 
@@ -8,8 +8,8 @@ Holds the classic (non-recurrent) ML vertical slices. The first is linear
 regression prediction; the second is decision tree prediction; the third is
 K-nearest-neighbors prediction.
 
-> **Linear-regression relocation (issue #23).** The supplied-parameter
-> predictor now lives in the linear family at
+> **Linear-regression relocation (issue #23).** The canonical OLS implementation
+> (fitting, prediction, artifact v1 and checked serving) lives in the linear family at
 > [`models::linear::ols`](../linear/ols/README.md); that file is the canonical
 > linear-regression/OLS document. The `models::classic::linear_regression` path
 > is retained as a compatibility re-export of the same types. The historical
@@ -104,9 +104,13 @@ first element failure returns `Err` for the whole call with no partial output.
 
 ## Missing capabilities and separate scope
 
-- OLS fitting is missing from the historical prediction component and is required
-  for complete OLS delivery. Sequential online estimation is a separate RLS
-  contract (Issue #26); OLS does not inherently require an optimizer or autodiff.
+- OLS fitting is implemented at `models::linear::ols::fit`; the accepted baseline
+  includes diagnostics, artifact v1, checked serving and deliberate refit handover.
+  The classic paths remain compatibility re-exports of prediction types. See the
+  [canonical OLS README](../linear/ols/README.md) for current APIs and explicit
+  preparation/ordering/certification deferrals. Sequential online estimation is
+  a separate RLS contract (Issue #26); OLS does not inherently require an
+  optimizer or autodiff.
 - Decision Tree training/fitting is missing from the historical read-only
   component and is required for complete model delivery. Classification is a
   separate task; neither this note nor historical evidence approves implementation.

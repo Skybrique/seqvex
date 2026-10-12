@@ -239,6 +239,15 @@ pub enum FitError {
         /// Observed width.
         actual: usize,
     },
+    /// The rank-policy multiplier is negative or not finite.
+    ///
+    /// A configuration error, not a `RankDeficient` outcome: the supplied
+    /// `rank_threshold` cannot define a supported rank policy. Zero remains a
+    /// valid multiplier (it still rejects exact zero pivots).
+    InvalidRankThreshold {
+        /// The rejected `rank_threshold` value.
+        value: f64,
+    },
     /// A checked size calculation overflowed `usize`.
     SizeOverflow {
         /// Row count.
@@ -342,29 +351,56 @@ pub fn fit(
         }
     }
 
+    // 4. Rank-policy configuration. A negative or non-finite multiplier cannot
+    //    define a supported policy and is rejected as a configuration error
+    //    (never reported as `RankDeficient`). This follows the length/range/
+    //    feature-shape checks above and precedes size/layout, budget and
+    //    allocation failures below. Zero is permitted and still rejects exact
+    //    zero pivots; the threshold is a numerical indicator, not certified
+    //    algebraic rank.
+    if !config.rank_threshold.is_finite() || config.rank_threshold < 0.0 {
+        return Err(FitError::InvalidRankThreshold {
+            value: config.rank_threshold,
+        });
+    }
+
     let p = d + usize::from(config.intercept);
     let size = rows.min(p);
     let block = recommended_block_size::<f64>(rows, p);
 
-    // 4. Checked size products and scratch layout, before any allocation.
+    // 5. Checked size products and scratch layout, before any allocation.
+    //
+    // Requested-workspace accounting: the sum of every **distinct owned backing
+    // buffer** whose lifetime overlaps the fit peak. `d <= p`, so parameter
+    // buffers are conservatively budgeted at `p` elements. This is a logical
+    // request, distinct from allocator traffic, physical resident memory and
+    // allocator padding.
+    let f64_bytes = std::mem::size_of::<f64>();
+    let f32_bytes = std::mem::size_of::<f32>();
+    let usize_bytes = std::mem::size_of::<usize>();
+    let size_overflow = || FitError::SizeOverflow { rows, features: p };
     let a_bytes = rows
         .checked_mul(p)
-        .and_then(|cells| cells.checked_mul(std::mem::size_of::<f64>()))
-        .ok_or(FitError::SizeOverflow { rows, features: p })?;
+        .and_then(|cells| cells.checked_mul(f64_bytes))
+        .ok_or_else(size_overflow)?;
     let q_bytes = block
         .checked_mul(size)
-        .and_then(|cells| cells.checked_mul(std::mem::size_of::<f64>()))
-        .ok_or(FitError::SizeOverflow { rows, features: p })?;
-    let rhs_bytes = rows
-        .checked_mul(std::mem::size_of::<f64>())
-        .ok_or(FitError::SizeOverflow { rows, features: p })?;
+        .and_then(|cells| cells.checked_mul(f64_bytes))
+        .ok_or_else(size_overflow)?;
+    let rhs_bytes = rows.checked_mul(f64_bytes).ok_or_else(size_overflow)?;
+    // Two permutation vectors (`col_perm_fwd` + `col_perm_inv`).
     let perm_bytes = p
         .checked_mul(2)
-        .and_then(|n| n.checked_mul(std::mem::size_of::<usize>()))
-        .ok_or(FitError::SizeOverflow { rows, features: p })?;
-    let conv_bytes = p
-        .checked_mul(std::mem::size_of::<f32>())
-        .ok_or(FitError::SizeOverflow { rows, features: p })?;
+        .and_then(|n| n.checked_mul(usize_bytes))
+        .ok_or_else(size_overflow)?;
+    // `f64` solution vector, live through solve and diagnostics.
+    let solution_bytes = p.checked_mul(f64_bytes).ok_or_else(size_overflow)?;
+    // Converted-parameter buffer (`weights32` push storage).
+    let converted_bytes = p.checked_mul(f32_bytes).ok_or_else(size_overflow)?;
+    // Retained coefficient `Vector` moved into `FitResult` (one distinct copy).
+    let retained_bytes = p.checked_mul(f32_bytes).ok_or_else(size_overflow)?;
+    // Transient diagnostics predictor coefficient `Vector` (a second copy).
+    let diagnostics_bytes = p.checked_mul(f32_bytes).ok_or_else(size_overflow)?;
     let uniq_bytes = features.len().div_ceil(8);
 
     let scratch = StackReq::any_of(&[
@@ -380,12 +416,15 @@ pub fn fit(
         .checked_add(q_bytes)
         .and_then(|v| v.checked_add(rhs_bytes))
         .and_then(|v| v.checked_add(perm_bytes))
-        .and_then(|v| v.checked_add(conv_bytes))
+        .and_then(|v| v.checked_add(solution_bytes))
+        .and_then(|v| v.checked_add(converted_bytes))
+        .and_then(|v| v.checked_add(retained_bytes))
+        .and_then(|v| v.checked_add(diagnostics_bytes))
         .and_then(|v| v.checked_add(uniq_bytes))
         .and_then(|v| v.checked_add(scratch_bytes))
-        .ok_or(FitError::SizeOverflow { rows, features: p })?;
+        .ok_or_else(size_overflow)?;
 
-    // 5. Requested-workspace budget.
+    // 6. Requested-workspace budget.
     if requested > config.max_workspace_bytes {
         return Err(FitError::Capacity {
             requested,
@@ -393,7 +432,10 @@ pub fn fit(
         });
     }
 
-    // 6. Fallible allocation phase.
+    // 7. Fallible allocation phase. Matrix, scratch, permutation, solution and
+    //    bitset reservations are fallible and share the requested accounting.
+    //    The retained/diagnostics `Vector` copies in step 12 remain infallible
+    //    (disclosed there and in the response).
     let mut a = try_matrix(rows, p).map_err(|_| FitError::AllocationFailed {
         buffer: "design matrix A",
         requested_bytes: a_bytes,
@@ -409,8 +451,9 @@ pub fn fit(
         requested_bytes: rhs_bytes,
         source: AllocationSource::Faer,
     })?;
-    let mut col_perm_fwd = vec![0usize; p];
-    let mut col_perm_inv = vec![0usize; p];
+    let mut col_perm_fwd = try_vec_filled(p, 0usize, "col_perm_fwd")?;
+    let mut col_perm_inv = try_vec_filled(p, 0usize, "col_perm_inv")?;
+    let mut solution = try_vec_filled(p, 0.0f64, "f64 solution")?;
     let mut mem = MemBuffer::try_new(scratch).map_err(|_| FitError::AllocationFailed {
         buffer: "solver scratch",
         requested_bytes: scratch_bytes,
@@ -425,7 +468,7 @@ pub fn fit(
         })?;
     seen.resize(uniq_bytes, 0u8);
 
-    // 7. Duplicate selected indices, via the budgeted bitset.
+    // 8. Duplicate selected indices, via the budgeted bitset.
     for &index in train {
         let byte = index / 8;
         let bit = 1u8 << (index % 8);
@@ -435,7 +478,7 @@ pub fn fit(
         seen[byte] |= bit;
     }
 
-    // 8. Finiteness of selected feature values and targets only.
+    // 9. Finiteness of selected feature values and targets only.
     for &index in train {
         let row = features[index].as_slice();
         for (column, &value) in row.iter().enumerate() {
@@ -451,7 +494,7 @@ pub fn fit(
         }
     }
 
-    // 9. Fill the design matrix (leading ones column when fitting an intercept).
+    // 10. Fill the design matrix (leading ones column when fitting an intercept).
     for (k, &index) in train.iter().enumerate() {
         let row = features[index].as_slice();
         if config.intercept {
@@ -467,8 +510,7 @@ pub fn fit(
         rhs[(k, 0)] = f64::from(targets[index]);
     }
 
-    // 10. Factor (sequential), rank from the R diagonal, then solve.
-    let mut solution = vec![0.0f64; p];
+    // 11. Factor (sequential), rank from the R diagonal, then solve.
     let applied_tau: f64;
     {
         let (_info, col_perm) = qr_in_place(
@@ -517,7 +559,7 @@ pub fn fit(
     drop(col_perm_fwd);
     drop(col_perm_inv);
 
-    // 11. Checked conversion into the f32 predictor parameters.
+    // 12. Checked conversion into the f32 predictor parameters.
     let (bias64, weights64) = if config.intercept {
         (solution[0], &solution[1..])
     } else {
@@ -528,12 +570,25 @@ pub fn fit(
     }
 
     let bias32 = convert_checked(bias64, config.intercept, config)?;
-    let mut weights32: Vec<f32> = Vec::with_capacity(d);
+    let mut weights32: Vec<f32> = Vec::new();
+    weights32
+        .try_reserve_exact(d)
+        .map_err(|_| FitError::AllocationFailed {
+            buffer: "converted coefficients",
+            requested_bytes: converted_bytes,
+            source: AllocationSource::Std,
+        })?;
     for &value in weights64 {
         weights32.push(convert_checked(value, false, config)?);
     }
 
-    // 12. Training diagnostics on the selected rows only.
+    // 13. Training diagnostics on the selected rows only.
+    //
+    // The two `Vector::from_slice` copies below (the transient diagnostics
+    // predictor and the retained result coefficients) are **infallible**
+    // allocations: the shared `Vector` API has no move constructor, so they are
+    // budgeted (`diagnostics_bytes` + `retained_bytes`) but are not
+    // allocation-failure recoverable. Universal OOM recovery is not claimed.
     let mut rss64 = 0.0f64;
     let mut rss32 = 0.0f64;
     let predictor = LinearRegression::new(Vector::from_slice(&weights32), bias32)
@@ -601,6 +656,24 @@ fn try_matrix(rows: usize, cols: usize) -> Result<Mat<f64>, TryReserveError> {
     matrix.try_reserve(rows, cols)?;
     matrix.resize_with(rows, cols, |_, _| 0.0);
     Ok(matrix)
+}
+
+/// Fallible standard `Vec` reservation followed by in-capacity initialization.
+fn try_vec_filled<T: Clone>(
+    len: usize,
+    value: T,
+    buffer: &'static str,
+) -> Result<Vec<T>, FitError> {
+    let mut values: Vec<T> = Vec::new();
+    values
+        .try_reserve_exact(len)
+        .map_err(|_| FitError::AllocationFailed {
+            buffer,
+            requested_bytes: len.saturating_mul(std::mem::size_of::<T>()),
+            source: AllocationSource::Std,
+        })?;
+    values.resize(len, value);
+    Ok(values)
 }
 
 impl From<RegressionError> for FitError {

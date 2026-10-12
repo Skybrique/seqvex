@@ -287,7 +287,9 @@ fn main() {
             );
         }
 
-        // Correctness: grouped and streaming agree bitwise with single prediction.
+        // Correctness: grouped prediction agrees bitwise with single prediction.
+        // (Checked streaming bitwise coverage lives in the checked-serving tests
+        // and the Salary example, which exercise the executor path.)
         let reference: Vec<u32> = (0..8)
             .map(|i| model.predict_checked(&features[i]).unwrap().to_bits())
             .collect();

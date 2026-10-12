@@ -48,7 +48,17 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn main() -> ExitCode {
-    match run() {
+    let path = match std::env::args().nth(1) {
+        Some(path) => path,
+        None => {
+            eprintln!(
+                "fit_salary: missing CSV path; usage: \
+                 cargo +1.85.1 run --example fit_salary -- <csv>"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    match run_with_path(&path) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("fit_salary: {error}");
@@ -57,13 +67,15 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<(), Box<dyn Error>> {
-    let path = std::env::args()
-        .nth(1)
-        .ok_or("missing CSV path; usage: cargo +1.85.1 run --example fit_salary -- <csv>")?;
-
+/// Runs the full CSV workflow for a caller-supplied path.
+///
+/// Validation and serving failures are returned as [`Err`] with row context;
+/// non-finite parsed values and non-finite evaluation metrics never reach a
+/// successful exit. The fitter itself is unchanged: it reads only selected
+/// training rows, so value validation here is intentionally example-local.
+fn run_with_path(path: &str) -> Result<(), Box<dyn Error>> {
     // 1. Parse by header; ignore index / Unnamed columns.
-    let mut reader = csv::Reader::from_path(&path)?;
+    let mut reader = csv::Reader::from_path(path)?;
     let headers = reader.headers()?.clone();
     let feature_col = headers
         .iter()
@@ -96,6 +108,17 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     if features.len() != targets.len() || features.is_empty() {
         return Err("no rows parsed".into());
+    }
+    // Reject non-finite parsed values with row/column context, for **all** rows
+    // (including held-out rows). This is example-local validation; the fitter
+    // still inspects only selected training rows.
+    for (row, (feature, &target)) in features.iter().zip(&targets).enumerate() {
+        if !feature.as_slice()[0].is_finite() {
+            return Err(format!("row {row}: non-finite YearsExperience").into());
+        }
+        if !target.is_finite() {
+            return Err(format!("row {row}: non-finite Salary").into());
+        }
     }
     println!("rows parsed: {}", features.len());
 
@@ -166,14 +189,13 @@ fn run() -> Result<(), Box<dyn Error>> {
     // 6. Checked stream and grouped predictions through the existing interfaces.
     let checked = CheckedLinearRegression::new(model);
     let mut executor = StreamingExecutor::new(&checked, 0.0f32);
-    let streamed: Vec<f32> = held
-        .iter()
-        .map(|&i| {
-            *executor
-                .process_one(&observation(features[i].as_slice()))
-                .unwrap()
-        })
-        .collect();
+    let mut streamed: Vec<f32> = Vec::with_capacity(held.len());
+    for &i in &held {
+        let value = *executor
+            .process_one(&observation(features[i].as_slice()))
+            .map_err(|e| format!("checked streaming failed at row {i}: {e:?}"))?;
+        streamed.push(value);
+    }
     let grouped = model
         .predict_batch_checked(
             &held
@@ -200,6 +222,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     let n = held.len() as f64;
     let model_rmse = (model_sse / n).sqrt();
     let baseline_rmse = (baseline_sse / n).sqrt();
+    // Never report a non-finite metric as a successful evaluation.
+    if !train_mean.is_finite() || !model_rmse.is_finite() || !baseline_rmse.is_finite() {
+        return Err("non-finite evaluation metric".into());
+    }
     println!("training-mean baseline = {train_mean:.2}");
     println!("held-out RMSE: model={model_rmse:.2}, baseline={baseline_rmse:.2}");
     if model_rmse <= baseline_rmse {
@@ -260,44 +286,56 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     // 9. Deliberate refit handover via a new executor; the active model is kept.
     //    The candidate is a clearly labeled synthetic modification (targets x2).
+    //    All-zero targets can legitimately produce an identical candidate, which
+    //    is handled explicitly as a no-op handover rather than asserted as
+    //    different.
     let synthetic_targets: Vec<f32> = targets.iter().map(|&value| value * 2.0).collect();
     let candidate = fit(&features, &synthetic_targets, &train, &config)
         .map_err(|e| format!("candidate fit failed: {e:?}"))?
         .into_trained(&meta)
         .map_err(|e| format!("candidate into_trained failed: {e:?}"))?;
-    assert_ne!(candidate.model_id(), trained.model_id());
-    let mut candidate_executor = StreamingExecutor::new(candidate.predictor(), 0.0f32);
-    let candidate_streamed: Vec<f32> = held
-        .iter()
-        .map(|&i| {
-            *candidate_executor
-                .process_one(&observation(features[i].as_slice()))
-                .unwrap()
-        })
-        .collect();
+    let identical = candidate.model_id() == trained.model_id();
+
+    let candidate_checked = CheckedLinearRegression::new(candidate.predictor());
+    let mut candidate_executor = StreamingExecutor::new(&candidate_checked, 0.0f32);
+    let mut candidate_streamed: Vec<f32> = Vec::with_capacity(held.len());
+    for &i in &held {
+        let value = *candidate_executor
+            .process_one(&observation(features[i].as_slice()))
+            .map_err(|e| format!("candidate checked streaming failed at row {i}: {e:?}"))?;
+        candidate_streamed.push(value);
+    }
     for (position, &i) in held.iter().enumerate() {
         let direct = candidate
             .predictor()
-            .predict(&features[i])
-            .map_err(|e| format!("predict failed: {e:?}"))?;
+            .predict_checked(&features[i])
+            .map_err(|e| format!("candidate predict failed: {e:?}"))?;
         assert_eq!(
             candidate_streamed[position].to_bits(),
             direct.to_bits(),
             "handover executor must serve the candidate"
         );
-        let active = model
-            .predict(&features[i])
-            .map_err(|e| format!("predict failed: {e:?}"))?;
-        let tolerance = 1e-2 * active.abs().max(1.0);
-        assert!(
-            (candidate_streamed[position] - 2.0 * active).abs() <= tolerance,
-            "synthetic candidate should scale active predictions"
+        if !identical {
+            let active = model
+                .predict_checked(&features[i])
+                .map_err(|e| format!("predict failed: {e:?}"))?;
+            let tolerance = 1e-2 * active.abs().max(1.0);
+            assert!(
+                (candidate_streamed[position] - 2.0 * active).abs() <= tolerance,
+                "synthetic candidate should scale active predictions"
+            );
+        }
+    }
+    if identical {
+        println!(
+            "refit handover: candidate identical to active (no-op handover); active model retained"
+        );
+    } else {
+        println!(
+            "refit handover: candidate model_id = {} (new executor serves the candidate)",
+            hex(candidate.model_id())
         );
     }
-    println!(
-        "refit handover: candidate model_id = {} (new executor serves the candidate)",
-        hex(candidate.model_id())
-    );
 
     // 10. Failed candidate: a rank-deficient fit is never installed.
     let duplicate_features = vec![
@@ -352,4 +390,107 @@ fn run() -> Result<(), Box<dyn Error>> {
     println!("active model unchanged after failed candidate and rejected import");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::run_with_path;
+
+    /// Writes a synthetic `,YearsExperience,Salary` CSV to the system temp dir
+    /// (never inside the repository) and returns its path.
+    fn write_csv(name: &str, rows: &[(f32, f32)]) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!("seqvex_fit_salary_{name}.csv"));
+        let mut content = String::from(",YearsExperience,Salary\n");
+        for (row, (feature, target)) in rows.iter().enumerate() {
+            content.push_str(&format!("{row},{feature},{target}\n"));
+        }
+        std::fs::write(&path, content).expect("write temp csv");
+        path
+    }
+
+    fn toy_rows() -> Vec<(f32, f32)> {
+        (0..10).map(|x| (x as f32, 2.0 * x as f32 + 1.0)).collect()
+    }
+
+    #[test]
+    fn held_out_nan_target_is_rejected() {
+        let mut rows = toy_rows();
+        rows[9].1 = f32::NAN;
+        let path = write_csv("nan_target", &rows);
+        let error = run_with_path(path.to_str().unwrap()).expect_err("NaN target must fail");
+        let message = error.to_string();
+        assert!(message.contains("non-finite Salary"), "{message}");
+        assert!(message.contains("row 9"), "{message}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn held_out_nan_feature_is_rejected_without_panic() {
+        let mut rows = toy_rows();
+        rows[9].0 = f32::NAN;
+        let path = write_csv("nan_feature", &rows);
+        let error = run_with_path(path.to_str().unwrap()).expect_err("NaN feature must fail");
+        let message = error.to_string();
+        assert!(message.contains("non-finite YearsExperience"), "{message}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn finite_active_prediction_overflow_is_propagated() {
+        // Held-out row 9 uses a finite feature that overflows the active model's
+        // kept-splitting slope-2 prediction (2 * 3e38 = inf).
+        let mut rows = toy_rows();
+        rows[9] = (3.0e38, 1.0);
+        let path = write_csv("active_overflow", &rows);
+        let error = run_with_path(path.to_str().unwrap()).expect_err("overflow must fail");
+        let message = error.to_string();
+        assert!(message.contains("checked streaming failed"), "{message}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn candidate_only_overflow_is_propagated() {
+        // Active prediction stays finite (2e38); the doubled-target candidate
+        // overflows (4e38) and must surface a clear checked error.
+        let mut rows = toy_rows();
+        rows[9] = (1.0e38, 0.0);
+        let path = write_csv("candidate_overflow", &rows);
+        let error = run_with_path(path.to_str().unwrap()).expect_err("candidate must fail");
+        let message = error.to_string();
+        assert!(
+            message.contains("candidate checked streaming failed"),
+            "{message}"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn all_zero_targets_yield_identical_candidate_without_panic() {
+        let rows: Vec<(f32, f32)> = (0..10).map(|x| (x as f32, 0.0)).collect();
+        let path = write_csv("all_zero", &rows);
+        run_with_path(path.to_str().unwrap()).expect("all-zero targets must complete");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn fewer_than_five_rows_is_rejected() {
+        let rows: Vec<(f32, f32)> = (0..4).map(|x| (x as f32, 2.0 * x as f32 + 1.0)).collect();
+        let path = write_csv("short", &rows);
+        let error = run_with_path(path.to_str().unwrap()).expect_err("short split must fail");
+        assert!(error.to_string().contains("no held-out rows"), "{error}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn actual_salary_dataset_workflow_succeeds_when_present() {
+        let path = "examples/Salary_dataset.csv";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("skipping: {path} not present");
+            return;
+        }
+        run_with_path(path).expect("Salary workflow must succeed");
+    }
 }

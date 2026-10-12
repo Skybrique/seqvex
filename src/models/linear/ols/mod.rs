@@ -1,15 +1,25 @@
 //! Ordinary least-squares (OLS) regression.
 //!
-//! Supplied-parameter prediction is implemented, relocated unchanged from the
-//! classic slice. The OLS fitter, diagnostics, artifact contract and fitting
-//! lifecycle are planned under
-//! [#23](https://github.com/Skybrique/seqvex/issues/23) and are deliberately
-//! absent until the technical design is reviewed and approved.
+//! Supplied-parameter prediction ([`LinearRegression`]) and the batch `fit`
+//! workflow are implemented. Fitted results can be turned into an immutable
+//! [`TrainedModel`] carrying [`ArtifactMetadata`], and exported/imported as the
+//! binary v1 [`artifact`] format.
 //!
-//! See `README.md` in this directory for the algorithm contract, the four
-//! issue-linked requirements and references to the separate technical design and
-//! implementation plan.
+//! The deferred cross-precision numerical-certification project and the broader
+//! fitting lifecycle remain follow-up work under
+//! [#23](https://github.com/Skybrique/seqvex/issues/23). See `README.md` in this
+//! directory for the algorithm contract.
 
+pub mod artifact;
+mod fit;
 mod predict;
 
-pub use predict::{LinearRegression, RegressionError};
+pub use artifact::{
+    ArtifactError, ArtifactExpectation, ArtifactLimits, ArtifactMetadata, Cutoff, Expect,
+    LoadedArtifact, ModelId, PublicationId, SchemaId, TrainedModel, TrainingMeta, TransformId,
+};
+pub use fit::{
+    AllocationSource, ConversionCause, DEFAULT_MAX_WORKSPACE_BYTES, FitConfig, FitDiagnostics,
+    FitError, FitResult, UnderflowPolicy, fit,
+};
+pub use predict::{CheckedLinearRegression, LinearRegression, RegressionError};

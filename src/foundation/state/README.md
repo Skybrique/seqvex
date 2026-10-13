@@ -1,5 +1,7 @@
 # State
 
+> **Model and failure boundary:** execution/state support does not establish model training or completion; model users require the [mandatory training-to-inference contract](../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory). Existing continuation/commit semantics below describe actual APIs, not permission to invent a new recovery policy. Missing or contradictory failure decisions must be raised to the maintainer under the [failure decision rule](../../../docs/DEVELOPMENT.md#calculation-failures-and-error-handling--mandatory); preserved state must not be labelled a prediction for a failed observation.
+
 ## Purpose
 
 Defines the smallest explicit semantics for persistent state, state

@@ -8,6 +8,7 @@
 //! optimization is implied and none is implemented.
 
 use std::hint::black_box;
+use std::mem::size_of;
 
 use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::Vector;
@@ -69,6 +70,60 @@ fn control_steps(features: usize) -> u32 {
     })
 }
 
+/// Batch sizes swept within each fixed model for batch-size sensitivity (#24).
+const SWEEP_BATCH_SIZES: [usize; 4] = [1, 8, 32, 128];
+
+/// Observation budget per `(configuration, batch size)` window in release.
+const SWEEP_BUDGET: u32 = 128_000;
+
+/// Timed calls per batch size under the debug test profile.
+const DEBUG_SWEEP_STEPS: u32 = 10;
+
+/// Batch sizes used by the sensitivity sweep; the debug subset stays small.
+fn sweep_batch_sizes() -> &'static [usize] {
+    if cfg!(debug_assertions) {
+        &SWEEP_BATCH_SIZES[..2]
+    } else {
+        &SWEEP_BATCH_SIZES
+    }
+}
+
+/// Timed calls for one sweep window. Debug sets the count directly (10 calls)
+/// and does not route through `common::timed_steps`; release uses `BUDGET / B`.
+fn sweep_steps(batch_size: usize) -> u32 {
+    if cfg!(debug_assertions) {
+        DEBUG_SWEEP_STEPS
+    } else {
+        (SWEEP_BUDGET / batch_size as u32).max(1)
+    }
+}
+
+/// The sweep exercises the smaller trees in the debug test profile.
+fn sweep_enabled(features: usize) -> bool {
+    !cfg!(debug_assertions) || features <= 128
+}
+
+/// Correctness precheck outside timing: `predict_batch` must be bitwise-equal to
+/// repeated single-observation prediction. The returned output `Vec`'s capacity
+/// is captured here, not inside the timed closure.
+fn verify_sweep_batch(
+    model: &DecisionTree,
+    fixture: &[Observation<Vector>],
+    batch_size: usize,
+) -> usize {
+    let batch = &fixture[..batch_size];
+    let batched = model.predict_batch(batch).unwrap();
+    for (index, observation) in batch.iter().enumerate() {
+        let single = model.predict(observation.value()).unwrap();
+        assert_eq!(
+            batched[index].to_bits(),
+            single.to_bits(),
+            "predict_batch diverged from predict at B={batch_size}, index={index}"
+        );
+    }
+    batched.capacity()
+}
+
 fn main() {
     println!(
         "Decision-tree prediction benchmark ({} runs/measurement)",
@@ -109,5 +164,41 @@ fn main() {
         common::measure("micro-batch", steps, micro_batch, || {
             black_box(model.predict_batch(black_box(&batch)).unwrap());
         });
+
+        if sweep_enabled(features) {
+            // Fixed repeated-input fixture: one deterministic observation at every
+            // position, so traversal workload is held constant across B. This
+            // measures repeated-input behavior, not input-distribution performance.
+            let fixture_observation = observation.clone();
+            let fixture_length = SWEEP_BATCH_SIZES[SWEEP_BATCH_SIZES.len() - 1];
+            let fixture = vec![fixture_observation; fixture_length];
+            println!(
+                "  batch-size sweep: stats bytes/obs is allocator-counted allocation/reallocation \
+                 traffic (not live/peak memory); ns and bytes per batch below are derived"
+            );
+            println!(
+                "  p95/IQR describe variability across normalized measurement windows, not \
+                 individual-call or event latency. Debug measurements are not performance \
+                 evidence; under RUNS=1, p95 equals the median and IQR is zero"
+            );
+            for &batch_size in sweep_batch_sizes() {
+                let capacity = verify_sweep_batch(&model, &fixture, batch_size);
+                let steps = sweep_steps(batch_size);
+                let stats = common::measure("sweep micro-batch", steps, batch_size, || {
+                    black_box(
+                        model
+                            .predict_batch(black_box(&fixture[..batch_size]))
+                            .unwrap(),
+                    );
+                });
+                let ns_per_batch = stats.median * batch_size as f64;
+                let bytes_per_batch = stats.bytes * batch_size as f64;
+                println!(
+                    "    B={batch_size:>3} capacity={capacity:>4} logical_payload_bytes={:>4} \
+                     derived_ns/batch={ns_per_batch:>12.1} derived_bytes/batch={bytes_per_batch:>12.1}",
+                    batch_size * size_of::<f32>()
+                );
+            }
+        }
     }
 }

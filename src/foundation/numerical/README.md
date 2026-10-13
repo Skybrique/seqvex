@@ -1,5 +1,7 @@
 # Numerical
 
+> **Failure boundary:** the documented primitive panic/IEEE behavior below must not be assumed to be an acceptable model-level recovery policy. Model designs must declare validated numerical limits and raise unresolved failure cases to the maintainer under the [failure decision rule](../../../docs/DEVELOPMENT.md#calculation-failures-and-error-handling--mandatory). This documentation update does not change primitive APIs or authorize silent numeric substitution.
+
 ## Purpose
 
 Owns the minimal numerical computation required by Seqvex's own ML/RL methods,
@@ -19,10 +21,12 @@ not a general-purpose numerical or scientific-computing ecosystem.
 Two numeric layers with deliberately different contracts:
 
 - `statistics` is the existing `f64` contract and fails by **panic** on
-  undefined input (empty mean/norm, mismatched `dot`, inconsistent online
-  statistics) and on non-finite input where a non-negativity invariant is
-  asserted. `sum(&[]) == 0.0`. Variance is the **population** variance
-  (divide by `N`), computed in two passes.
+  undefined input (empty mean/variance/norm, mismatched `dot`, inconsistent online
+  statistics). `sum`, `mean`, and `dot` propagate IEEE-754 `NaN`/`±Inf`.
+  `variance` asserts a non-negative result, so any non-finite input yields a
+  `NaN` result and panics. `norm` also asserts non-negativity: a `NaN` input
+  panics, while a `±Inf` input returns `+Inf`. `sum(&[]) == 0.0`. Variance is
+  the **population** variance (divide by `N`), computed in two passes.
 - The `f32` substrate returns `Result` with `DimensionMismatch` for shape
   errors. The GRU adds `GruError` for its own failure classes.
 

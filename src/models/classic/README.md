@@ -1,10 +1,19 @@
 # Classic ML
 
+> **Completeness:** this document includes historical inference-component evidence. Those components do not satisfy complete-model acceptance by themselves. Every model must ingest data, fit/learn, validate and predict from the learned result under the [mandatory training-to-inference contract](../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory). Decision Tree training remains a required capability. The OLS baseline now implements fitting in the linear family; its accepted scope and explicit deferrals are documented in the canonical OLS README. KNN reference-data ingestion must be assessed as its actual fitting mechanism, with end-to-end evidence. Report missing capabilities and unresolved failure policies before proceeding.
+
 ## Purpose
 
 Holds the classic (non-recurrent) ML vertical slices. The first is linear
 regression prediction; the second is decision tree prediction; the third is
 K-nearest-neighbors prediction.
+
+> **Linear-regression relocation (issue #23).** The canonical OLS implementation
+> (fitting, prediction, artifact v1 and checked serving) lives in the linear family at
+> [`models::linear::ols`](../linear/ols/README.md); that file is the canonical
+> linear-regression/OLS document. The `models::classic::linear_regression` path
+> is retained as a compatibility re-export of the same types. The historical
+> linear-regression material below is preserved.
 
 ## Responsibility
 
@@ -60,8 +69,9 @@ belonged to the executor/workspace review, not to this slice.
 
 ## Decision Tree (read-only inference)
 
-Inference traverses a trained tree supplied by the caller; training/fitting is
-deliberately out of scope. The first task variant is **regression** (finite `f32`
+The current primitive traverses a tree supplied by the caller; it does not
+implement fitting from data. That missing capability is required for a complete
+Decision Tree model. The first task variant is **regression** (finite `f32`
 leaves); classification is deferred. A split routes **left** when
 `feature <= threshold` and right otherwise. Construction validates the graph
 (empty/zero-dimension, feature index, child range, finite threshold and leaf,
@@ -73,9 +83,12 @@ is returned.
 
 ## K-Nearest Neighbors (stored-reference inference)
 
-Prediction uses a caller-supplied reference set; training/fitting is deliberately
-out of scope and the first task variant is **regression** (classification is
-deferred). With `N` references, `k` neighbors, and query `x`, the model selects
+Construction validates and stores labelled reference observations. Retaining
+training observations can constitute KNN fitting; it does not require a
+parameter optimizer. The accepted user workflow must demonstrate data ingestion,
+reference-set fitting and validated predictions from that fitted reference set.
+The first task variant is **regression** (classification is deferred). With `N`
+references, `k` neighbors, and query `x`, the model selects
 the first `k` references under `(squared_distance, reference_index)` ascending
 and returns the unweighted mean of their targets. `sqrt` is strictly increasing
 on `[0, ∞)`, so squared distance orders neighbors identically to Euclidean
@@ -89,13 +102,18 @@ distances and duplicate references are deterministic via the reference-index
 tiebreak and are never collapsed. `predict_batch` preserves input order; the
 first element failure returns `Err` for the whole call with no partial output.
 
-## Outside
+## Missing capabilities and separate scope
 
-- Online parameter updating, training, optimizers, and autodiff. Prediction is
-  deliberately separate from learning; the online update is a later, ordered
-  concern (RLS, Issue #26).
-- Decision Tree training/fitting and classification; the slice is read-only
-  regression traversal until those are explicitly approved.
+- OLS fitting is implemented at `models::linear::ols::fit`; the accepted baseline
+  includes diagnostics, artifact v1, checked serving and deliberate refit handover.
+  The classic paths remain compatibility re-exports of prediction types. See the
+  [canonical OLS README](../linear/ols/README.md) for current APIs and explicit
+  preparation/ordering/certification deferrals. Sequential online estimation is
+  a separate RLS contract (Issue #26); OLS does not inherently require an
+  optimizer or autodiff.
+- Decision Tree training/fitting is missing from the historical read-only
+  component and is required for complete model delivery. Classification is a
+  separate task; neither this note nor historical evidence approves implementation.
 - KNN classification, distance-weighted prediction, configurable metrics, and
   any approximate or indexed neighbor search (ANN, KD-tree, ball tree, HNSW); the
   slice is brute-force regression search only.
@@ -106,7 +124,8 @@ first element failure returns `Err` for the whole call with no partial output.
 
 ## Current tests / specification
 
-- `tests/linear_regression.rs`
+- `src/models/linear/ols/tests/public_contract.rs` (registered as the
+  `linear_regression` test target)
 - `tests/decision_tree.rs`
 - `tests/knn.rs`
 
@@ -130,12 +149,27 @@ multiplication or summation and produce `±inf`; a subsequent `inf + (-inf)` can
 produce `NaN`. Finite parameters and finite inputs therefore do **not** guarantee
 a finite prediction. Callers are responsible for keeping the products and sums
 representable, for example by scaling features and coefficients. No numeric
-threshold is imposed or implied: this is expected IEEE-754 `f32` behaviour, not a
-defect, and Seqvex does not invent a magnitude cutoff.
+threshold is currently imposed or implied. This records the existing primitive's
+IEEE-754 `f32` behavior; it does not establish an acceptable model-level failure
+policy. Non-finite predictions and the appropriate error/recovery contract must
+be brought to the maintainer for review before affected implementation.
 
 The analogous pure-prediction path `Rls::predict` computes `wᵀx` with the same
 no-output-validation behaviour; each model documents its own envelope rather than
 sharing a rule or abstraction.
+
+## Linear regression applicability
+
+Linear regression in this slice is fixed-coefficient prediction: `ŷ = w·x + b`
+is evaluated against caller-supplied immutable coefficients. It performs no
+fitting, adaptation, or parameter update. Evaluating the prediction equation
+does not require inputs to be IID, stationary, or exchangeable; each prediction
+depends only on its own observation and the fixed coefficients. How the
+coefficients were estimated, predictive validity, uncertainty, and
+distribution-shift behaviour are separate questions outside this slice. The
+f32 numerical envelope above is unchanged: finite parameters and finite inputs
+do not guarantee a finite output, and callers keep products and sums
+representable.
 
 ## Measured evidence (#23)
 
@@ -157,6 +191,15 @@ inherent output allocation).
 
 ## Measured evidence (#24)
 
+Two separate runs are recorded here and are not merged: a historical pre-sweep
+baseline ([historical]) and the release batch-size sweep at the **associated
+inspected revision** `b63136f5` ([new run]). The actual run-time revision,
+compiler toolchain, and machine-contention status are **unverified**: the
+supplied output contains no revision or toolchain evidence and no run-time
+contention evidence.
+
+### Historical baseline ([historical])
+
 Release mode (`cargo bench --bench decision_tree`), median of 20 runs. Balanced
 trees: depth 6 (127 nodes) at 8 features, depth 8 (511 nodes) at 32 features,
 depth 10 (2047 nodes) at 128 and 256 features.
@@ -176,8 +219,92 @@ applies no materiality test, so this is a reported measured difference, not a
 statistical-equivalence claim. Micro-batch is not faster than single-observation
 prediction. Construction builds the growing node `Vec` (11–16 heap allocations at
 these tree sizes), separate from the allocation-free per-observation inference
-and the per-batch output allocation. No optimization was implemented: there is no
-profile-identified bottleneck.
+and the per-batch output allocation. No optimization was implemented.
+
+### Release batch-size sweep ([new run], associated inspected revision `b63136f5`)
+
+Release run `cargo bench --bench decision_tree -j 2` at the **associated
+inspected revision** `b63136f5b5aa19f03a4c34ab7b4c4b863195ed40` (branch
+`rust-development`), `env os=linux arch=x86_64 profile=release parallelism=20`,
+20 normalized measurement windows per cell, single machine (12th Gen Intel Core
+i7-12700H, 20 logical CPUs). The actual run-time revision, compiler toolchain,
+and machine-contention status are **unverified** (the supplied output contains no
+revision or toolchain evidence and no run-time contention evidence). Step
+budgets: 200000 / 200000 / 50000 / 20000 for 8 / 32 / 128 / 256 features.
+
+Fixture limitation: the sweep repeats one deterministic observation to a
+constant length (`128`) for every batch size, so it measures **repeated-input**
+behavior, not input-distribution performance; the traversal workload is held
+constant across `B`.
+
+Control paths for this run, ns per observation (median):
+
+| features | reference | streaming | micro-batch |
+|---:|---:|---:|---:|
+| 8 | 16.4 | 18.8 | 22.3 |
+| 32 | 33.6 | 33.6 | 34.8 |
+| 128 | 81.0 | 81.2 | 84.5 |
+| 256 | 113.9 | 112.8 | 115.2 |
+
+Initialization for this run: `1778.8` ns/init (`11` allocs, `8655` bytes) at 8
+features; `5734.4` (`14`, `34127`) at 32; `21052.9` (`16`, `133967`) at 128;
+`21105.5` (`16`, `133967`) at 256.
+
+Micro-batch sweep, all 16 rows. `median`, `p95`, `IQR`, `obs/s`, `allocs/obs`,
+and `bytes/obs` are the harness's measured values; `p95`/`IQR` describe
+variability across the normalized measurement windows, **not** per-call or event
+latency. `bytes/obs` is allocator-counted allocation/reallocation traffic, **not**
+live/peak memory. The per-batch duration and traffic (`derived ns/batch`,
+`derived bytes/batch`) are **harness-derived** from the unrounded median and
+allocation values (approximately the displayed `median × B` and
+`bytes/obs × B`; small differences are display rounding). `capacity` is the
+output `Vec` capacity **observed during the precheck** (outside timing), and
+`payload bytes` is the **calculated** logical payload `B × size_of::<f32>()`.
+
+| features | B | median ns/obs | p95 | IQR | obs/s | allocs/obs | bytes/obs | capacity | payload bytes | derived ns/batch | derived bytes/batch |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8 | 1 | 41.7 | 53.5 | 1.9 | 23981089 | 1.000 | 16.0 | 4 | 4 | 41.7 | 16.0 |
+| 8 | 8 | 24.9 | 28.8 | 2.2 | 40163642 | 0.250 | 6.0 | 8 | 32 | 199.2 | 48.0 |
+| 8 | 32 | 23.8 | 26.4 | 1.3 | 42090393 | 0.125 | 7.5 | 32 | 128 | 760.3 | 240.0 |
+| 8 | 128 | 21.2 | 30.2 | 1.1 | 47176487 | 0.047 | 7.9 | 128 | 512 | 2713.2 | 1008.0 |
+| 32 | 1 | 54.1 | 65.3 | 1.9 | 18479746 | 1.000 | 16.0 | 4 | 4 | 54.1 | 16.0 |
+| 32 | 8 | 37.6 | 40.2 | 0.8 | 26594186 | 0.250 | 6.0 | 8 | 32 | 300.8 | 48.0 |
+| 32 | 32 | 33.7 | 34.8 | 0.3 | 29653043 | 0.125 | 7.5 | 32 | 128 | 1079.1 | 240.0 |
+| 32 | 128 | 31.8 | 32.2 | 0.5 | 31436933 | 0.047 | 7.9 | 128 | 512 | 4071.6 | 1008.0 |
+| 128 | 1 | 104.8 | 110.1 | 3.5 | 9545797 | 1.000 | 16.0 | 4 | 4 | 104.8 | 16.0 |
+| 128 | 8 | 84.4 | 86.3 | 1.5 | 11847454 | 0.250 | 6.0 | 8 | 32 | 675.3 | 48.0 |
+| 128 | 32 | 83.0 | 86.2 | 1.1 | 12044361 | 0.125 | 7.5 | 32 | 128 | 2656.8 | 240.0 |
+| 128 | 128 | 82.3 | 89.6 | 2.6 | 12143855 | 0.047 | 7.9 | 128 | 512 | 10540.3 | 1008.0 |
+| 256 | 1 | 131.8 | 134.5 | 1.0 | 7589092 | 1.000 | 16.0 | 4 | 4 | 131.8 | 16.0 |
+| 256 | 8 | 118.5 | 124.2 | 4.7 | 8436286 | 0.250 | 6.0 | 8 | 32 | 948.3 | 48.0 |
+| 256 | 32 | 115.4 | 119.3 | 3.8 | 8665361 | 0.125 | 7.5 | 32 | 128 | 3692.9 | 240.0 |
+| 256 | 128 | 109.9 | 117.2 | 1.2 | 9101509 | 0.047 | 7.9 | 128 | 512 | 14063.6 | 1008.0 |
+
+Applying the harness materiality rule (`difference > 2·max(IQR)` AND
+`difference > 5%·max(median)`):
+
+- Against the direct reference, `micro-batch` is materially slower only at 8
+  features (`+5.9` ns/obs; thresholds `3.8` and `1.1`) and is not materially
+  different at 32, 128, or 256 features.
+- `streaming` versus the direct reference: the difference is not material at 32,
+  128, and 256 features. At 8 features, the materiality classification is
+  unresolved at displayed precision: the reported difference (`+2.4` ns/obs)
+  equals the reported `2·max(IQR)` threshold (`2.4` ns/obs).
+- Within the repeated-input fixture, the per-observation median at `B = 128` is
+  materially lower than at `B = 1` in all four configurations (differences
+  ≈ `20.5`–`22.5` ns/obs against `2.4`–`7.0` ns/obs and `2.1`–`6.6` ns/obs
+  thresholds). `allocs/obs` and allocator `bytes/obs` also fall with `B`
+  (`1.000 → 0.047` and `16.0 → 7.9`). This run does not decompose traversal from
+  per-batch output handling, so the cause of the per-observation reduction is not
+  isolated here.
+
+These comparative outcomes are single-run **directional** evidence; they are not
+acceptance-grade comparative performance conclusions. The run does establish that
+representative batch sizes were measured.
+
+The reference path is retained; optimization and profiling are deferred. This
+run does not establish a CPU profile, a bottleneck identification, a universal
+speedup, or production readiness.
 
 ## Measured evidence (#25)
 

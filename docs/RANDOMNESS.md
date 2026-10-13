@@ -1,5 +1,7 @@
 # Seqvex Randomness and Parameter Initialization
 
+> **Initialization is not fitting:** this facility supplies starting values, not learned parameters or a valid user model demonstration. Every ML model still requires actual data ingestion, training/learning and validated inference under the [mandatory training-to-inference contract](DEVELOPMENT.md#model-training-and-valid-inference--mandatory). Entropy failure must remain explicit; no fallback is inferred.
+
 > **Status:** Scoped facility for issue #20. Not a project-wide randomness standard.
 
 ## 1. Purpose and scope invariant

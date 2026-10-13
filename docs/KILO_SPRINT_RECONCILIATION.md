@@ -1,5 +1,7 @@
 # Seqvex Connectome Sprint — Audit & Correction Instruction
 
+> **Historical reference — superseded execution instructions:** retain this record for its original scope and evidence; do not execute it as current implementation authorization. Any earlier prediction-only scope, preset-parameter demonstration or completion claim must be assessed under the [mandatory training-to-inference contract](DEVELOPMENT.md#model-training-and-valid-inference--mandatory) and current Architect → Planner → Coder gates. Raise unresolved failure decisions to the maintainer.
+
 ## 1. Purpose
 
 This document is an **audit and correction instruction**, not a new implementation plan.

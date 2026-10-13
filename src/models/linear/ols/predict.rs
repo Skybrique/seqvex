@@ -74,6 +74,15 @@ pub enum RegressionError {
     NonFiniteParameter,
     /// An observation contains a non-finite feature.
     NonFiniteInput,
+    /// A **checked** prediction produced an infinite or `NaN` output.
+    ///
+    /// `observation` is the zero-based position in the supplied group, or
+    /// `None` for a single prediction. The bare [`LinearRegression::predict`]
+    /// and [`LinearRegression::predict_batch`] paths do not report this.
+    NonFiniteOutput {
+        /// Zero-based group position, or `None` for a single prediction.
+        observation: Option<usize>,
+    },
 }
 
 impl From<DimensionMismatch> for RegressionError {
@@ -135,6 +144,23 @@ impl LinearRegression {
         Ok(self.weights.dot(features)? + self.bias)
     }
 
+    /// Checked prediction: like [`LinearRegression::predict`], but additionally
+    /// rejects a non-finite result.
+    ///
+    /// Input validation and its error categories are unchanged; a finite result
+    /// is returned with identical `f32` bits to [`LinearRegression::predict`].
+    /// A non-finite result returns [`RegressionError::NonFiniteOutput`] with
+    /// `observation = None`. No saturation, clipping, or second arithmetic path
+    /// is introduced.
+    pub fn predict_checked(&self, features: &Vector) -> Result<f32, RegressionError> {
+        let value = self.predict(features)?;
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(RegressionError::NonFiniteOutput { observation: None })
+        }
+    }
+
     /// Bounded micro-batch prediction over independent observations.
     ///
     /// The batch is exactly the supplied slice (the caller bounds it) and the
@@ -142,7 +168,7 @@ impl LinearRegression {
     /// aggregating observations cannot change any individual result; the tests
     /// assert bitwise equality with repeated single-observation prediction.
     ///
-    /// ponytail: a straightforward sequential map, not a vectorized kernel.
+    /// A straightforward sequential map, not a vectorized kernel.
     /// There is no measured LR bottleneck justifying SIMD, so none is added.
     pub fn predict_batch(
         &self,
@@ -152,6 +178,31 @@ impl LinearRegression {
             .iter()
             .map(|observation| self.predict(observation.value()))
             .collect()
+    }
+
+    /// Checked bounded micro-batch prediction.
+    ///
+    /// Observations are processed in supplied order and the first failure is
+    /// returned immediately, so an earlier output failure is never masked by a
+    /// later invalid input. Input errors keep their existing categories; a
+    /// non-finite output returns [`RegressionError::NonFiniteOutput`] with
+    /// `observation = Some(index)` for its zero-based group position. No partial
+    /// output vector is returned. An empty group returns an empty success.
+    pub fn predict_batch_checked(
+        &self,
+        batch: &[Observation<Vector>],
+    ) -> Result<Vec<f32>, RegressionError> {
+        let mut outputs = Vec::with_capacity(batch.len());
+        for (index, observation) in batch.iter().enumerate() {
+            let value = self.predict(observation.value())?;
+            if !value.is_finite() {
+                return Err(RegressionError::NonFiniteOutput {
+                    observation: Some(index),
+                });
+            }
+            outputs.push(value);
+        }
+        Ok(outputs)
     }
 }
 
@@ -167,5 +218,60 @@ impl StateModel for LinearRegression {
         observation: &Observation<Vector>,
     ) -> Result<f32, RegressionError> {
         self.predict(observation.value())
+    }
+}
+
+/// A checked view over an immutable [`LinearRegression`].
+///
+/// It **borrows** the existing predictor and delegates to
+/// [`LinearRegression::predict_checked`] through the [`StateModel`] contract, so
+/// it can be driven by the existing
+/// [`crate::execution::streaming::StreamingExecutor`] with no parameter clone
+/// and no hidden mutable state. Only the model's *result classification*
+/// changes — a non-finite output becomes an error; how the executor handles
+/// errors is unchanged.
+#[derive(Debug, Clone)]
+pub struct CheckedLinearRegression<'a> {
+    inner: &'a LinearRegression,
+}
+
+impl<'a> CheckedLinearRegression<'a> {
+    /// Wraps an existing predictor by reference.
+    pub fn new(inner: &'a LinearRegression) -> Self {
+        Self { inner }
+    }
+
+    /// The wrapped predictor.
+    pub fn predictor(&self) -> &LinearRegression {
+        self.inner
+    }
+
+    /// Checked single prediction; see [`LinearRegression::predict_checked`].
+    pub fn predict_checked(&self, features: &Vector) -> Result<f32, RegressionError> {
+        self.inner.predict_checked(features)
+    }
+
+    /// Checked grouped prediction; see
+    /// [`LinearRegression::predict_batch_checked`].
+    pub fn predict_batch_checked(
+        &self,
+        batch: &[Observation<Vector>],
+    ) -> Result<Vec<f32>, RegressionError> {
+        self.inner.predict_batch_checked(batch)
+    }
+}
+
+impl StateModel for CheckedLinearRegression<'_> {
+    /// The most recent checked prediction.
+    type State = f32;
+    type Observation = Observation<Vector>;
+    type Error = RegressionError;
+
+    fn update(
+        &self,
+        _state: &f32,
+        observation: &Observation<Vector>,
+    ) -> Result<f32, RegressionError> {
+        self.inner.predict_checked(observation.value())
     }
 }

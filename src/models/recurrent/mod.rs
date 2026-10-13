@@ -2,4 +2,4 @@
 
 pub mod gru;
 
-pub use gru::{Gru, GruError, GruExecutor, GruParameters};
+pub use gru::{Gru, GruBatchError, GruError, GruExecutor, GruParameters};

@@ -6,4 +6,4 @@
 
 pub mod rls;
 
-pub use rls::{Rls, RlsError, RlsSample, RlsState};
+pub use rls::{Rls, RlsBatchError, RlsError, RlsSample, RlsState};

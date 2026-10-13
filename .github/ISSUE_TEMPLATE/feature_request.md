@@ -24,6 +24,10 @@ assignees: ""
 
 <!-- What should this feature include? What should it explicitly NOT include? -->
 
+## Model lifecycle and failure requirements
+
+<!-- For ML models, specify actual data ingestion, fitting/learning, validation and predictions from the learned result. Prediction-only scope is not a complete model. Identify unknown numerical/error/recovery decisions for maintainer review. Follow docs/DEVELOPMENT.md; do not silently choose fallback behavior. -->
+
 ## Alternatives considered
 
 <!-- Optional: describe other approaches you considered. -->

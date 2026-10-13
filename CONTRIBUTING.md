@@ -1,5 +1,11 @@
 # Contributing to Seqvex
 
+## Model lifecycle and failure decisions
+
+A model feature is complete only with actual data ingestion, training/learning and mathematically validated inference, plus task-appropriate prediction-quality evidence and an executable trained-model example. Component-only deliveries must be identified as incomplete, not presented as working ML models. Follow the [mandatory training-to-inference contract](docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory) and Architect → Planner → Coder gates.
+
+Raise any unresolved error, numerical or recovery behavior to the maintainer before affected work proceeds. Do not choose silent fallback outputs or infer permission to continue/retry/reset. Follow the [failure decision rule](docs/DEVELOPMENT.md#calculation-failures-and-error-handling--mandatory).
+
 Thank you for your interest in Seqvex.
 
 Seqvex is an early-stage project. At this stage, careful design, experimentation, testing, and learning are more important than rapidly increasing the amount of code.

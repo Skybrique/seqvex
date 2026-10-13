@@ -13,6 +13,8 @@ resolver = "3"
 
 [dependencies]
 rand = { version = "0.10", default-features = false, features = ["std", "chacha", "sys_rng"] }
+faer = { version = "=0.24.4", default-features = false, features = ["std", "linalg"] }
+sha2 = "0.10"
 
 [[bench]]
 name = "numerical"
@@ -22,8 +24,52 @@ harness = false
 name = "gru"
 harness = false
 
+[dev-dependencies]
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
+csv = "1.4"
+
+[[test]]
+name = "linear_regression"
+path = "src/models/linear/ols/tests/public_contract.rs"
+
+[[test]]
+name = "ols_oracle"
+path = "src/models/linear/ols/tests/oracle.rs"
+
+[[test]]
+name = "ols_fit"
+path = "src/models/linear/ols/tests/fitting.rs"
+
+[[test]]
+name = "ols_artifact"
+path = "src/models/linear/ols/tests/ols_artifact.rs"
+
+[[test]]
+name = "ols_checked"
+path = "src/models/linear/ols/tests/checked_serving.rs"
+
+[[test]]
+name = "ols_temporal"
+path = "src/models/linear/ols/tests/ols_temporal.rs"
+
+[[example]]
+name = "ols_predict"
+path = "src/models/linear/ols/examples/predict.rs"
+
+[[example]]
+name = "fit_salary"
+path = "src/models/linear/ols/examples/fit_salary.rs"
+
+[[bench]]
+name = "ols_fit"
+path = "src/models/linear/ols/benches/fit.rs"
+harness = false
+
 [[bench]]
 name = "linear_regression"
+path = "src/models/linear/ols/benches/execution.rs"
 harness = false
 
 [[bench]]

@@ -65,6 +65,14 @@ three documentation artifacts named in the delivery.
   `docs/ML_VERTICAL_SLICES.md`.
 - Governance: `docs/DEVELOPMENT.md` §24, §27, §33; `FEATURE_DEVELOPMENT.md`.
 
+> **Current-location note (#26).** The RLS source paths and evaluated revisions
+> in this audit are historical inspection records and are preserved unchanged.
+> RLS now lives at `src/models/linear/rls/` (canonical `models::linear::rls`),
+> with both `models::online::rls` and `models::online` retained as compatibility
+> re-exports. The integration test is registered as Cargo target `rls` at
+> `src/models/linear/rls/tests/rls.rs`. This location map does not re-audit the
+> historical revisions or change their findings.
+
 ### Revision provenance
 
 - Merged on `main`: RLS validation PR #31 (merge `e8785ee`), GRU audit PR #32

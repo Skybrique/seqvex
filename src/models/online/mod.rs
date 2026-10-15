@@ -1,9 +1,12 @@
-//! Online ML model namespace.
+//! Online ML compatibility namespace.
 //!
-//! The first online slice is [recursive least squares](rls): an immutable,
-//! shareable configuration `(D, λ, δ)` whose ordered adaptive state `(w, P)`
-//! lives entirely in [`StateModel::State`]. See `docs/ML_VERTICAL_SLICES.md`.
+//! Recursive least squares (RLS) moved to [`crate::models::linear::rls`] in the
+//! linear-model family; the canonical path is `seqvex::models::linear::rls`.
+//! This namespace is retained only as a compatibility re-export of the same
+//! canonical types. See `docs/ML_VERTICAL_SLICES.md`.
 
-pub mod rls;
+pub mod rls {
+    pub use crate::models::linear::rls::{Rls, RlsBatchError, RlsError, RlsSample, RlsState};
+}
 
 pub use rls::{Rls, RlsBatchError, RlsError, RlsSample, RlsState};

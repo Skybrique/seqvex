@@ -659,6 +659,13 @@ These migration candidates identify enclosing algorithm homes for existing code.
 
 Moving linear_regression.rs does not silently rename the existing predictor to a trained OLS implementation. Moving RLS out of online is optional and requires compatibility review; vocabulary alone is insufficient justification.
 
+> **Current-location note (#26).** The §18.2 table records the inspected starting
+> point at the stated checkpoint and is preserved as a historical proposal.
+> Since then, linear regression moved to `src/models/linear/ols/` and RLS to
+> `src/models/linear/rls/`, with the former classic and online imports retained
+> as compatibility re-exports. The tree, GRU and KNN migration rows remain
+> proposals.
+
 CURRENT: inspected tests/gru.rs imports the public Seqvex API and contains its independent scalar reference. It is a Rust integration-test target despite being algorithm-specific. Do not relabel all root algorithm tests as unit tests, or discard independent evidence during a move.
 
 Observed documentation finding: benches/gru.rs still says its bounded release evidence is pending, while ML_VERTICAL_SLICES.md records the #34 capture. Treat header reconciliation as a task under existing ownership; it does not reopen the delivered measurement or justify a new issue. This draft changes neither source file.

@@ -1,7 +1,7 @@
 //! Recursive Least Squares (RLS) with a forgetting factor: ordered online
 //! adaptation of `(w, P)`.
 //!
-//! RLS is the online (supervised) slice. Unlike linear-regression prediction,
+//! RLS is an ordered online (supervised) slice. Unlike linear-regression prediction,
 //! each observation changes the model's parameters, so updates are strictly
 //! ordered and state-dependent.
 //!
@@ -87,6 +87,13 @@ pub enum RlsError {
     InvalidDenominator,
     /// The computed candidate `(w', P')` is not finite.
     NonFiniteCandidate,
+    /// A checked prediction produced a non-finite result.
+    ///
+    /// Reported only by [`Rls::predict_checked`]; the bare [`Rls::predict`] path
+    /// preserves its existing behavior and does not check output finiteness. The
+    /// supplied state is unchanged, and this guard neither establishes state
+    /// finiteness nor diagnoses the cause.
+    NonFiniteOutput,
 }
 
 impl From<DimensionMismatch> for RlsError {
@@ -219,6 +226,23 @@ impl Rls {
             return Err(RlsError::NonFiniteInput);
         }
         Ok(state.w.dot(features)?)
+    }
+
+    /// Checked prediction: like [`Rls::predict`], but additionally rejects a
+    /// non-finite result.
+    ///
+    /// Delegates to [`Rls::predict`], so input validation and its error
+    /// categories and precedence are unchanged, and a finite result is returned
+    /// with identical `f32` bits. A non-finite result returns
+    /// [`RlsError::NonFiniteOutput`]. Only the output is checked: this does not
+    /// establish state finiteness, covariance symmetry or positive-definiteness,
+    /// accuracy, or statistical validity, and the supplied state is unchanged.
+    pub fn predict_checked(&self, state: &RlsState, features: &Vector) -> Result<f32, RlsError> {
+        let value = self.predict(state, features)?;
+        if !value.is_finite() {
+            return Err(RlsError::NonFiniteOutput);
+        }
+        Ok(value)
     }
 
     /// Bounded ordered reference micro-batch over the RLS update path.

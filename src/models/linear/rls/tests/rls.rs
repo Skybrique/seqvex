@@ -16,7 +16,63 @@ use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::{Matrix, Vector};
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::{StateModel, process_batch, process_one, process_stream};
-use seqvex::models::online::rls::{Rls, RlsBatchError, RlsError, RlsSample, RlsState};
+use seqvex::models::linear::rls::{Rls, RlsBatchError, RlsError, RlsSample, RlsState};
+
+// Compile-time compatibility pin: the relocated canonical RLS types are the
+// same types reachable through both retained `models::online` namespaces. Each
+// expansion coerces an identity function pointer, so it compiles only when the
+// two paths name the same type.
+macro_rules! assert_same_type {
+    ($canonical:ty, $alias:ty) => {
+        const _: () = {
+            fn same<T>(value: T) -> T {
+                value
+            }
+            let _: fn($canonical) -> $canonical = same::<$alias>;
+        };
+    };
+}
+
+assert_same_type!(
+    seqvex::models::linear::rls::Rls,
+    seqvex::models::online::rls::Rls
+);
+assert_same_type!(
+    seqvex::models::linear::rls::RlsState,
+    seqvex::models::online::rls::RlsState
+);
+assert_same_type!(
+    seqvex::models::linear::rls::RlsSample,
+    seqvex::models::online::rls::RlsSample
+);
+assert_same_type!(
+    seqvex::models::linear::rls::RlsError,
+    seqvex::models::online::rls::RlsError
+);
+assert_same_type!(
+    seqvex::models::linear::rls::RlsBatchError,
+    seqvex::models::online::rls::RlsBatchError
+);
+assert_same_type!(
+    seqvex::models::linear::rls::Rls,
+    seqvex::models::online::Rls
+);
+assert_same_type!(
+    seqvex::models::linear::rls::RlsState,
+    seqvex::models::online::RlsState
+);
+assert_same_type!(
+    seqvex::models::linear::rls::RlsSample,
+    seqvex::models::online::RlsSample
+);
+assert_same_type!(
+    seqvex::models::linear::rls::RlsError,
+    seqvex::models::online::RlsError
+);
+assert_same_type!(
+    seqvex::models::linear::rls::RlsBatchError,
+    seqvex::models::online::RlsBatchError
+);
 
 fn model(dimension: usize) -> Rls {
     Rls::new(dimension, 0.99, 1.0e4).unwrap()
@@ -3780,5 +3836,173 @@ fn r4_e24_lambda_near_one_ignored() {
             describe_run("E24", d, n, candidate, &run);
             classify_attribution(&format!("E24 d={d} n={n} lambda={candidate}"), &run, true);
         }
+    }
+}
+
+// --- checked serving ----------------------------------------------------------
+
+#[test]
+fn checked_prediction_guards_non_finite_output_and_preserves_bare_behavior() {
+    // Frozen deterministic public-update fixture: D = 1, lambda = 1, delta = 1.
+    let model = Rls::new(1, 1.0, 1.0).unwrap();
+    let state = model
+        .update(&model.initial_state(), &sample(&[1.0_f32], 1.0e30_f32))
+        .expect("frozen public update must succeed");
+    // The committed weights and covariance are finite.
+    assert!(state.w.as_slice().iter().all(|value| value.is_finite()));
+    assert!(state.p.as_slice().iter().all(|value| value.is_finite()));
+
+    let overflow = Vector::from_slice(&[1.0e9_f32]);
+    // Bare prediction keeps its existing non-checking behavior.
+    let bare = model
+        .predict(&state, &overflow)
+        .expect("bare predict does not check output");
+    assert!(!bare.is_finite());
+    // Checked prediction rejects the non-finite output.
+    let snapshot = state.clone();
+    assert_eq!(
+        model.predict_checked(&state, &overflow),
+        Err(RlsError::NonFiniteOutput)
+    );
+    // Prediction is non-mutating: the supplied state is unchanged.
+    assert_eq!(state.w.as_slice(), snapshot.w.as_slice());
+    assert_eq!(state.p.as_slice(), snapshot.p.as_slice());
+
+    // Finite outputs keep bit-for-bit parity with bare prediction.
+    let finite = Vector::from_slice(&[1.0_f32]);
+    let bare_finite = model.predict(&state, &finite).unwrap();
+    let checked_finite = model.predict_checked(&state, &finite).unwrap();
+    assert!(checked_finite.is_finite());
+    assert_eq!(bare_finite.to_bits(), checked_finite.to_bits());
+
+    // Inherited validation precedence: dimension before output checking.
+    assert_eq!(
+        model.predict_checked(&state, &Vector::from_slice(&[1.0_f32, 2.0_f32])),
+        Err(RlsError::DimensionMismatch {
+            expected: 1,
+            actual: 2,
+        })
+    );
+    // Non-finite features are rejected before any output check.
+    assert_eq!(
+        model.predict_checked(&state, &Vector::from_slice(&[f32::NAN])),
+        Err(RlsError::NonFiniteInput)
+    );
+}
+
+#[test]
+fn acceptance_checked_prequential_matches_literal_objective_and_e9_quality() {
+    // Exact minimization is an exact-arithmetic property: `w_t` is the exact
+    // minimiser of `J_t` in exact arithmetic; the `f32` recurrence only
+    // approximates it and is checked here within the established tolerance.
+    let delta = 1.0e3_f32;
+    let d = 2_usize;
+    let split = 400_usize;
+    let n = 1400_usize;
+    let w_a = [0.7_f32, -1.3];
+    let w_b = [-0.5_f32, 1.1];
+    let shift = w_a.iter().zip(&w_b).fold(0.0_f64, |m, (&a, &b)| {
+        m.max((f64::from(a) - f64::from(b)).abs())
+    });
+    let (xs, ys) = regime_data(d, n, split, &w_a, &w_b);
+
+    let mean_abs = |errors: &[f64], range: std::ops::Range<usize>| -> f64 {
+        let slice = &errors[range];
+        slice.iter().map(|value| value.abs()).sum::<f64>() / slice.len() as f64
+    };
+
+    let mut control_late = f64::NAN;
+    let mut late_errors: Vec<f64> = Vec::new();
+
+    for &lambda in &[1.0_f32, 0.9, 0.95, 0.99] {
+        let model = Rls::new(d, lambda, delta).unwrap();
+        let mut state = model.initial_state();
+
+        // Learn zero-based rows 0..400 through exactly 400 public updates.
+        for index in 0..split {
+            state = model
+                .update(&state, &sample(&xs[index], ys[index]))
+                .unwrap_or_else(|error| {
+                    panic!("update failed at learn row {index} (lambda {lambda}): {error:?}")
+                });
+        }
+        // Learned-prefix state against the independent literal weighted objective.
+        let (_, _, prefix_oracle) = oracle_solution(
+            f64::from(lambda),
+            f64::from(delta),
+            &xs[..split],
+            &ys[..split],
+        );
+        assert_weights_match_oracle(&state, &prefix_oracle, 5e-3);
+
+        let is_control = lambda == 1.0_f32;
+        if is_control {
+            let scale = 1.0 + prefix_oracle.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+            assert!(
+                weight_distance_f64(&state, &prefix_oracle) <= 5e-3 * scale,
+                "lambda=1 at t={split}: not the pooled solution"
+            );
+        }
+
+        // Score rows 400..1400: checked prediction from the committed state,
+        // then reveal the target and update. The first scored row is index 400,
+        // using the state committed after the 400th update.
+        let mut errors: Vec<f64> = Vec::with_capacity(n - split);
+        for index in split..n {
+            let features = Vector::from_slice(&xs[index]);
+            let prediction = model
+                .predict_checked(&state, &features)
+                .unwrap_or_else(|error| {
+                    panic!("predict_checked failed at row {index} (lambda {lambda}): {error:?}")
+                });
+            errors.push(f64::from(ys[index]) - f64::from(prediction));
+            state = model
+                .update(&state, &sample(&xs[index], ys[index]))
+                .unwrap_or_else(|error| {
+                    panic!("update failed at row {index} (lambda {lambda}): {error:?}")
+                });
+            if is_control && (index + 1 == n || (index + 1) % 400 == 0) {
+                let (_, _, pooled) = oracle_solution(
+                    f64::from(lambda),
+                    f64::from(delta),
+                    &xs[..index + 1],
+                    &ys[..index + 1],
+                );
+                let scale = 1.0 + pooled.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+                assert!(
+                    weight_distance_f64(&state, &pooled) <= 5e-3 * scale,
+                    "lambda=1 at t={}: not the pooled solution",
+                    index + 1
+                );
+            }
+        }
+
+        // Final state against the independent literal weighted objective.
+        let (_, _, final_oracle) = oracle_solution(f64::from(lambda), f64::from(delta), &xs, &ys);
+        assert_weights_match_oracle(&state, &final_oracle, 5e-3);
+
+        // Retained E9 quality assertions on this same fixture (no new margin).
+        let late = mean_abs(&errors, 900..1000);
+        if is_control {
+            control_late = late;
+        } else {
+            let early = mean_abs(&errors, 0..20);
+            assert!(
+                late <= 0.1 * early,
+                "lambda={lambda}: prequential error did not decay ({early} -> {late})"
+            );
+            late_errors.push(late);
+        }
+    }
+
+    assert!(
+        control_late >= 0.1 * shift,
+        "lambda=1: post-prefix prequential error collapsed to {control_late}"
+    );
+    for &late in &late_errors {
+        assert!(
+            control_late > 5.0 * late,
+            "lambda=1 error {control_late} not clearly above lambda<1 error {late}"
+        );
     }
 }

@@ -4,17 +4,21 @@
 
 ## Purpose
 
-Holds the linear-model family. The first slice is ordinary least-squares (OLS)
-regression, relocated here from `models::classic` as a behavior-preserving move;
-the classic import paths remain as compatibility re-exports.
+Holds the linear-model family: ordinary least-squares (OLS) regression and
+recursive least squares (RLS). OLS was relocated here from `models::classic` and
+RLS from `models::online`, both as behavior-preserving moves; the classic and
+online import paths remain as compatibility re-exports.
 
 ## Responsibility
 
 - [`ols`](ols/README.md) — the canonical OLS algorithm document: requirements,
   issue owners, implemented behavior and deferred work; the original Architect
   design and Planner implementation plan remain separate review records.
+- [`rls`](rls/README.md) — the canonical recursive least squares document: the
+  ordered recurrence, failure/atomicity, checked prediction, statistical
+  applicability, bounded micro-batch, and measured evidence.
 
-## Implemented versus planned
+## Implemented versus planned (OLS)
 
 The original supplied-parameter prediction component was relocated unchanged
 from `src/models/classic/linear_regression.rs` to `ols/predict.rs`. The accepted
@@ -44,7 +48,7 @@ canonical [OLS README](ols/README.md) for APIs, evidence and operating limits.
 Out of scope until separately approved: ridge, lasso, logistic classification,
 weighted/sparse/multi-output fitting, and any generic linear-model trait.
 
-## Status
+## Status (OLS)
 
 Bare prediction behavior is preserved bitwise: reduction order, validation
 order and existing errors are unchanged. Checked serving adds the public

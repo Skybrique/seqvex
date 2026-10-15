@@ -254,6 +254,9 @@ correctness evidence to remain and a measured decision, per the slice lifecycle.
 
 ### Recursive Least Squares (#26)
 
+Canonical location: `src/models/linear/rls/`; `models::online` remains a
+compatibility re-export.
+
 The first stateful model whose parameters change every observation. `Rls` holds
 only immutable configuration (`D`, `λ`, `δ`) and implements `StateModel` with a
 `&self` contract; the adaptive `(w, P)` lives entirely in `StateModel::State`,
@@ -291,7 +294,7 @@ subject to the `λ < 1` covariance-inflation envelope, and `D = 128` is deferred
 these are single-run directional outcomes, not acceptance-grade comparative
 performance conclusions. The full table, the
 separated measured/harness-derived/calculated quantities, and the provenance are
-in `src/models/online/README.md` ("Release batch-size sweep").
+in `src/models/linear/rls/README.md` ("Release batch-size sweep").
 
 The RLS-local bounded reference API (`Rls::process_batch_reference`) preserves
 the same ordered transition semantics through direct `Rls::update` calls over

@@ -54,6 +54,10 @@ path = "src/models/linear/ols/tests/checked_serving.rs"
 name = "ols_temporal"
 path = "src/models/linear/ols/tests/ols_temporal.rs"
 
+[[test]]
+name = "rls"
+path = "src/models/linear/rls/tests/rls.rs"
+
 [[example]]
 name = "ols_predict"
 path = "src/models/linear/ols/examples/predict.rs"
@@ -61,6 +65,14 @@ path = "src/models/linear/ols/examples/predict.rs"
 [[example]]
 name = "fit_salary"
 path = "src/models/linear/ols/examples/fit_salary.rs"
+
+[[example]]
+name = "rls_learn"
+path = "src/models/linear/rls/examples/rls_learn.rs"
+
+[[example]]
+name = "rls_trump_approval"
+path = "src/models/linear/rls/examples/rls_trump_approval.rs"
 
 [[bench]]
 name = "ols_fit"
@@ -74,6 +86,7 @@ harness = false
 
 [[bench]]
 name = "rls"
+path = "src/models/linear/rls/benches/rls.rs"
 harness = false
 
 [[bench]]

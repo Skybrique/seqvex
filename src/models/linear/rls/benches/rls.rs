@@ -17,9 +17,10 @@ use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::{Matrix, Vector};
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::{StateModel, process_batch, process_one};
-use seqvex::models::online::rls::{Rls, RlsSample, RlsState};
+use seqvex::models::linear::rls::{Rls, RlsSample, RlsState};
 
 #[allow(dead_code)]
+#[path = "../../../../../benches/common/mod.rs"]
 mod common;
 
 /// Forgetting factor for the fixed-observation control only.

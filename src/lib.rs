@@ -7,8 +7,9 @@
 //!
 //! The GRU is the slice's first model, not the framework's model abstraction;
 //! `models::classic` adds the first classic-ML slice, linear-regression
-//! prediction, and `models::online` adds the first ordered online-adaptation
-//! slice, recursive least squares. Hardware placement and storage design remain
+//! prediction, and `models::linear` now holds the linear-model family including
+//! recursive least squares (`models::linear::rls`); `models::online` is retained
+//! as a compatibility namespace. Hardware placement and storage design remain
 //! deliberately out of scope; see `docs/ML_VERTICAL_SLICES.md`.
 //!
 //! The canonical development contract is `docs/DEVELOPMENT.md`.

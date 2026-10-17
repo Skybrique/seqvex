@@ -58,6 +58,10 @@ path = "src/models/linear/ols/tests/ols_temporal.rs"
 name = "rls"
 path = "src/models/linear/rls/tests/rls.rs"
 
+[[test]]
+name = "sgd"
+path = "src/models/linear/sgd/tests/sgd.rs"
+
 [[example]]
 name = "ols_predict"
 path = "src/models/linear/ols/examples/predict.rs"
@@ -73,6 +77,14 @@ path = "src/models/linear/rls/examples/rls_learn.rs"
 [[example]]
 name = "rls_trump_approval"
 path = "src/models/linear/rls/examples/rls_trump_approval.rs"
+
+[[example]]
+name = "sgd_learn"
+path = "src/models/linear/sgd/examples/sgd_learn.rs"
+
+[[example]]
+name = "sgd_regression"
+path = "src/models/linear/sgd/examples/sgd_regression.rs"
 
 [[bench]]
 name = "ols_fit"

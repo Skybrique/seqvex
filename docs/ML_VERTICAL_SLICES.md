@@ -71,12 +71,14 @@ this matrix does not create or close Issues.
 | **K-Nearest Neighbors** | #25 | Brute-force distance + neighbor selection | Stored reference observations + `k` | Per-query distance scratch `O(N)`; neighbor set `O(k)` | Streaming per-query; independent queries may micro-batch | Reference-data ingestion and query paths implemented; full lifecycle acceptance not established; regression only |
 | **GRU bounded micro-batch** | #34 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Recurrence/execution components implemented; training missing; historical bounded batch-size sweep recorded |
 | **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Supervised learning updates and execution paths implemented; fitted-readiness and full lifecycle acceptance require evidence; historical batch-size sweep recorded |
+| **SGD Linear Regression** | #50 | Ordered single-observation squared-error learning and prediction from learned weights | Adaptive `w` per stream (immutable model config) | Transient delta/candidate `f32` vectors per update; no persistent model-owned workspace or scratch | Ordered, state-dependent; **not** independent | Implemented and reviewed (validation recorded 2026-10-17): ordered learning, output-validating prediction, atomic failures, two runnable examples and Check A/B evidence; documentation/integration gates pending |
 
 Two families emerge from the matrix and are the point of the exercise:
 
-- **Ordered / stateful** — GRU and RLS. A micro-batch remains an ordered fold;
-  observations are not independent and must not be parallelized as though they
-  were.
+- **Ordered / stateful** — GRU, RLS and SGD learning updates. A micro-batch
+  remains an ordered fold; observations are not independent and must not be
+  parallelized as though they were. SGD prediction from frozen weights is
+  independent, but its learning updates are not.
 - **Independent at inference** — Linear Regression prediction, Decision Tree
   prediction, and KNN query. Each observation is computed from immutable model
   data, so a micro-batch may aggregate or vectorize across observations.
@@ -314,6 +316,71 @@ through the foundation `process_one`/`process_stream` functions and through the
 generic `StreamingExecutor`, which borrows the model immutably (`&M`) and owns
 the per-stream State. The former `&mut M` limitation was removed by the
 execution-ownership refactor.
+
+### SGD Linear Regression (#50)
+
+Canonical location: `src/models/linear/sgd/`. `Sgd` holds only immutable
+configuration (`D`, fixed `η`) and implements `StateModel` with a `&self`
+contract; the learned `w` lives in per-stream `SgdState`, owned by the execution
+session. Each update creates transient delta/candidate `f32` vectors; there is
+no persistent model-owned workspace or RNG. Prediction validates output
+finiteness; updates compute a local candidate and commit only on success. The
+caller supplies the intercept feature and any preprocessing; the model performs
+no implicit scaling or shuffling.
+
+**Learning, API and test evidence.** `update` performs ordered
+single-observation updates `w' = w + η·e·x`; `predict` computes `ŷ = wᵀx` from
+the learned weights. The `sgd` test target has **16 passing tests** on default
+Rust 1.97.1 and MSRV Rust 1.85.1, covering hand-derived and explicit-`f32`
+arithmetic controls, a rounding-sensitive reduction-order control, a
+multiplication-grouping control, an exact-rational trajectory, an
+analytic-gradient check, validation precedence, overflow, atomicity, isolation,
+continuation/reset and order/reproducibility. The two rounding-sensitive
+controls were added in a test-only follow-up; the example sources are unchanged.
+`sgd_learn` has 2 embedded tests and `sgd_regression` has 13.
+
+**Approximation evidence (Check B).** A frozen `D=4`, `N=64` fixture
+(advance-before-draw generator, supplied `f32` values, `η=0.01`, 200 ordered
+passes) is compared with an exact-rational least-squares oracle built from the
+same `f32` values. Both sub-fixtures pass the unchanged criterion
+`J_sgd − J* ≤ 1e-6·J_initial + 1e-3·J*`:
+
+- noisy: `κ(X)=1.916249`, `J*=1.53865282598672883e-3`,
+  gap `= 7.38227672922959696e-7`, allowed `= 7.03698321273655127e-6`;
+- noiseless: `J*=3.37995574951686784e-15`,
+  gap `= 9.00228264632184831e-12`, allowed `= 5.45352837212015964e-6`.
+
+The noiseless `J*` is a small nonzero `f32` floor, not an exact-zero claim.
+
+**Executed examples.** Both examples were executed and independently reproduced
+before the test-only follow-up; the follow-up changed only tests. `sgd_learn`
+(1000 rows, 400 learned, 600 scored, regime change at row 500, `η=0.05`, 20
+ordered passes) reports frozen and adaptive MAE/RMSE overall and before/after
+the regime change, with expanding-target-mean and previous-target baselines on
+identical rows. `sgd_regression` was run against the supplied 1001-row
+`trump_approval.csv` (400 learned, 601 scored; `η=0.01`, 50 ordered passes;
+`M_prefix=27.476190586`, `η·M_prefix=0.274761900`), with prefix-only frozen
+standardization, predict-before-update adaptive scoring, and the example-level
+`η·‖x‖² < 1` guard:
+
+| Predictor | MAE | RMSE |
+|---|---|---|
+| SGD frozen | 0.626993 | 0.769404 |
+| SGD adaptive | 0.424209 | 0.534328 |
+| Expanding target mean | 1.496969 | 1.659610 |
+| Previous target | 0.133948 | 0.208678 |
+| Raw five-feature mean | 0.588404 | 0.731256 |
+
+In this evaluation the **previous-target baseline performed best**. The target
+aggregates the same polling series (nowcasting, partly circular), so this is
+aggregate reconstruction from polling features, not political forecasting, not
+a River benchmark reproduction, and not production readiness. Adaptive SGD beats
+the expanding-mean and raw-feature-mean baselines but not the previous-target
+baseline; results are reported as measured.
+
+**Status.** Validation evidence recorded 2026-10-17; documentation and
+integration gates remain pending. No production-readiness or optimization claim
+is made.
 
 ### GRU production hot path (#17 / #18)
 

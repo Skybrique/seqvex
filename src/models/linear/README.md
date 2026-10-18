@@ -4,10 +4,12 @@
 
 ## Purpose
 
-Holds the linear-model family: ordinary least-squares (OLS) regression and
-recursive least squares (RLS). OLS was relocated here from `models::classic` and
-RLS from `models::online`, both as behavior-preserving moves; the classic and
-online import paths remain as compatibility re-exports.
+Holds the linear-model family: ordinary least-squares (OLS) regression,
+recursive least squares (RLS), and SGD-trained linear regression (SGD). OLS was
+relocated here from `models::classic` and RLS from `models::online`, both as
+behavior-preserving moves; the classic and online import paths remain as
+compatibility re-exports. SGD is implemented in place as a separate learning
+contract; it does not replace OLS batch fitting or RLS.
 
 ## Responsibility
 
@@ -17,6 +19,18 @@ online import paths remain as compatibility re-exports.
 - [`rls`](rls/README.md) — the canonical recursive least squares document: the
   ordered recurrence, failure/atomicity, checked prediction, statistical
   applicability, bounded micro-batch, and measured evidence.
+- [`sgd`](sgd/README.md) — the canonical SGD-trained linear-regression document:
+  ordered single-observation learning with a fixed learning rate, prediction from
+  learned weights, validation/atomicity, examples and measured evidence.
+
+## SGD boundary
+
+SGD learns by ordered single-observation updates (`w' = w + η·e·x`) from
+caller-supplied features and targets. It is not a batch solver, does not shuffle
+implicitly, and provides no automatic convergence or stability guarantee. The
+model is immutable; learned weights are per-execution state. The caller supplies
+the intercept feature and any preprocessing. See the
+[canonical SGD README](sgd/README.md) for APIs, examples and evidence.
 
 ## Implemented versus planned (OLS)
 

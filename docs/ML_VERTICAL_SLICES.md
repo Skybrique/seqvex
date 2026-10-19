@@ -71,7 +71,7 @@ this matrix does not create or close Issues.
 | **K-Nearest Neighbors** | #25 | Brute-force distance + neighbor selection | Stored reference observations + `k` | Per-query distance scratch `O(N)`; neighbor set `O(k)` | Streaming per-query; independent queries may micro-batch | Reference-data ingestion and query paths implemented; full lifecycle acceptance not established; regression only |
 | **GRU bounded micro-batch** | #34 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Recurrence/execution components implemented; training missing; historical bounded batch-size sweep recorded |
 | **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Supervised learning updates and execution paths implemented; fitted-readiness and full lifecycle acceptance require evidence; historical batch-size sweep recorded |
-| **SGD Linear Regression** | #50 | Ordered single-observation squared-error learning and prediction from learned weights | Adaptive `w` per stream (immutable model config) | Transient delta/candidate `f32` vectors per update; no persistent model-owned workspace or scratch | Ordered, state-dependent; **not** independent | Implemented and reviewed (validation recorded 2026-10-17): ordered learning, output-validating prediction, atomic failures, two runnable examples and Check A/B evidence; documentation/integration gates pending |
+| **SGD Linear Regression** | #50 | Ordered single-observation squared-error learning and prediction from learned weights | Adaptive `w` per stream (immutable model config) | Transient delta/candidate `f32` vectors per update; no persistent model-owned workspace or scratch | Ordered, state-dependent; **not** independent | Implemented and reviewed (validation 2026-10-17; original slice merged via PR #51; replacement #55 baseline measured/reviewed from an uncommitted cyclic-control correction on base 67d421c; integration tracked in #55): ordered learning, output-validating prediction, atomic failures, two runnable examples, Check A/B evidence and a release benchmark baseline; documentation/integration gates pending |
 
 Two families emerge from the matrix and are the point of the exercise:
 
@@ -378,9 +378,74 @@ a River benchmark reproduction, and not production readiness. Adaptive SGD beats
 the expanding-mean and raw-feature-mean baselines but not the previous-target
 baseline; results are reported as measured.
 
-**Status.** Validation evidence recorded 2026-10-17; documentation and
-integration gates remain pending. No production-readiness or optimization claim
-is made.
+**Status.** The original SGD slice is merged through PR #51. The replacement
+performance/resource baseline was measured and reviewed from an uncommitted
+cyclic-control correction on base
+`67d421cc9afcacd3b3f11c401075e91ee411a11c`; current integration status is
+tracked in [#55](https://github.com/Skybrique/seqvex/issues/55). Validation
+evidence was recorded on 2026-10-17. Parent/workstream closure,
+documentation/integration gates and production readiness remain separate. No
+production-readiness or optimization claim is made.
+
+#### Performance/resource baseline (#55)
+
+Release benchmark: `cargo bench --locked --bench sgd`; target
+`src/models/linear/sgd/benches/sgd.rs` (`[[bench]] name = "sgd"`,
+`harness = false`). Debug smoke:
+`cargo test --locked --bench sgd --all-features` (exits before the release
+matrix). One optimized invocation (`debug_assertions=false`, 20 runs/cell,
+Rust/Cargo 1.97.1) was recorded from the reviewed **uncommitted** cyclic-control
+correction on base `67d421cc9afcacd3b3f11c401075e91ee411a11c`; the correction is
+not part of that base commit. Current integration status is tracked in
+[#55](https://github.com/Skybrique/seqvex/issues/55). The replacement raw log
+(SHA-256 `1eeda215fda060e521e004befad1dc78d1d9bb561244472cd2b7c0b34fa7f5fc`)
+supports the profile/runtime checks and measured output; the
+[replacement execution handoff](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6273196910)
+records the command, exit status, toolchain and detailed environment, and the
+[replacement evidence](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6273278258)
+reconciles the results. WSL2 Ubuntu 24.04, Linux 6.18.x, x86_64; 12th Gen Intel
+Core i7-12700H; 20 logical CPUs.
+
+Frozen workload: `D={2,8,32,128,512}`, steps `{400k,200k,100k,25k,5k}`,
+`H=max(steps/10,1000)`, `H+20·steps` total calls (H untimed warm-up + 20·steps
+timed; 8,040,000 for `D=2`), fixture 2048, seed `0x5eed55d000000001`,
+`η=0.05`, 512-update warm-start, index `(512+k) mod 2048`.
+
+| D | predict | update direct | update `process_one` | update executor |
+|---|---|---|---|---|
+| 2 | 4.7 (5.1) | 61.2 (63.2) | 60.1 (62.2) | 56.5 (57.8) |
+| 8 | 7.1 (7.2) | 65.6 (70.6) | 67.7 (75.3) | 62.8 (70.4) |
+| 32 | 15.8 (16.2) | 82.9 (86.9) | 81.6 (87.7) | 79.9 (85.8) |
+| 128 | 97.5 (99.5) | 202.5 (230.3) | 205.2 (267.9) | 204.5 (212.8) |
+| 512 | 372.6 (401.5) | 687.6 (796.2) | 693.4 (747.3) | 690.0 (755.7) |
+
+Cells are ns/op, run-average median (p95) over 20 runs; update samples are
+continued-state, prediction uses fixed warmed weights; percentiles are not
+individual-operation tails. Prediction allocates 0; every update 2 allocs/op
+(8D requested bytes); retained state 4D; initialization additional peak 4D;
+update additional peak 8D; `live_after` delta 0 means equal retained heap size.
+Allocator accounting is not RSS; the 12D total overlap is inferred, not directly
+measured. The cyclic dot control uses fixed warmed weights, prebuilt
+observations starting at `WARM_START`, and a continuing index; it is
+descriptive only. `D=2` direct-vs-executor satisfies the harness's `clearly
+measurable` rule; the other reported comparisons are not materially different;
+this is a descriptive within-invocation materiality rule, not statistical
+significance or a wrapper winner. Slopes are ≈0.819 (predict) and ≈0.430
+(update-direct); subunit slopes do not contradict O(D) source work. A fixed-cost
+contribution is a possible explanation; dominance was not measured. One
+replacement invocation; no individual-operation tails, cold-start,
+repeat-variance, cross-machine or instrumentation-bias magnitude. No
+optimization, forecasting-quality or production-readiness claim.
+
+See the [SGD README](../src/models/linear/sgd/README.md) for full min/max/IQR,
+throughput, storage/peak details, controls, historical note and provenance.
+Evidence: [correction implementation/check handoff](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6272984646),
+[corrected source review](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6273061283),
+[replacement execution handoff](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6273196910),
+[replacement evidence](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6273278258).
+The original fixed-vector control is historical; see the README historical note
+(which links the complete 67d421c tables) and the
+[original reconciled evidence](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6267271634).
 
 ### GRU production hot path (#17 / #18)
 

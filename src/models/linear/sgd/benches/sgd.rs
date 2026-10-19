@@ -304,8 +304,33 @@ fn update_executor_stats(
     })
 }
 
-/// Descriptive `dot`-only control. It is not a production path and is not
-/// subtracted from the prediction timing.
+fn next_cyclic_index(index: &mut usize) -> usize {
+    let current = *index % FIXTURE_LEN;
+    *index += 1;
+    current
+}
+
+fn verify_cyclic_index() {
+    let mut index = WARM_START;
+    let expected: Vec<usize> = (WARM_START..FIXTURE_LEN).chain(0..WARM_START).collect();
+    for _cycle in 0..2 {
+        for &expected_index in &expected {
+            assert_eq!(
+                next_cyclic_index(&mut index),
+                expected_index,
+                "cyclic index sequence mismatch"
+            );
+        }
+    }
+    assert_eq!(index, WARM_START + 2 * FIXTURE_LEN);
+    assert_eq!(next_cyclic_index(&mut index), WARM_START);
+    println!("cyclic index check: ok");
+}
+
+/// Descriptive `dot`-only control. It follows the same cyclic observation-index
+/// sequence as prediction (`WARM_START`, then advancing per call), using fixed
+/// warmed weights and prebuilt features. It is not a production path, is not
+/// used for timing subtraction, and establishes no allocator cost share.
 fn dot_control_stats(
     d: usize,
     steps: u32,
@@ -313,14 +338,13 @@ fn dot_control_stats(
     observations: &[Observation<SgdSample>],
 ) -> common::Stats {
     let weights = warm.w.clone();
-    let vector = observations[WARM_START % FIXTURE_LEN]
-        .value()
-        .features
-        .clone();
+    let mut index = WARM_START;
     common::measure("dot-control", steps, 1, || {
+        let i = next_cyclic_index(&mut index);
+        let observation = black_box(&observations[i]);
         let value = weights
-            .dot(black_box(&vector))
-            .unwrap_or_else(|error| panic!("D={d} dot-control failed: {error:?}"));
+            .dot(&observation.value().features)
+            .unwrap_or_else(|error| panic!("D={d} dot-control index={i} failed: {error:?}"));
         black_box(value);
     })
 }
@@ -549,6 +573,7 @@ fn run_dimension(d: usize, steps: u32) -> (f64, f64) {
 
 fn smoke() {
     println!("sgd bench: debug smoke only (debug_assertions=true); release matrix skipped");
+    verify_cyclic_index();
     let d = 8usize;
     let observations = observations_for(d);
     let model = Sgd::new(d, ETA).expect("valid SGD configuration");
@@ -616,6 +641,8 @@ fn main() {
         smoke();
         return;
     }
+
+    verify_cyclic_index();
 
     let mut predict_scaling: Vec<(f64, f64)> = Vec::new();
     let mut update_scaling: Vec<(f64, f64)> = Vec::new();

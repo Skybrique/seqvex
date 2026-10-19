@@ -6,13 +6,15 @@
 > from one supervised observation at a time with a fixed learning rate and
 > predicts from the learned weights. Validation evidence was recorded on
 > 2026-10-17. The original slice was merged through
-> [PR #51](https://github.com/Skybrique/seqvex/pull/51). The #55 baseline was
-> measured and reviewed from an uncommitted package on the recorded base;
-> current integration status and the 2026-10-19 performance/resource baseline
-> are tracked in
+> [PR #51](https://github.com/Skybrique/seqvex/pull/51). The replacement
+> performance/resource baseline was measured and reviewed from an uncommitted
+> cyclic-control correction on base
+> `67d421cc9afcacd3b3f11c401075e91ee411a11c`; current integration status is
+> tracked in
 > [#55](https://github.com/Skybrique/seqvex/issues/55). Parent/workstream
 > closure, documentation/integration gates and production readiness remain
-> separate. This does not imply that the #55 package is published or integrated.
+> separate. This does not imply that the correction belongs to that base or is
+> merged.
 
 ## What it does and when it is useful
 
@@ -394,27 +396,26 @@ it is not decision-grade. The release run is one invocation; no optimization is
 implied.
 
 **Package identity and provenance.** The original SGD slice was merged through
-[PR #51](https://github.com/Skybrique/seqvex/pull/51). The #55 baseline was
-measured and reviewed from an **uncommitted** package on base
-`ad6dc59ff5267e007ca7a571ec247d1545e9690b`; it is **not** part of that base
+[PR #51](https://github.com/Skybrique/seqvex/pull/51). The replacement baseline
+was measured and reviewed from an **uncommitted** cyclic-control correction on
+base `67d421cc9afcacd3b3f11c401075e91ee411a11c`; it is **not** part of that base
 commit. Current integration status is tracked in
 [#55](https://github.com/Skybrique/seqvex/issues/55). Reviewed source hashes:
 
 - `Cargo.toml` — `caa3dd69c9b2d05793ba14870c2cda429fda8a90aa5e15a1760e7f8de2e029a7`
-- `benches/sgd.rs` — `2c020b2e561158319d2f0b768c6d6ffc865fcdb986fe7638782d8c2de180d73a`
+- `benches/sgd.rs` — `b754db59b381c18fa66437205fb1e4c6da7a60dd5bb425d644297b43f46bd3bd`
 
-The raw invocation log is the measurement artifact and is not published; its
-SHA-256 is
-`a6bcd435a037f9c6bca6f1d4ba80ed28fdb8547d9fe64ea28f1d858d947026c2`.
-The [release measurement handoff](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6265273066)
-is the provenance record for the release command, reported exit status,
-toolchain and environment. The
-[implementation/check handoff](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6264966803)
+The replacement raw invocation log supports the profile/runtime checks and the
+measured output and is not published; its SHA-256 is
+`1eeda215fda060e521e004befad1dc78d1d9bb561244472cd2b7c0b34fa7f5fc`.
+The [replacement execution handoff](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6273196910)
+records the exact command, reported exit status, toolchain and detailed
+environment; the [replacement evidence](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6273278258)
+reconciles the measured output. The
+[correction implementation/check handoff](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6272984646)
 covers the implementation and checks; the
-[independent source review](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6265020203)
-covers the package; the
-[reconciled measurement review](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6267271634)
-covers the results.
+[corrected source review](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6273061283)
+covers the package.
 
 **Environment and profile.** One optimized `bench`-profile invocation
 (Rust/Cargo 1.97.1; `debug_assertions=false`; `RUSTFLAGS` unset; no Cargo
@@ -448,21 +449,21 @@ samples. These are **not** individual-operation tail latencies.
 
 | D | predict | update direct | update `process_one` | update executor |
 |---|---|---|---|---|
-| 2 | 4.5 (5.0; 3.9–5.8; 0.2) | 61.3 (64.5; 59.7–65.4; 1.2) | 62.0 (64.2; 59.3–66.7; 1.5) | 57.5 (61.1; 55.2–61.4; 2.4) |
-| 8 | 7.3 (7.8; 6.4–9.5; 0.3) | 64.4 (76.1; 61.7–82.9; 2.0) | 64.5 (68.7; 62.9–74.5; 1.8) | 60.7 (62.6; 57.2–64.6; 2.0) |
-| 32 | 15.5 (18.4; 14.1–21.0; 1.3) | 80.6 (88.8; 78.1–93.1; 2.7) | 81.3 (83.3; 78.2–85.8; 1.5) | 82.8 (90.8; 77.1–101.6; 3.8) |
-| 128 | 97.5 (117.6; 95.9–123.3; 2.3) | 207.4 (216.3; 201.4–232.2; 4.2) | 209.6 (225.4; 200.6–253.0; 9.4) | 205.0 (234.4; 200.3–305.6; 16.2) |
-| 512 | 380.9 (406.5; 368.4–426.9; 16.8) | 685.8 (819.9; 636.2–972.8; 54.8) | 670.5 (743.1; 628.4–917.5; 43.7) | 677.3 (762.6; 632.1–770.4; 51.2) |
+| 2 | 4.7 (5.1; 4.2–5.1; 0.2) | 61.2 (63.2; 58.3–64.3; 0.9) | 60.1 (62.2; 58.1–62.4; 1.7) | 56.5 (57.8; 54.8–58.8; 0.7) |
+| 8 | 7.1 (7.2; 6.4–7.5; 0.2) | 65.6 (70.6; 63.9–70.7; 1.7) | 67.7 (75.3; 64.5–104.9; 2.7) | 62.8 (70.4; 60.9–70.8; 3.6) |
+| 32 | 15.8 (16.2; 13.4–16.3; 0.5) | 82.9 (86.9; 77.5–90.4; 2.1) | 81.6 (87.7; 77.2–89.4; 4.0) | 79.9 (85.8; 75.3–87.2; 1.4) |
+| 128 | 97.5 (99.5; 92.0–102.8; 4.2) | 202.5 (230.3; 193.6–234.1; 2.9) | 205.2 (267.9; 194.0–326.5; 8.5) | 204.5 (212.8; 198.1–216.3; 2.7) |
+| 512 | 372.6 (401.5; 344.8–410.3; 37.9) | 687.6 (796.2; 629.1–829.6; 48.2) | 693.4 (747.3; 645.1–791.7; 45.7) | 690.0 (755.7; 629.7–776.0; 68.7) |
 
-Median-derived throughput (M obs/s): predict `222.2 / 137.3 / 64.4 / 10.25 /
-2.63`; direct `16.31 / 15.53 / 12.41 / 4.82 / 1.458`; `process_one`
-`16.13 / 15.50 / 12.30 / 4.77 / 1.491`; executor
-`17.39 / 16.47 / 12.08 / 4.88 / 1.476`.
+Median-derived throughput (M obs/s): predict `212.2 / 140.9 / 63.46 / 10.26 /
+2.684`; direct `16.33 / 15.25 / 12.06 / 4.939 / 1.454`; `process_one`
+`16.64 / 14.77 / 12.26 / 4.873 / 1.442`; executor
+`17.71 / 15.93 / 12.51 / 4.890 / 1.449`.
 
 **Initialization and resources.** Repeated warmed initialization/drop cost
 (aggregate average; counter sampling included; not cold-start or a
-distribution): `sgd-new` 4.0/5.0/4.0/4.1/6.2 ns/init, 0 allocs/0 B;
-`initial-state` 27.7/28.7/29.7/39.3/42.2 ns/init, 1 alloc/4D bytes. Prediction
+distribution): `sgd-new` 4.8/3.8/3.9/4.8/2.9 ns/init, 0 allocs/0 B;
+`initial-state` 50.9/29.8/26.9/38.5/39.4 ns/init, 1 alloc/4D bytes. Prediction
 allocates 0 allocs/0 B; every update path allocates 2 allocs/op and 8D requested
 bytes/op (16/64/256/1024/4096 B); both allocation blocks match. Retained state
 is 4D; the **initial-state additional peak is 4D**. On the measured x86-64
@@ -476,23 +477,36 @@ live/requested bytes are not OS RSS. The 12D total pre-commit overlap is
 inferred from the 4D baseline, the 8D additional peak and source lifetimes; it
 was not directly observed as a total.
 
-**Controls and wrapper comparison.** `dot`-only control medians:
-2.0/3.1/8.7/41.8/209.9 ns/op; two-allocation control medians:
-52.0/55.9/55.8/55.3/74.3 ns/op. These are descriptive; no timing subtraction or
-allocator cost share is valid. No wrapper-performance winner is claimed:
-`D=2`/`8` direct-vs-`process_one` is not materially different and
-direct-vs-executor is borderline/noisy; `D=32`/`128`/`512` are not materially
-different for both comparisons. Measured log-log slopes are ≈0.827 (predict) and
-≈0.433 (update-direct) over `D=2..512`; subunit empirical slopes do not
-contradict the O(D) source work (feature scan, dot, scale, add, candidate scan).
-A fixed-cost contribution is a possible explanation, but dominance was not
-measured.
+**Controls and wrapper comparison.** The cyclic `dot`-only control uses fixed
+warmed weights and prebuilt observations, starting at `WARM_START`; its index
+continues across harness warm-up and timed runs and follows the same sequence as
+prediction. Its medians are 2.5/4.0/9.3/41.0/202.1 ns/op; the two-allocation
+control medians are 50.5/51.2/50.3/53.8/71.3 ns/op. These are descriptive; no
+timing subtraction or allocator cost share is valid. `D=2` direct-vs-executor
+satisfies the harness's `clearly measurable` rule; the other reported
+comparisons are not materially different. That is a descriptive
+within-invocation materiality rule, not statistical significance or a general
+wrapper winner. Measured log-log slopes are ≈0.819 (predict) and ≈0.430
+(update-direct) over `D=2..512`; subunit empirical slopes do not contradict the
+O(D) source work (feature scan, dot, scale, add, candidate scan). A fixed-cost
+contribution is a possible explanation, but dominance was not measured.
 
-**Limitations.** One invocation; no repeat-invocation variance, cross-machine
-comparison or individual-operation tail measurement. No cold-start or RSS
-measurement; instrumentation-bias magnitude is unmeasured. No optimization,
-forecasting-quality or production-readiness claim. Optimization remains
-deferred.
+**Historical fixed-vector control.** The original #55 dot control repeated one
+fixed observation vector. Its source hash was
+`2c020b2e561158319d2f0b768c6d6ffc865fcdb986fe7638782d8c2de180d73a`, its raw log
+SHA-256 was
+`a6bcd435a037f9c6bca6f1d4ba80ed28fdb8547d9fe64ea28f1d858d947026c2`, and its dot
+medians were 2.0/3.1/8.7/41.8/209.9 ns/op for D=2/8/32/128/512. That control is
+historical, not a second maintained benchmark. Its complete tables are in the
+[README at commit 67d421c](https://github.com/Skybrique/seqvex/blob/67d421cc9afcacd3b3f11c401075e91ee411a11c/src/models/linear/sgd/README.md)
+and the [original reconciled evidence](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6267271634).
+The workloads differ; no cross-run speedup or isolated cache-cost claim is made.
+
+**Limitations.** One replacement invocation; no repeat-invocation variance,
+cross-machine comparison or individual-operation tail measurement. No
+cold-start or RSS measurement; instrumentation-bias magnitude is unmeasured.
+No optimization, forecasting-quality or production-readiness claim.
+Optimization remains deferred.
 
 ## Deferred capabilities and limitations
 
@@ -537,7 +551,8 @@ issue-linked review records and are not duplicated here.
 - [Execution layer](../../../execution/README.md)
 - [SGD tests](tests/sgd.rs), [synthetic example](examples/sgd_learn.rs),
   [real-data example](examples/sgd_regression.rs), [benchmark](benches/sgd.rs)
-- [Implementation/check handoff (#55)](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6264966803)
-- [Independent source review (#55)](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6265020203)
-- [Release measurement handoff (#55)](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6265273066)
-- [Reconciled measurement review (#55)](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6267271634)
+- [Correction implementation/check handoff (#55)](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6272984646)
+- [Corrected source review (#55)](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6273061283)
+- [Replacement execution handoff (#55)](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6273196910)
+- [Replacement evidence (#55)](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6273278258)
+- [Historical fixed-vector reconciled evidence (#55)](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6267271634)

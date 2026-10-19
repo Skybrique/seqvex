@@ -71,7 +71,7 @@ this matrix does not create or close Issues.
 | **K-Nearest Neighbors** | #25 | Brute-force distance + neighbor selection | Stored reference observations + `k` | Per-query distance scratch `O(N)`; neighbor set `O(k)` | Streaming per-query; independent queries may micro-batch | Reference-data ingestion and query paths implemented; full lifecycle acceptance not established; regression only |
 | **GRU bounded micro-batch** | #34 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Recurrence/execution components implemented; training missing; historical bounded batch-size sweep recorded |
 | **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Supervised learning updates and execution paths implemented; fitted-readiness and full lifecycle acceptance require evidence; historical batch-size sweep recorded |
-| **SGD Linear Regression** | #50 | Ordered single-observation squared-error learning and prediction from learned weights | Adaptive `w` per stream (immutable model config) | Transient delta/candidate `f32` vectors per update; no persistent model-owned workspace or scratch | Ordered, state-dependent; **not** independent | Implemented and reviewed (validation recorded 2026-10-17): ordered learning, output-validating prediction, atomic failures, two runnable examples and Check A/B evidence; documentation/integration gates pending |
+| **SGD Linear Regression** | #50 | Ordered single-observation squared-error learning and prediction from learned weights | Adaptive `w` per stream (immutable model config) | Transient delta/candidate `f32` vectors per update; no persistent model-owned workspace or scratch | Ordered, state-dependent; **not** independent | Implemented and reviewed (validation 2026-10-17; original slice merged via PR #51; #55 baseline measured/reviewed from an uncommitted package, 2026-10-19; integration tracked in #55): ordered learning, output-validating prediction, atomic failures, two runnable examples, Check A/B evidence and a release benchmark baseline; documentation/integration gates pending |
 
 Two families emerge from the matrix and are the point of the exercise:
 
@@ -378,9 +378,61 @@ a River benchmark reproduction, and not production readiness. Adaptive SGD beats
 the expanding-mean and raw-feature-mean baselines but not the previous-target
 baseline; results are reported as measured.
 
-**Status.** Validation evidence recorded 2026-10-17; documentation and
-integration gates remain pending. No production-readiness or optimization claim
-is made.
+**Status.** The original SGD slice is merged through PR #51. The #55 baseline
+was measured and reviewed from an uncommitted package on the recorded base;
+current integration status and the 2026-10-19 performance/resource baseline are
+tracked in [#55](https://github.com/Skybrique/seqvex/issues/55). Validation
+evidence was recorded on 2026-10-17. Parent/workstream closure,
+documentation/integration gates and production readiness remain separate. No
+production-readiness or optimization claim is made.
+
+#### Performance/resource baseline (#55)
+
+Release benchmark: `cargo bench --locked --bench sgd`; target
+`src/models/linear/sgd/benches/sgd.rs` (`[[bench]] name = "sgd"`,
+`harness = false`). Debug smoke:
+`cargo test --locked --bench sgd --all-features` (exits before the release
+matrix). One optimized invocation (`debug_assertions=false`, 20 runs/cell,
+Rust/Cargo 1.97.1) was recorded on 2026-10-19 from the reviewed **uncommitted**
+#55 package based on `ad6dc59ff5267e007ca7a571ec247d1545e9690b`; the package is
+not part of that base commit. Current integration status is tracked in
+[#55](https://github.com/Skybrique/seqvex/issues/55). The release command, exit
+status, toolchain and environment are recorded in the
+[release measurement handoff](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6265273066).
+WSL2 Ubuntu 24.04, Linux 6.18.x, x86_64; 12th Gen Intel Core i7-12700H; 20
+logical CPUs.
+
+Frozen workload: `D={2,8,32,128,512}`, steps `{400k,200k,100k,25k,5k}`,
+`H=max(steps/10,1000)`, `H+20·steps` total calls (H untimed warm-up + 20·steps
+timed; 8,040,000 for `D=2`), fixture 2048, seed `0x5eed55d000000001`,
+`η=0.05`, 512-update warm-start, index `(512+k) mod 2048`.
+
+| D | predict | update direct | update `process_one` | update executor |
+|---|---|---|---|---|
+| 2 | 4.5 (5.0) | 61.3 (64.5) | 62.0 (64.2) | 57.5 (61.1) |
+| 8 | 7.3 (7.8) | 64.4 (76.1) | 64.5 (68.7) | 60.7 (62.6) |
+| 32 | 15.5 (18.4) | 80.6 (88.8) | 81.3 (83.3) | 82.8 (90.8) |
+| 128 | 97.5 (117.6) | 207.4 (216.3) | 209.6 (225.4) | 205.0 (234.4) |
+| 512 | 380.9 (406.5) | 685.8 (819.9) | 670.5 (743.1) | 677.3 (762.6) |
+
+Cells are ns/op, run-average median (p95) over 20 runs; update samples are
+continued-state, prediction uses fixed warmed weights; percentiles are not
+individual-operation tails. Prediction allocates 0; every update 2 allocs/op
+(8D requested bytes); retained state 4D; initialization additional peak 4D;
+update additional peak 8D; `live_after` delta 0 means equal retained heap size.
+Allocator accounting is not RSS; the 12D total overlap is inferred, not directly
+measured. No wrapper winner; a fixed-cost contribution is a possible
+explanation (dominance not measured); empirical slopes do not contradict O(D)
+source work. One invocation; no individual-operation tails, cold-start,
+repeat-variance, cross-machine or instrumentation-bias magnitude. No
+optimization, forecasting-quality or production-readiness claim.
+
+See the [SGD README](../src/models/linear/sgd/README.md) for full min/max/IQR,
+throughput, storage/peak details, controls and provenance. Evidence:
+[implementation/check handoff](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6264966803),
+[independent source review](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6265020203),
+[release measurement handoff](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6265273066),
+[reconciled measurement review](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6267271634).
 
 ### GRU production hot path (#17 / #18)
 

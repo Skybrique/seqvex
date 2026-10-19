@@ -102,6 +102,11 @@ path = "src/models/linear/rls/benches/rls.rs"
 harness = false
 
 [[bench]]
+name = "sgd"
+path = "src/models/linear/sgd/benches/sgd.rs"
+harness = false
+
+[[bench]]
 name = "decision_tree"
 harness = false
 

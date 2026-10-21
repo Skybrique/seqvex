@@ -67,6 +67,32 @@ pub enum SgdError {
     NonFiniteOutput,
 }
 
+impl std::fmt::Display for SgdError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroDimension => formatter.write_str("SGD dimension must be nonzero"),
+            Self::DimensionMismatch { expected, actual } => {
+                write!(
+                    formatter,
+                    "dimension mismatch: expected {expected}, got {actual}"
+                )
+            }
+            Self::InvalidLearningRate => {
+                formatter.write_str("SGD learning rate must be finite and positive")
+            }
+            Self::NonFiniteInput => {
+                formatter.write_str("SGD observation features and target must be finite")
+            }
+            Self::NonFiniteCandidate => formatter.write_str("SGD candidate state is not finite"),
+            Self::NonFiniteOutput => {
+                formatter.write_str("SGD prediction produced a non-finite output")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SgdError {}
+
 impl From<DimensionMismatch> for SgdError {
     fn from(error: DimensionMismatch) -> Self {
         Self::DimensionMismatch {

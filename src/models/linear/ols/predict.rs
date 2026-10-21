@@ -85,6 +85,38 @@ pub enum RegressionError {
     },
 }
 
+impl std::fmt::Display for RegressionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroDimension => formatter
+                .write_str("linear regression has zero dimension; at least one weight is required"),
+            Self::DimensionMismatch { expected, actual } => {
+                write!(
+                    formatter,
+                    "dimension mismatch: expected {expected}, got {actual}"
+                )
+            }
+            Self::NonFiniteParameter => {
+                formatter.write_str("linear regression parameters must be finite")
+            }
+            Self::NonFiniteInput => {
+                formatter.write_str("linear regression input features must be finite")
+            }
+            Self::NonFiniteOutput { observation: None } => {
+                formatter.write_str("checked prediction produced a non-finite output")
+            }
+            Self::NonFiniteOutput {
+                observation: Some(index),
+            } => write!(
+                formatter,
+                "checked group prediction produced a non-finite output at observation {index}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RegressionError {}
+
 impl From<DimensionMismatch> for RegressionError {
     fn from(error: DimensionMismatch) -> Self {
         Self::DimensionMismatch {

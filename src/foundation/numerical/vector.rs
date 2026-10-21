@@ -14,6 +14,18 @@ pub struct DimensionMismatch {
     pub actual: usize,
 }
 
+impl std::fmt::Display for DimensionMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "dimension mismatch: expected {}, got {}",
+            self.expected, self.actual
+        )
+    }
+}
+
+impl std::error::Error for DimensionMismatch {}
+
 /// A contiguous, fixed-length `f32` vector.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Vector {

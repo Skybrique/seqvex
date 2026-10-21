@@ -796,12 +796,103 @@ fn non_finite_candidate_is_rejected() {
     // A tiny δ keeps d finite while w = f32::MAX overflows the prediction error.
     let model = Rls::new(1, 1.0, 1.0e-30).unwrap();
     let explosive = state(&[f32::MAX], &[&[1.0e-30]]);
+    let before = explosive.clone();
     assert_eq!(
         model
             .update(&explosive, &sample(&[1.0], -f32::MAX))
             .unwrap_err(),
         RlsError::NonFiniteCandidate
     );
+    assert_state_bitwise_eq(&explosive, &before);
+}
+
+#[test]
+fn rls_error_display_and_batch_cause_contract() {
+    fn assert_leaf_error<T: std::error::Error + Clone + Copy + PartialEq + Eq + std::fmt::Debug>() {
+    }
+    fn assert_batch_error<T: std::error::Error + Clone + PartialEq + std::fmt::Debug>() {}
+    assert_leaf_error::<RlsError>();
+    assert_batch_error::<RlsBatchError>();
+
+    let mismatch = RlsError::DimensionMismatch {
+        expected: 17,
+        actual: 3,
+    };
+    assert_eq!(
+        mismatch.to_string(),
+        "dimension mismatch: expected 17, got 3"
+    );
+    assert!(std::error::Error::source(&mismatch).is_none());
+
+    for (error, designated) in [
+        (RlsError::ZeroDimension, "dimension must be nonzero"),
+        (
+            RlsError::InvalidForgettingFactor,
+            "forgetting factor must be finite and in (0, 1]",
+        ),
+        (
+            RlsError::InvalidInitialCovariance,
+            "initial covariance scale must be finite and positive",
+        ),
+        (
+            RlsError::NonFiniteInput,
+            "observation features and target must be finite",
+        ),
+        (
+            RlsError::InvalidDenominator,
+            "denominator must be finite and positive",
+        ),
+        (
+            RlsError::NonFiniteOutput,
+            "checked RLS prediction produced a non-finite output",
+        ),
+    ] {
+        let message = error.to_string();
+        assert!(message.contains(designated), "{message:?}");
+        assert!(std::error::Error::source(&error).is_none());
+    }
+
+    let candidate = RlsError::NonFiniteCandidate;
+    assert_eq!(
+        candidate.to_string(),
+        "RLS candidate state is not finite. The candidate update was not committed; the supplied state is unchanged."
+    );
+    assert!(std::error::Error::source(&candidate).is_none());
+
+    let supplied = state(&[12345.0], &[&[67890.0]]);
+    let oversized = RlsBatchError::BatchTooLarge {
+        max: 2,
+        actual: 17,
+        state: supplied,
+    };
+    let message = oversized.to_string();
+    assert!(message.contains("17"));
+    assert!(message.contains("2"));
+    assert!(message.contains("no observation was processed"));
+    assert!(message.contains("returned unchanged"));
+    assert!(!message.contains("12345"));
+    assert!(!message.contains("67890"));
+    assert!(std::error::Error::source(&oversized).is_none());
+
+    let cause = RlsError::InvalidForgettingFactor;
+    let transition = RlsBatchError::Transition {
+        failed_index: 2,
+        state: Rls::new(1, 0.9, 1.0).unwrap().initial_state(),
+        error: cause,
+    };
+    let message = transition.to_string();
+    assert!(message.contains("observation 2"));
+    assert!(message.contains("2 observations were committed"));
+    assert!(message.contains("failed candidate update was not committed"));
+    assert!(message.contains("no whole-batch rollback"));
+    assert!(!message.contains(&cause.to_string()));
+    let stored = match &transition {
+        RlsBatchError::Transition { error, .. } => error,
+        RlsBatchError::BatchTooLarge { .. } => unreachable!(),
+    };
+    let source = std::error::Error::source(&transition).unwrap();
+    let source = source.downcast_ref::<RlsError>().unwrap();
+    assert!(std::ptr::eq(source, stored));
 }
 
 // --- atomicity ----------------------------------------------------------------
@@ -1349,6 +1440,43 @@ fn bounded_reference_transition_error_mapping() {
             );
         }
         other => panic!("expected Transition for a dimension mismatch, got {other:?}"),
+    }
+}
+
+#[test]
+fn bounded_reference_returns_supplied_state_after_first_update_rejects_it() {
+    let model = Rls::new(2, 0.95, 5.0).unwrap();
+    let supplied = state(&[12345.0], &[&[67890.0]]);
+    let observation = [sample(&[0.1, 0.2], 1.0)];
+
+    match model.process_batch_reference(supplied.clone(), &observation, 1) {
+        Err(RlsBatchError::Transition {
+            failed_index,
+            state: returned,
+            error,
+        }) => {
+            assert_eq!(failed_index, 0);
+            assert_eq!(
+                error,
+                RlsError::DimensionMismatch {
+                    expected: 2,
+                    actual: 1,
+                }
+            );
+            assert_state_bitwise_eq(&returned, &supplied);
+            let message = RlsBatchError::Transition {
+                failed_index,
+                state: returned,
+                error,
+            }
+            .to_string();
+            assert!(message.contains("observation 0"));
+            assert!(message.contains("no observation was committed"));
+            assert!(message.contains("returned unchanged"));
+            assert!(!message.contains("12345"));
+            assert!(!message.contains("67890"));
+        }
+        other => panic!("expected Transition at observation 0, got {other:?}"),
     }
 }
 

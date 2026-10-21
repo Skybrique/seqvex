@@ -113,12 +113,24 @@ fn group_reports_first_failing_position() {
         observation(&[2.0e38]),
         observation(&[5.0]),
     ];
+    let error = model.predict_batch_checked(&batch).unwrap_err();
     assert_eq!(
-        model.predict_batch_checked(&batch),
-        Err(RegressionError::NonFiniteOutput {
+        error,
+        RegressionError::NonFiniteOutput {
             observation: Some(1)
-        })
+        }
     );
+    assert!(error.to_string().contains("observation 1"));
+
+    let first_fails = [observation(&[2.0e38]), observation(&[5.0])];
+    let error = model.predict_batch_checked(&first_fails).unwrap_err();
+    assert_eq!(
+        error,
+        RegressionError::NonFiniteOutput {
+            observation: Some(0)
+        }
+    );
+    assert!(error.to_string().contains("observation 0"));
 }
 
 #[test]

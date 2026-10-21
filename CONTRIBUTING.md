@@ -160,6 +160,8 @@ Prefer:
 - small, testable components
 - idiomatic Rust where it does not conflict with measured requirements
 
+Follow the [naming and error-reporting conventions](docs/DEVELOPMENT.md#naming-and-error-reporting). Changes to existing public names, structured error cases or observable error formatting require their applicable compatibility review.
+
 `unsafe` code is permitted when justified by a measurable or fundamental systems requirement.
 
 Unsafe code should be:

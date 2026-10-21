@@ -298,6 +298,100 @@ pub enum FitError {
     ConversionRejected(ConversionCause),
 }
 
+impl std::fmt::Display for FitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RowTargetMismatch { features, targets } => write!(
+                formatter,
+                "feature row count {features} does not match target count {targets}"
+            ),
+            Self::TooFewRows => formatter.write_str("no training rows were selected"),
+            Self::IndexOutOfRange { index, rows } => {
+                write!(
+                    formatter,
+                    "training index {index} is out of range for {rows} rows"
+                )
+            }
+            Self::ZeroFeatures => {
+                formatter.write_str("selected training rows have zero feature columns")
+            }
+            Self::TooManyFeatures { features, max } => write!(
+                formatter,
+                "feature count {features} exceeds configured maximum {max}"
+            ),
+            Self::RaggedFeatures {
+                row,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "feature row {row} has width {actual}; expected {expected}"
+            ),
+            Self::InvalidRankThreshold { value } => {
+                write!(formatter, "invalid OLS rank threshold {value}")
+            }
+            Self::SizeOverflow { rows, features } => write!(
+                formatter,
+                "OLS size calculation overflowed for {rows} rows and {features} design-matrix columns"
+            ),
+            Self::ScratchLayout => formatter.write_str("OLS solver scratch layout is invalid"),
+            Self::Capacity { requested, limit } => write!(
+                formatter,
+                "requested OLS workspace {requested} bytes exceeds limit {limit} bytes"
+            ),
+            Self::AllocationFailed {
+                buffer,
+                requested_bytes,
+                source,
+            } => write!(
+                formatter,
+                "could not reserve {requested_bytes} bytes for OLS buffer {buffer} ({})",
+                allocation_source_name(*source)
+            ),
+            Self::DuplicateIndex { index } => {
+                write!(
+                    formatter,
+                    "training index {index} was supplied more than once"
+                )
+            }
+            Self::NonFiniteTrainingValue { row, column } => write!(
+                formatter,
+                "non-finite training value at row {row}, column {column}"
+            ),
+            Self::RankDeficient { rank, required } => {
+                write!(
+                    formatter,
+                    "OLS numerical rank {rank} is below required rank {required}"
+                )
+            }
+            Self::NumericalFailure => formatter.write_str("OLS numerical calculation failed"),
+            Self::ConversionRejected(cause) => write!(
+                formatter,
+                "OLS coefficient conversion rejected: {}",
+                conversion_cause_name(*cause)
+            ),
+        }
+    }
+}
+
+fn allocation_source_name(source: AllocationSource) -> &'static str {
+    match source {
+        AllocationSource::Faer => "faer allocator",
+        AllocationSource::DynStack => "dynamic stack allocator",
+        AllocationSource::Std => "standard allocator",
+    }
+}
+
+fn conversion_cause_name(cause: ConversionCause) -> &'static str {
+    match cause {
+        ConversionCause::CoefficientUnderflow => "coefficient underflow",
+        ConversionCause::BiasUnderflow => "bias underflow",
+        ConversionCause::Overflow => "overflow",
+    }
+}
+
+impl std::error::Error for FitError {}
+
 /// Fits dense, unweighted OLS with one scalar target over the selected training
 /// rows.
 ///

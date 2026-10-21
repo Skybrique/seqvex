@@ -206,6 +206,34 @@ fn vector_elementwise_operations_reject_length_mismatch() {
     assert!(left.multiply(&right).is_err());
 }
 
+#[test]
+fn dimension_mismatch_has_neutral_display_and_no_source() {
+    fn assert_error_traits<
+        T: std::error::Error + Clone + Copy + PartialEq + Eq + std::fmt::Debug,
+    >() {
+    }
+    assert_error_traits::<numerical::DimensionMismatch>();
+
+    let mismatch = numerical::DimensionMismatch {
+        expected: 17,
+        actual: 3,
+    };
+    assert_eq!(
+        mismatch.to_string(),
+        "dimension mismatch: expected 17, got 3"
+    );
+    assert!(std::error::Error::source(&mismatch).is_none());
+
+    let zero_length = numerical::DimensionMismatch {
+        expected: 1,
+        actual: 0,
+    };
+    assert_eq!(
+        zero_length.to_string(),
+        "dimension mismatch: expected 1, got 0"
+    );
+}
+
 // --- f32 substrate: Matrix and mat-vec --------------------------------------
 
 #[test]

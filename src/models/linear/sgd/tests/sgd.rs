@@ -311,6 +311,46 @@ fn construction_rejects_zero_dimension_and_invalid_rates() {
 }
 
 #[test]
+fn sgd_error_display_is_readable_and_source_free() {
+    fn assert_error_traits<
+        T: std::error::Error + Clone + Copy + PartialEq + Eq + std::fmt::Debug,
+    >() {
+    }
+    assert_error_traits::<SgdError>();
+
+    let mismatch = SgdError::DimensionMismatch {
+        expected: 17,
+        actual: 3,
+    };
+    assert_eq!(
+        mismatch.to_string(),
+        "dimension mismatch: expected 17, got 3"
+    );
+
+    for (error, designated) in [
+        (SgdError::ZeroDimension, "dimension must be nonzero"),
+        (
+            SgdError::InvalidLearningRate,
+            "learning rate must be finite and positive",
+        ),
+        (
+            SgdError::NonFiniteInput,
+            "features and target must be finite",
+        ),
+        (
+            SgdError::NonFiniteCandidate,
+            "candidate state is not finite",
+        ),
+        (SgdError::NonFiniteOutput, "non-finite output"),
+    ] {
+        let message = error.to_string();
+        assert!(message.contains(designated), "{message:?}");
+        assert!(std::error::Error::source(&error).is_none());
+    }
+    assert!(std::error::Error::source(&mismatch).is_none());
+}
+
+#[test]
 fn validation_precedence_is_dimension_then_finiteness() {
     let model = Sgd::new(3, 0.1).expect("valid configuration");
     let state = model.initial_state();

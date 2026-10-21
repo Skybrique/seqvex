@@ -110,6 +110,10 @@ Otherwise it is a **task** (a checklist item in the parent/child body).
 
 **Do not create a child issue for:** an individual test; a single benchmark run; a documentation correction; a rerun; formatting; a component that is merely "step N"; a file or function with no independent evidence.
 
+For cross-algorithm work, establish or reuse an algorithm-specific native child under each applicable algorithm parent; a central coordinating Issue does not replace those relationships. When applicability to an algorithm is unresolved, establish or reuse a qualifying assessment child under that algorithm's parent rather than presuming implementation is required. Record paused work's status, reason, and conditions for activation. See [§24.1 of the development contract](docs/DEVELOPMENT.md#241-issue-architecture-parent-issues-and-categorical-sub-issues).
+
+An algorithm parent may remain open as an ongoing lifecycle owner while completed children retain their accepted milestones. Keep a concise current index in the parent body and preserve the evidence history in comments. Approved continuation must not rewrite earlier acceptance and follows scope/reuse (§24.5) and authorization (§24.8, §24.13) rules. See [§24.15 of the development contract](docs/DEVELOPMENT.md#2415-parent-completion-and-sub-issue-closure).
+
 ### Scope and reuse decision tree
 
 ```text
@@ -205,8 +209,8 @@ Each step names its actor, precondition, and evidence. Gate rules are authoritat
 | 6 | Planner decomposition and sequencing | Planner | design approved | child issues/tasks, deps, repo map |
 | 7 | Maintainer authorization | Maintainer | plan presented | explicit scope + branch authorization |
 | 8 | Checkout / sync / base verification | Coder | authorized | clean base recorded |
-| 9 | Create dedicated issue branch | Coder | base verified | `issue-XX-short-description` |
-| 10 | Implement approved scope | Coder | branch created | scoped edits |
+| 9 | Create or reuse authorized issue/parent feature branch | Coder | base verified + branch authorization | Branch follows §24.14 |
+| 10 | Implement approved scope | Coder | authorized branch ready | scoped edits |
 | 11 | Test | Coder | implementation | applicable tests, errors and edge cases; model deliveries also require data ingestion → actual training → validated inference, mathematics and quality evidence |
 | 12 | Benchmark (conditional) | Coder | tests pass | measured evidence |
 | 13 | Update documentation | Coder | implementation | model README / rustdoc / evidence entry |
@@ -218,8 +222,10 @@ Each step names its actor, precondition, and evidence. Gate rules are authoritat
 | 19 | Push | Coder | push authorization | branch pushed |
 | 20 | Open Pull Request | Coder | PR authorization | PR with traceability block |
 | 21 | Review + merge | Reviewer/Maintainer | all gates pass | merge |
-| 22 | Update and close issue | Maintainer | parent completion rule | closure |
+| 22 | Update issue; close only when completion criteria and separate authorization are satisfied | Maintainer | parent/child completion rule + closure authorization | issue state recorded |
 | 23 | Delete branch | Maintainer | post-merge | branch removed |
+
+Record the accepted PR-head SHA, tested revision, workflow run and required check conclusions. For merge-ref checks, verify that the tested revision combines the accepted head with the recorded base; do not reuse checks across unrelated or superseded head/base pairs. After merge, verify the merge SHA, delivered changes and applicable main-branch CI; keep pending or failed checks explicit. Reconcile documentation, acceptance checklists and unresolved findings against the final reviewed implementation and verification evidence. For an ongoing parent, update the concise current index under [§24.15](docs/DEVELOPMENT.md#2415-parent-completion-and-sub-issue-closure) and preserve evidence history in comments. See [§28 of the development contract](docs/DEVELOPMENT.md#28-integration-discipline).
 
 Small, clearly scoped changes may compress steps 2–7 with maintainer acknowledgment; checkout (8/9) and verification (17) still apply. See [`CONTRIBUTING.md`](CONTRIBUTING.md) "Before Contributing".
 
@@ -298,9 +304,9 @@ git fetch --all --prune
 ```
 
 - Verify the current branch and the intended base.
-- Verify a clean (or fully understood) working tree.
+- Verify and record the intended base and working-tree state.
 - Preserve unrelated pre-existing changes; never reset, stash, clean, discard, or overwrite another person's work without explicit authorization.
-- If the base is stale or the tree is not clean, **stop and report**.
+- If the base is stale, stop and report. If the working tree is not clean, stop and report the existing changes. Affected work may proceed after the Maintainer explicitly approves how those changes will be preserved and confirms the authorized scope. That approval remains applicable while the documented state and scope remain unchanged.
 
 Full rules: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) §24.9.
 

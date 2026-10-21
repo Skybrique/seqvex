@@ -820,6 +820,8 @@ Repeated test runs remain under the same Test/Audit sub-issue. Repeated benchmar
 
 Use a new sub-issue when the work becomes a materially different category or independently meaningful objective.
 
+For a cross-algorithm initiative, establish an algorithm-specific native child under each algorithm parent determined to be applicable; reuse a suitable existing child. Each child must satisfy the [child-issue qualification criteria](../FEATURE_DEVELOPMENT.md#3-issue-model). A central coordinating Issue does not replace these parent/child relationships. When applicability to an algorithm is unresolved, establish or reuse a qualifying assessment child under that algorithm’s parent rather than presuming implementation is required. Record paused work's status, reason, and conditions for activation. Genuinely shared infrastructure retains one owning Issue; use the dependency and related-Issue distinctions in §24.4 as appropriate.
+
 ### 24.2 Audit and Benchmark Separation
 
 Correctness/audit work and performance/benchmark work are separate categories even when they concern the same implementation.
@@ -892,7 +894,7 @@ GitHub Issue / Sub-Issue
   ↓
 Maintainer confirms scope
   ↓
-Dedicated issue branch
+Authorized issue/parent feature branch (§24.14)
   ↓
 Design / Planning review as required
   ↓
@@ -912,7 +914,7 @@ Review + validation
   ↓
 Merge into main
   ↓
-Issue / sub-issue closes when appropriate
+Issue / sub-issue closure when completion criteria are met and separately authorized (§24.8)
   ↓
 User / maintainer deletes feature branch
 ```
@@ -925,7 +927,7 @@ Preferred branch naming:
 issue-XX-short-description
 ```
 
-The branch should correspond to the Issue or sub-issue whose work is being implemented.
+Use the authorized parent feature branch when §24.14 applies; otherwise use the branch corresponding to the Issue or sub-issue whose work is being implemented. Branch creation remains a separate authorization gate under §24.8.
 
 The user/maintainer deletes the feature branch after merge. Development agents must not delete it unless explicitly authorized.
 
@@ -978,6 +980,8 @@ git diff
 ```
 
 Preserve unrelated pre-existing changes. Do not reset, stash, clean, overwrite, discard, or commit unrelated changes merely to make issue work easier.
+
+If the working tree is not clean, stop and report the existing changes. Affected work may proceed after the Maintainer explicitly approves how those changes will be preserved and confirms the authorized scope. That approval remains applicable while the documented state and scope remain unchanged.
 
 Before committing, stage only files belonging to the authorized Issue/Sub-Issue and inspect the staged diff. Avoid `git add .` when unrelated changes may be present.
 
@@ -1058,9 +1062,11 @@ After the relevant sub-issues are completed:
 1. verify the parent's own objective;
 2. verify the parent's acceptance criteria;
 3. verify applicable validation, review, and integration requirements;
-4. only then close the parent Issue.
+4. only then close the parent Issue if its objective is complete and closure is separately authorized; an algorithm parent serving as an ongoing lifecycle owner may remain open.
 
 This prevents the parent from being treated as complete merely because its child workstreams have been closed.
+
+An ongoing lifecycle parent may remain open across completed child milestones; completed children retain their accepted milestones. Keep a concise current index in the parent body and preserve the evidence history in comments. Approved continuation follows §24.5 scope/reuse and §24.8/§24.13 authorization rules; it must not rewrite earlier acceptance.
 
 ### 24.16 Native Sub-Issue Relationship
 
@@ -1215,6 +1221,10 @@ Integrate
 ```
 
 A change is not complete merely because it compiles.
+
+Record the accepted PR-head SHA, the revision actually tested, the workflow run and required check conclusions. For PR merge-ref checks, verify that the tested revision combines the accepted head with the recorded base. Do not reuse results for an unrelated or superseded head/base combination. After merge, verify the merge SHA, delivered changes and applicable main-branch CI; keep pending or failed checks explicit.
+
+Before recording integration complete, reconcile documentation, acceptance checklists and unresolved findings against the final reviewed implementation and verification evidence. Keep unresolved findings explicit rather than implying acceptance. For an ongoing parent, update its concise current index under §24.15 and preserve the evidence history in comments.
 
 For architecture-sensitive changes, the integration record should identify:
 

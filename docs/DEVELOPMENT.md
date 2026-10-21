@@ -350,6 +350,35 @@ These principles are design tools, not patterns to apply mechanically.
 - **Error enums:** prefer domain-specific errors and `Result<T,E>`.
 - **Iterators:** use where they improve clarity without material performance cost; explicit loops are appropriate when clearer or measurably better.
 
+## Naming and error reporting
+
+Use `snake_case` for new functions, methods, modules and Rust source filenames; `UpperCamelCase` for types, traits and enum variants; and `SCREAMING_SNAKE_CASE` for constants. Preserve existing public names and compatibility imports until a reviewed compatibility decision authorizes a change.
+
+| Name | Meaning |
+|---|---|
+| `validate_*` | Check declared admissibility rules and return explicit failure without hidden repair or state commit. |
+| `verify_*` | Check a named claim against a reference, identity or invariant; this does not imply formal proof. |
+| `fit` | Execute the declared learning procedure on training data and produce a learned result on success. |
+| `predict` | Infer from learned parameters or learned state without learning from the scored observation; document the checks performed. |
+| `update` | Perform a declared state transition; this is not universally a synonym for training. |
+| `transform` | Apply an established transformation without silently learning preprocessing statistics from scoring data. |
+| `evaluate_*` | Compute named metrics under an explicit evaluation protocol. |
+| `initial_state` | Construct the declared starting state; initialization alone does not establish learned readiness. |
+| `reset` | Explicitly replace or reinitialize execution state as documented; this can discard learned adaptive parameters. |
+| `new` | Construct a value using documented API-specific checks and validation boundaries. |
+| `build` | Complete configured construction under its documented validation contract. |
+| `*_checked` | Perform specifically documented additional checks; this does not imply universal accuracy or state certification. |
+
+Construction must not hide training or publication. Neither a configuration value nor successful construction certifies properties beyond the API's documented checks.
+
+Errors introduced or brought into scope by an approved change must provide readable `Display` explanations and appropriate `std::error::Error` implementations. Preserve structured variants and fields as the programmatic contract; callers must not parse display prose.
+
+Report useful context the error actually carries. Operation-specific context belongs to the layer that knows it. Expose a stored underlying error through `source()` where appropriate without duplicating its message in the outer `Display`. Classification fields that are not errors must not acquire fabricated causes.
+
+Describe committed progress accurately. Returning a supplied state does not certify its validity, and retaining a successful batch prefix is not whole-batch rollback. Formatting must not change numerical calculations, validation precedence, ownership or recovery policy.
+
+Existing names, error variants, fields and observable formatting changes require their applicable compatibility review. These conventions do not authorize a universal error hierarchy, a new `StateModel::Error` bound, or a shared error/state/optimizer framework.
+
 ## Model training and valid inference — mandatory
 
 Every Seqvex ML model must support actual data ingestion and its declared training/learning procedure, then calculate inference outputs from the learned result. Training must precede user-facing inference or prediction. This is a project-wide completion and delivery requirement with no prediction-only model exception.

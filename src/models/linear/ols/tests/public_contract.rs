@@ -21,6 +21,51 @@ fn assert_bits_eq(left: f32, right: f32) {
 }
 
 #[test]
+fn regression_error_reports_its_known_failure_without_a_source() {
+    fn assert_error_traits<
+        T: std::error::Error + Clone + Copy + PartialEq + Eq + std::fmt::Debug,
+    >() {
+    }
+    assert_error_traits::<RegressionError>();
+
+    let cases = [
+        (RegressionError::ZeroDimension, "zero dimension"),
+        (
+            RegressionError::NonFiniteParameter,
+            "parameters must be finite",
+        ),
+        (
+            RegressionError::NonFiniteInput,
+            "input features must be finite",
+        ),
+    ];
+    for (error, expected) in cases {
+        assert!(error.to_string().contains(expected), "{error}");
+        assert!(std::error::Error::source(&error).is_none());
+    }
+
+    let mismatch = RegressionError::DimensionMismatch {
+        expected: 17,
+        actual: 3,
+    };
+    assert_eq!(
+        mismatch.to_string(),
+        "dimension mismatch: expected 17, got 3"
+    );
+    assert!(std::error::Error::source(&mismatch).is_none());
+    assert_eq!(
+        RegressionError::NonFiniteOutput { observation: None }.to_string(),
+        "checked prediction produced a non-finite output"
+    );
+    assert!(
+        std::error::Error::source(&RegressionError::NonFiniteOutput {
+            observation: Some(0)
+        })
+        .is_none()
+    );
+}
+
+#[test]
 fn reference_prediction_matches_hand_computed_value() {
     // 1*3 + 2*4 + 0.5 = 11.5, exactly representable in f32.
     let model = model(&[1.0, 2.0], 0.5);

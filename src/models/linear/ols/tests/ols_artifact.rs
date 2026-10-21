@@ -371,6 +371,114 @@ fn writer_and_reader_failures_are_reported() {
 }
 
 #[test]
+fn artifact_error_displays_designated_fields_and_hex_values() {
+    fn assert_error<T: std::error::Error>() {}
+    assert_error::<ArtifactError>();
+
+    let cases = [
+        (
+            ArtifactError::Truncated {
+                needed: 17,
+                available: 3,
+            },
+            &["needed 17 bytes", "3 available"][..],
+        ),
+        (
+            ArtifactError::UnsupportedVersion {
+                found: 17,
+                supported: 3,
+            },
+            &["version 17", "supported version is 3"][..],
+        ),
+        (
+            ArtifactError::FieldMismatch { field: "schema_id" },
+            &["schema_id"][..],
+        ),
+        (
+            ArtifactError::UnexpectedField { field: "cutoff" },
+            &["cutoff", "absent"][..],
+        ),
+        (
+            ArtifactError::NonFiniteParameter { index: 0 },
+            &["index 0"][..],
+        ),
+        (ArtifactError::Capacity { limit: 17 }, &["limit 17"][..]),
+        (
+            ArtifactError::TrailingBytes { count: 3 },
+            &["3 trailing bytes"][..],
+        ),
+    ];
+    for (error, designated) in cases {
+        let message = error.to_string();
+        for field in designated {
+            assert!(message.contains(field), "{message:?} omitted {field:?}");
+        }
+        assert!(std::error::Error::source(&error).is_none());
+    }
+
+    for (error, expected) in [
+        (
+            ArtifactError::SchemaMismatch,
+            "artifact schema identifier is inconsistent or unsupported",
+        ),
+        (
+            ArtifactError::ShapeMismatch,
+            "artifact shape is inconsistent",
+        ),
+    ] {
+        assert_eq!(error.to_string(), expected);
+    }
+
+    let expected = [0xab; 32];
+    let actual = [0xcd; 32];
+    let expected_hex = "ab".repeat(32);
+    let actual_hex = "cd".repeat(32);
+    let checksum = ArtifactError::ChecksumMismatch { expected, actual }.to_string();
+    let checksum_error = ArtifactError::ChecksumMismatch { expected, actual };
+    assert!(std::error::Error::source(&checksum_error).is_none());
+    assert!(checksum.contains(&expected_hex));
+    assert!(checksum.contains(&actual_hex));
+    assert!(checksum.contains("expected"));
+    assert!(checksum.contains("actual"));
+    assert_eq!(checksum, checksum.to_lowercase());
+
+    let model_id_error = ArtifactError::ModelIdMismatch { expected, actual };
+    assert!(std::error::Error::source(&model_id_error).is_none());
+    let model_id = model_id_error.to_string();
+    assert!(model_id.contains(&expected_hex));
+    assert!(model_id.contains(&actual_hex));
+    assert!(model_id.contains("expected"));
+    assert!(model_id.contains("actual"));
+    assert_eq!(model_id, model_id.to_lowercase());
+
+    let capacity = ArtifactError::Capacity { limit: 17 }.to_string();
+    assert!(!capacity.contains("bytes"));
+}
+
+#[test]
+fn artifact_io_display_chains_the_stored_cause_without_duplicating_it() {
+    assert_eq!(
+        format!("{:?}", ArtifactError::SchemaMismatch),
+        "SchemaMismatch"
+    );
+    let artifact_error = ArtifactError::Io {
+        source: std::io::Error::other("artifact I/O cause sentinel"),
+    };
+    let stored = match &artifact_error {
+        ArtifactError::Io { source } => source,
+        _ => unreachable!(),
+    };
+    let message = artifact_error.to_string();
+    assert_eq!(message, "artifact I/O failed");
+    assert!(!message.contains("cause sentinel"));
+
+    let source = std::error::Error::source(&artifact_error).unwrap();
+    let source = source.downcast_ref::<std::io::Error>().unwrap();
+    assert!(std::ptr::eq(source, stored));
+    assert_eq!(source.kind(), std::io::ErrorKind::Other);
+}
+
+#[test]
 fn independently_assembled_artifact_matches_export_and_imports() {
     let original = model(
         true,

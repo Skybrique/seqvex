@@ -516,6 +516,8 @@ Failure information may eventually include:
 
 The exact error hierarchy and API remain undecided.
 
+Readable explanations, structured failure fields, cause chaining and committed-progress wording follow the [naming and error-reporting conventions](DEVELOPMENT.md#naming-and-error-reporting). These conventions do not define a universal error hierarchy or change the failure and recovery policies described here.
+
 ---
 
 ## 12. Recovery and Determinism

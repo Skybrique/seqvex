@@ -208,8 +208,56 @@ pub enum ArtifactError {
 
 impl fmt::Display for ArtifactError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::Io { .. } => f.write_str("artifact I/O failed"),
+            Self::Truncated { needed, available } => write!(
+                f,
+                "artifact truncated: needed {needed} bytes, {available} available"
+            ),
+            Self::ChecksumMismatch { expected, actual } => {
+                f.write_str("artifact checksum mismatch: expected ")?;
+                write_hex(f, expected)?;
+                f.write_str(", actual ")?;
+                write_hex(f, actual)
+            }
+            Self::UnsupportedVersion { found, supported } => write!(
+                f,
+                "unsupported artifact version {found}; supported version is {supported}"
+            ),
+            Self::SchemaMismatch => {
+                f.write_str("artifact schema identifier is inconsistent or unsupported")
+            }
+            Self::ShapeMismatch => f.write_str("artifact shape is inconsistent"),
+            Self::FieldMismatch { field } => {
+                write!(f, "artifact field {field} does not match expectation")
+            }
+            Self::UnexpectedField { field } => {
+                write!(f, "unexpected artifact field {field}; it should be absent")
+            }
+            Self::NonFiniteParameter { index } => {
+                write!(f, "artifact parameter at index {index} is not finite")
+            }
+            Self::ModelIdMismatch { expected, actual } => {
+                f.write_str("artifact model identity mismatch: expected ")?;
+                write_hex(f, expected)?;
+                f.write_str(", actual ")?;
+                write_hex(f, actual)
+            }
+            Self::Capacity { limit } => {
+                write!(f, "artifact capacity limit {limit} exceeded")
+            }
+            Self::TrailingBytes { count } => {
+                write!(f, "artifact contains {count} trailing bytes")
+            }
+        }
     }
+}
+
+fn write_hex(formatter: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    for byte in bytes {
+        write!(formatter, "{byte:02x}")?;
+    }
+    Ok(())
 }
 
 impl std::error::Error for ArtifactError {

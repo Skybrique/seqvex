@@ -96,6 +96,37 @@ pub enum RlsError {
     NonFiniteOutput,
 }
 
+impl std::fmt::Display for RlsError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroDimension => formatter.write_str("RLS dimension must be nonzero"),
+            Self::DimensionMismatch { expected, actual } => {
+                write!(formatter, "dimension mismatch: expected {expected}, got {actual}")
+            }
+            Self::InvalidForgettingFactor => {
+                formatter.write_str("RLS forgetting factor must be finite and in (0, 1]")
+            }
+            Self::InvalidInitialCovariance => {
+                formatter.write_str("RLS initial covariance scale must be finite and positive")
+            }
+            Self::NonFiniteInput => {
+                formatter.write_str("RLS observation features and target must be finite")
+            }
+            Self::InvalidDenominator => {
+                formatter.write_str("RLS update denominator must be finite and positive")
+            }
+            Self::NonFiniteCandidate => formatter.write_str(
+                "RLS candidate state is not finite. The candidate update was not committed; the supplied state is unchanged.",
+            ),
+            Self::NonFiniteOutput => {
+                formatter.write_str("checked RLS prediction produced a non-finite output")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RlsError {}
+
 impl From<DimensionMismatch> for RlsError {
     fn from(error: DimensionMismatch) -> Self {
         Self::DimensionMismatch {
@@ -129,12 +160,48 @@ pub enum RlsBatchError {
     Transition {
         /// Zero-based index of the failed observation.
         failed_index: usize,
-        /// The last committed valid state after the successful prefix (the
-        /// supplied state when no observation succeeded).
+        /// The state before the failed observation: the supplied state when
+        /// `failed_index == 0`, or the state returned by the successful prefix
+        /// otherwise. This error path returns that state unchanged; any
+        /// validity guarantees are those established by its documented
+        /// construction/provenance, the preconditions, and checks actually
+        /// reached by the attempted updates.
         state: RlsState,
         /// The failure reported by the reference transition.
         error: RlsError,
     },
+}
+
+impl std::fmt::Display for RlsBatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BatchTooLarge { max, actual, .. } => write!(
+                formatter,
+                "RLS batch length {actual} exceeds maximum {max}; no observation was processed and the supplied state was returned unchanged"
+            ),
+            Self::Transition {
+                failed_index: 0, ..
+            } => formatter.write_str(
+                "RLS batch transition failed at observation 0; no observation was committed and the supplied state was returned unchanged",
+            ),
+            Self::Transition {
+                failed_index,
+                ..
+            } => write!(
+                formatter,
+                "RLS batch transition failed at observation {failed_index}; {failed_index} observations were committed, the failed candidate update was not committed, and the state before the failed observation was returned (no whole-batch rollback)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RlsBatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Transition { error, .. } => Some(error),
+            Self::BatchTooLarge { .. } => None,
+        }
+    }
 }
 
 /// The adaptive state of one RLS stream: `w` (`D`) and `P` (`D × D`).

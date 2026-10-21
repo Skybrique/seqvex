@@ -429,27 +429,36 @@ fn artifact_error_displays_designated_fields_and_hex_values() {
         assert_eq!(error.to_string(), expected);
     }
 
-    let expected = [0xab; 32];
-    let actual = [0xcd; 32];
-    let expected_hex = "ab".repeat(32);
-    let actual_hex = "cd".repeat(32);
+    let expected = [
+        0x00, 0x01, 0x0a, 0x0f, 0x10, 0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f, 0x70, 0x80, 0x9a, 0xab,
+        0xbc, 0xcd, 0xde, 0xef, 0xf0, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+        0xaa, 0xff,
+    ];
+    let actual = [
+        0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+        0x00, 0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2,
+        0xe1, 0x00,
+    ];
+    let expected_hex = "00010a0f101a2b3c4d5e6f70809aabbccddeeff000112233445566778899aaff";
+    let actual_hex = "ffeeddccbbaa998877665544332211000f1e2d3c4b5a69788796a5b4c3d2e100";
+    assert_eq!(expected_hex.len(), 64);
+    assert_eq!(actual_hex.len(), 64);
+
     let checksum = ArtifactError::ChecksumMismatch { expected, actual }.to_string();
     let checksum_error = ArtifactError::ChecksumMismatch { expected, actual };
     assert!(std::error::Error::source(&checksum_error).is_none());
-    assert!(checksum.contains(&expected_hex));
-    assert!(checksum.contains(&actual_hex));
-    assert!(checksum.contains("expected"));
-    assert!(checksum.contains("actual"));
-    assert_eq!(checksum, checksum.to_lowercase());
+    assert!(checksum.contains(&format!("expected {expected_hex}")));
+    assert!(checksum.contains(&format!("actual {actual_hex}")));
+    assert!(!checksum.contains(&format!("expected {actual_hex}")));
+    assert!(!checksum.contains(&format!("actual {expected_hex}")));
 
     let model_id_error = ArtifactError::ModelIdMismatch { expected, actual };
     assert!(std::error::Error::source(&model_id_error).is_none());
     let model_id = model_id_error.to_string();
-    assert!(model_id.contains(&expected_hex));
-    assert!(model_id.contains(&actual_hex));
-    assert!(model_id.contains("expected"));
-    assert!(model_id.contains("actual"));
-    assert_eq!(model_id, model_id.to_lowercase());
+    assert!(model_id.contains(&format!("expected {expected_hex}")));
+    assert!(model_id.contains(&format!("actual {actual_hex}")));
+    assert!(!model_id.contains(&format!("expected {actual_hex}")));
+    assert!(!model_id.contains(&format!("actual {expected_hex}")));
 
     let capacity = ArtifactError::Capacity { limit: 17 }.to_string();
     assert!(!capacity.contains("bytes"));

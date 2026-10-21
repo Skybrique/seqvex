@@ -612,6 +612,22 @@ fn fit_error_displays_designated_context_and_no_fabricated_causes() {
             },
             &["test-buffer", "17 bytes", "faer allocator"][..],
         ),
+        (
+            FitError::AllocationFailed {
+                buffer: "stack-buffer",
+                requested_bytes: 19,
+                source: AllocationSource::DynStack,
+            },
+            &["stack-buffer", "19 bytes", "dynamic stack allocator"][..],
+        ),
+        (
+            FitError::AllocationFailed {
+                buffer: "std-buffer",
+                requested_bytes: 23,
+                source: AllocationSource::Std,
+            },
+            &["std-buffer", "23 bytes", "standard allocator"][..],
+        ),
         (FitError::DuplicateIndex { index: 0 }, &["index 0"][..]),
         (
             FitError::NonFiniteTrainingValue { row: 0, column: 0 },
@@ -627,6 +643,14 @@ fn fit_error_displays_designated_context_and_no_fabricated_causes() {
         (
             FitError::ConversionRejected(ConversionCause::BiasUnderflow),
             &["bias underflow"][..],
+        ),
+        (
+            FitError::ConversionRejected(ConversionCause::CoefficientUnderflow),
+            &["coefficient underflow"][..],
+        ),
+        (
+            FitError::ConversionRejected(ConversionCause::Overflow),
+            &["overflow"][..],
         ),
     ];
     for (error, designated) in cases {

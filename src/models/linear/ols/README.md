@@ -50,6 +50,18 @@ fit(features: &[Vector], targets: &[f32], train: &[usize], config: &FitConfig)
 
 Full feature/target array lengths must agree; fitting reads values only at the explicit training indices. `FitResult::into_predictor(self) -> LinearRegression` moves learned parameters into the predictor and is infallible. `FitResult::into_trained(self, &TrainingMeta) -> Result<TrainedModel, ArtifactError>` adds caller-supplied training linkage and derived artifact metadata.
 
+### Candidate acceptance and installation
+
+`fit` success means the solver produced a candidate; it does not by itself admit or install that candidate. A caller may check an explicit nonempty selection before conversion:
+
+```rust,ignore
+candidate.check_acceptance(&features, &targets, &acceptance_indices)?;
+```
+
+`check_acceptance` borrows the candidate and rows, counts repeated indices in supplied order, inspects selected rows only, checks the stored `rss_f64_reference` and `rss_f32_predictor`, and reports the sequential f64 RSS of checked deployed-f32 predictions. `fit` has already enforced its rank policy; this method does not revalidate rank. A finite report is not a predictive-quality threshold or a guarantee about unselected/future rows.
+
+After admission, the caller may convert/build the artifact and verify a candidate executor, then explicitly install the candidate. Admission does not mutate or publish an active model. The existing `fit_salary` refit example demonstrates candidate executor verification while retaining the active model; installation remains an application-owned action. Bare `predict` retains its existing non-finite-output behavior; output rejection remains opt-in through checked prediction paths.
+
 Run the example with a caller-supplied CSV path (positional, not `--input`):
 
 ```sh

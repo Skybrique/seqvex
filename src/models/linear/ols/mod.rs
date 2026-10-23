@@ -19,7 +19,8 @@ pub use artifact::{
     LoadedArtifact, ModelId, PublicationId, SchemaId, TrainedModel, TrainingMeta, TransformId,
 };
 pub use fit::{
-    AllocationSource, ConversionCause, DEFAULT_MAX_WORKSPACE_BYTES, FitConfig, FitDiagnostics,
-    FitError, FitResult, UnderflowPolicy, fit,
+    AcceptanceCheckError, AcceptanceCheckReport, AllocationSource, ConversionCause,
+    DEFAULT_MAX_WORKSPACE_BYTES, FitConfig, FitDiagnostics, FitError, FitResult, SelectedField,
+    StoredDiagnostic, UnderflowPolicy, fit,
 };
 pub use predict::{CheckedLinearRegression, LinearRegression, RegressionError};

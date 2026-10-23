@@ -277,6 +277,165 @@ fn matvec_rejects_input_dimension_mismatch() {
     );
 }
 
+#[test]
+fn shared_kernels_preserve_f32_operation_bits_and_reduction_order() {
+    let left = numerical::Vector::from_slice(&[1.25, -0.0, 3.5]);
+    let right = numerical::Vector::from_slice(&[2.0, 4.0, -1.0]);
+    let bits = |values: &[f32]| {
+        values
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        bits(left.map(|value| value + 0.25).as_slice()),
+        [1.5, 0.25, 3.75].map(f32::to_bits)
+    );
+    assert_eq!(
+        bits(left.add(&right).unwrap().as_slice()),
+        [3.25, 4.0, 2.5].map(f32::to_bits)
+    );
+    assert_eq!(
+        bits(left.multiply(&right).unwrap().as_slice()),
+        [2.5, -0.0, -3.5].map(f32::to_bits)
+    );
+    assert_eq!(
+        bits(left.scale(2.0).as_slice()),
+        [2.5, -0.0, 7.0].map(f32::to_bits)
+    );
+    assert_eq!(
+        bits(left.complement().as_slice()),
+        [-0.25, 1.0, -2.5].map(f32::to_bits)
+    );
+    assert_eq!(left.dot(&right), Ok(-1.0));
+
+    let grouping = numerical::Vector::from_slice(&[1.0e8, 1.0, -1.0e8]);
+    assert_eq!(
+        grouping.dot(&numerical::Vector::from_slice(&[1.0; 3])),
+        Ok(0.0)
+    );
+
+    let weights = numerical::Matrix::from_rows(&[&[1.25, -0.0], &[3.5, 2.0]]).unwrap();
+    let result = weights
+        .mul_vector(&numerical::Vector::from_slice(&[2.0, 4.0]))
+        .unwrap();
+    assert_eq!(bits(result.as_slice()), [2.5, 15.0].map(f32::to_bits));
+}
+
+#[test]
+fn f32_callback_and_empty_ragged_and_signed_zero_contracts_remain() {
+    let mut next = 0.0_f32;
+    let from_fn = numerical::Vector::from_fn(3, |_| {
+        next += 1.0;
+        next
+    });
+    assert_eq!(from_fn.as_slice(), &[1.0, 2.0, 3.0]);
+    let offset = 2.0_f32;
+    assert_eq!(
+        from_fn.map(|value| value + offset).as_slice(),
+        &[3.0, 4.0, 5.0]
+    );
+
+    let negative_zero = numerical::Vector::from_slice(&[-0.0]);
+    assert!(
+        negative_zero
+            .multiply(&numerical::Vector::from_slice(&[1.0]))
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .is_sign_negative()
+    );
+    assert!(
+        negative_zero
+            .dot(&numerical::Vector::from_slice(&[1.0]))
+            .unwrap()
+            .is_sign_negative()
+    );
+    assert_eq!(
+        numerical::Vector::zeros(0).dot(&numerical::Vector::zeros(0)),
+        Ok(0.0)
+    );
+
+    let empty = numerical::Matrix::from_rows(&[]).unwrap();
+    assert_eq!((empty.rows(), empty.cols()), (0, 0));
+    let empty_rows = numerical::Matrix::from_rows(&[&[], &[]]).unwrap();
+    assert_eq!(
+        empty_rows
+            .mul_vector(&numerical::Vector::zeros(0))
+            .unwrap()
+            .as_slice(),
+        &[0.0, 0.0]
+    );
+    assert_eq!(
+        numerical::Matrix::from_rows(&[&[1.0, 2.0], &[3.0]]),
+        Err(numerical::DimensionMismatch {
+            expected: 2,
+            actual: 1
+        })
+    );
+}
+
+fn baseline_f32_dot(left: &[f32], right: &[f32]) -> f32 {
+    left.iter().zip(right).map(|(&a, &b)| a * b).sum()
+}
+
+fn baseline_f32_matvec_row(weights: &[f32], input: &[f32]) -> f32 {
+    weights
+        .iter()
+        .zip(input)
+        .map(|(weight, value)| weight * value)
+        .sum()
+}
+
+#[test]
+fn f32_dot_and_matvec_preserve_baseline_signed_zero_bits() {
+    let positive_zero = 0.0_f32.to_bits();
+    let negative_zero = (-0.0_f32).to_bits();
+    let cases: &[(&[f32], &[f32], u32)] = &[
+        (&[], &[], negative_zero),
+        (&[-0.0], &[1.0], negative_zero),
+        (&[-0.0, -0.0], &[1.0, 1.0], negative_zero),
+        (&[0.0, -0.0], &[1.0, 1.0], positive_zero),
+        (&[-0.0, 0.0], &[1.0, 1.0], positive_zero),
+        (&[1.0, -1.0], &[1.0, 1.0], positive_zero),
+    ];
+
+    for (left, right, expected_bits) in cases {
+        let left_vector = numerical::Vector::from_slice(left);
+        let right_vector = numerical::Vector::from_slice(right);
+        let candidate = left_vector.dot(&right_vector).unwrap();
+        let baseline = baseline_f32_dot(left, right);
+        assert_eq!(candidate.to_bits(), baseline.to_bits());
+        assert_eq!(candidate.to_bits(), *expected_bits);
+
+        let matrix = numerical::Matrix::from_rows(&[*left]).unwrap();
+        let output = matrix.mul_vector(&right_vector).unwrap();
+        let baseline_row = baseline_f32_matvec_row(matrix.as_slice(), right);
+        assert_eq!(output.get(0).unwrap().to_bits(), baseline_row.to_bits());
+        assert_eq!(output.get(0).unwrap().to_bits(), *expected_bits);
+    }
+
+    let empty_rows = numerical::Matrix::from_rows(&[&[], &[]]).unwrap();
+    let empty_output = empty_rows.mul_vector(&numerical::Vector::zeros(0)).unwrap();
+    assert_eq!(
+        empty_output
+            .as_slice()
+            .iter()
+            .map(|x| x.to_bits())
+            .collect::<Vec<_>>(),
+        [negative_zero; 2]
+    );
+
+    let zero_rows = numerical::Matrix::from_rows(&[]).unwrap();
+    assert!(
+        zero_rows
+            .mul_vector(&numerical::Vector::zeros(0))
+            .unwrap()
+            .is_empty()
+    );
+}
+
 // --- f32 substrate: activations ---------------------------------------------
 
 #[test]

@@ -2,8 +2,9 @@
 //!
 //! This crate contains the foundational semantics (observation, ordering,
 //! streaming state, state transitions, and failure atomicity) plus the first
-//! vertical slice built on them: a small `f32` numerical substrate, streaming
-//! execution, and a stateful GRU (`models::recurrent::gru`).
+//! vertical slice built on them: a small numerical foundation (the initial model
+//! slice uses `f32`), streaming execution, and a stateful GRU
+//! (`models::recurrent::gru`).
 //!
 //! The GRU is the slice's first model, not the framework's model abstraction;
 //! `models::classic` adds the first classic-ML slice, linear-regression

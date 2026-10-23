@@ -11,9 +11,10 @@ not a general-purpose numerical or scientific-computing ecosystem.
 
 - `statistics` — the established `f64` primitives: `sum`, `mean`, `variance`,
   `dot`, `norm`, `online_mean`, `online_variance`.
-- `vector` — contiguous `f32` vectors with elementwise `add`, `multiply`,
-  `scale`, `complement`, `map`.
-- `linalg` — dense row-major `f32` matrices and the affine transform `y = W x`.
+- `vector` — concrete contiguous `f32` and `f64` vectors with elementwise
+  `add`, `multiply`, `scale`, `complement`, `map`, and ordered `dot`.
+- `linalg` — dense row-major `f32` and `f64` matrices and the transform `y = W x`.
+- `kernels` — private loop helpers shared only by equivalent f32/f64 operations.
 - `activations` — scalar `sigmoid` and `tanh`.
 
 ## Error semantics
@@ -27,14 +28,18 @@ Two numeric layers with deliberately different contracts:
   `NaN` result and panics. `norm` also asserts non-negativity: a `NaN` input
   panics, while a `±Inf` input returns `+Inf`. `sum(&[]) == 0.0`. Variance is
   the **population** variance (divide by `N`), computed in two passes.
-- The `f32` substrate returns `Result` with `DimensionMismatch` for shape
-  errors. The GRU adds `GruError` for its own failure classes.
+- Both typed container families return `Result` with `DimensionMismatch` for
+  shape errors. Model-specific failure classes remain model-local; the GRU adds
+  `GruError` for its own failure classes.
 
-The `f32`/`f64` split is intentional and must not be silently unified.
+The `f32`/`f64` container types remain concrete and separate. Private shared
+kernels do not merge their public APIs, the statistics contract, or algorithm
+mathematics. Adding f64 containers does not implement any model precision path,
+training method, preprocessing pipeline, or profile selector.
 
 ## Inside
 
-- `statistics`, `vector`, `linalg`, `activations`.
+- `statistics`, `vector`, `linalg`, private `kernels`, `activations`.
 
 ## Outside
 
@@ -45,8 +50,9 @@ The `f32`/`f64` split is intentional and must not be silently unified.
 
 ## Current tests
 
-`tests/numerical.rs` covers normal, edge, dimension, and reference behavior for
-both layers.
+`tests/numerical.rs` covers established statistics and f32 compatibility
+controls. `tests/numerical_f64.rs` covers the additive f64 container APIs with
+analytical values and native-precision discrimination.
 
 ## Major deferred decisions
 

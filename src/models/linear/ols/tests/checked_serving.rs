@@ -8,7 +8,10 @@ use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::Vector;
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::process_batch;
-use seqvex::models::linear::ols::{CheckedLinearRegression, LinearRegression, RegressionError};
+use seqvex::models::linear::ols::{
+    AcceptanceCheckError, CheckedLinearRegression, FitConfig, LinearRegression, RegressionError,
+    StoredDiagnostic, fit,
+};
 
 fn model(weights: &[f32], bias: f32) -> LinearRegression {
     LinearRegression::new(Vector::from_slice(weights), bias).unwrap()
@@ -236,4 +239,79 @@ fn grouped_process_batch_stops_at_first_failure() {
     );
     // The last committed valid state before the failure is returned.
     assert_bits_eq(failure.state, 7.0);
+}
+
+#[test]
+fn acceptance_rejection_preserves_candidate_and_active_predictor() {
+    let candidate_features = [Vector::from_slice(&[1.0]), Vector::from_slice(&[2.0])];
+    let candidate_targets = [f32::MAX, f32::MAX];
+    let config = FitConfig {
+        intercept: false,
+        ..FitConfig::default()
+    };
+    let candidate = fit(&candidate_features, &candidate_targets, &[0, 1], &config)
+        .expect("legacy fit succeeds");
+    let weights_before = candidate.weights().clone();
+    let bias_before = candidate.intercept();
+    let diagnostics_before = candidate.diagnostics().clone();
+
+    let active = model(&[2.0], 1.0);
+    let active_row = Vector::from_slice(&[3.0]);
+    let active_before = active.predict_checked(&active_row).unwrap();
+    let error = candidate
+        .check_acceptance(&candidate_features, &candidate_targets, &[0])
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        AcceptanceCheckError::NonFiniteStoredDiagnostic {
+            diagnostic: StoredDiagnostic::RssF32Predictor,
+        }
+    );
+    assert_eq!(candidate.weights(), &weights_before);
+    assert_eq!(candidate.intercept(), bias_before);
+    assert_eq!(candidate.diagnostics(), &diagnostics_before);
+    assert_bits_eq(active.predict_checked(&active_row).unwrap(), active_before);
+}
+
+#[test]
+fn admission_and_candidate_verification_precede_explicit_install() {
+    let features = [Vector::from_slice(&[1.0]), Vector::from_slice(&[2.0])];
+    let targets = [1.0f32, 4.0];
+    let indices = [0, 1];
+    let candidate = fit(&features, &targets, &indices, &FitConfig::default()).expect("fit");
+
+    let old_active = model(&[2.0], 1.0);
+    let active_row = Vector::from_slice(&[3.0]);
+    let old_active_prediction = old_active.predict_checked(&active_row).unwrap();
+    let mut active = Some(old_active);
+
+    candidate
+        .check_acceptance(&features, &targets, &indices)
+        .expect("candidate admitted before conversion");
+    let candidate_predictor = candidate.into_predictor();
+    {
+        let checked = CheckedLinearRegression::new(&candidate_predictor);
+        let mut executor = StreamingExecutor::new(&checked, 0.0f32);
+        for (index, row) in features.iter().enumerate() {
+            let direct = candidate_predictor.predict_checked(row).unwrap();
+            let streamed = *executor
+                .process_one(&observation(row.as_slice()))
+                .expect("candidate executor verification");
+            assert_bits_eq(direct, streamed);
+            assert_bits_eq(direct, targets[index]);
+        }
+    }
+
+    assert_bits_eq(
+        active
+            .as_ref()
+            .unwrap()
+            .predict_checked(&active_row)
+            .unwrap(),
+        old_active_prediction,
+    );
+    active = Some(candidate_predictor);
+    let installed = active.as_ref().expect("explicitly installed candidate");
+    assert_bits_eq(installed.predict_checked(&active_row).unwrap(), 7.0);
 }

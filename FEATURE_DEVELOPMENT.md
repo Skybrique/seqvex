@@ -463,6 +463,14 @@ If any error/failure case or policy is unresolved, report it to the maintainer b
 
 The Architect defines the learning, numerical/error and recovery contracts; the Planner includes the end-to-end data/training/inference evidence and user examples. The Coder implements only the accepted design and plan. Independent review verifies that training actually occurs, outputs use learned parameters and failures are reported without fabricated/default predictions. Existing incomplete components remain incomplete until the requirements are met.
 
+Use the [mandatory model-training contract](docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory) checklist when preparing or reviewing the separate design and plan:
+
+- [ ] Map A, B and strict Compact across the declared precision boundaries, conversions, persistence and actual implementation evidence; identify prospective completion gaps without rewriting accepted history.
+- [ ] Check the learning equations and learning/inference delivery matrix, method applicability, order, labels and preprocessing; verify any variant has the required design, independent verification and approval.
+- [ ] Check complete resumable state, failures, committed progress and validation against the approved design revision and implementation tasks.
+- [ ] Keep callable fit/refit separate from automatic scheduling; retain the four deferrals and optional serving-version boundary.
+- [ ] Reconcile required tests with specified expected outcomes and actual revision-linked results; leave readiness blocked for missing, failed, deferred, not-run or unverified required checks.
+
 Documentation is part of the feature, not an afterthought. Each model `README.md` should eventually answer:
 
 1. What the algorithm is.

@@ -54,7 +54,7 @@
 //! `Rls::predict` also computes `wᵀx` without an output-finiteness check; each
 //! model documents its own envelope rather than sharing a rule or abstraction.
 
-use crate::foundation::numerical::{DimensionMismatch, Vector};
+use crate::foundation::numerical::{DimensionMismatch, Vector, Vector64};
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
 
@@ -320,6 +320,175 @@ impl StateModel for CheckedLinearRegression<'_> {
         _state: &f32,
         observation: &Observation<Vector>,
     ) -> Result<f32, RegressionError> {
+        self.inner.predict_checked(observation.value())
+    }
+}
+
+pub(super) fn predict_borrowed64(
+    weights: &Vector64,
+    bias: f64,
+    features: &Vector64,
+) -> Result<f64, RegressionError> {
+    if features.len() != weights.len() {
+        return Err(RegressionError::DimensionMismatch {
+            expected: weights.len(),
+            actual: features.len(),
+        });
+    }
+    if !features.as_slice().iter().all(|value| value.is_finite()) {
+        return Err(RegressionError::NonFiniteInput);
+    }
+    Ok(weights.dot(features)? + bias)
+}
+
+pub(super) fn predict_checked_borrowed64(
+    weights: &Vector64,
+    bias: f64,
+    features: &Vector64,
+) -> Result<f64, RegressionError> {
+    let value = predict_borrowed64(weights, bias, features)?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(RegressionError::NonFiniteOutput { observation: None })
+    }
+}
+
+/// An immutable native-`f64` linear model `ŷ = w · x + b`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinearRegression64 {
+    weights: Vector64,
+    bias: f64,
+}
+
+impl LinearRegression64 {
+    /// Builds a model from `weights` and `bias`, rejecting an empty weight
+    /// vector or non-finite parameters.
+    pub fn new(weights: Vector64, bias: f64) -> Result<Self, RegressionError> {
+        if weights.is_empty() {
+            return Err(RegressionError::ZeroDimension);
+        }
+        if !bias.is_finite() || !weights.as_slice().iter().all(|value| value.is_finite()) {
+            return Err(RegressionError::NonFiniteParameter);
+        }
+        Ok(Self { weights, bias })
+    }
+
+    /// The model weights.
+    pub fn weights(&self) -> &Vector64 {
+        &self.weights
+    }
+
+    /// The model bias.
+    pub fn bias(&self) -> f64 {
+        self.bias
+    }
+
+    /// Reference native-`f64` prediction `ŷ = w · x + b`.
+    ///
+    /// The dot product accumulates in weight order. The feature dimension is
+    /// validated first, then feature finiteness; the output is not inspected.
+    pub fn predict(&self, features: &Vector64) -> Result<f64, RegressionError> {
+        predict_borrowed64(&self.weights, self.bias, features)
+    }
+
+    /// Checked prediction: rejects a non-finite output without changing the
+    /// finite-result arithmetic or bits.
+    pub fn predict_checked(&self, features: &Vector64) -> Result<f64, RegressionError> {
+        predict_checked_borrowed64(&self.weights, self.bias, features)
+    }
+
+    /// Bounded group prediction over independent observations, in input order.
+    pub fn predict_batch(
+        &self,
+        batch: &[Observation<Vector64>],
+    ) -> Result<Vec<f64>, RegressionError> {
+        batch
+            .iter()
+            .map(|observation| self.predict(observation.value()))
+            .collect()
+    }
+
+    /// Checked bounded group prediction.
+    ///
+    /// Observations are processed in supplied order; the first failure is
+    /// returned without a partial output vector. A non-finite output reports
+    /// its zero-based group position. Empty groups succeed empty.
+    pub fn predict_batch_checked(
+        &self,
+        batch: &[Observation<Vector64>],
+    ) -> Result<Vec<f64>, RegressionError> {
+        let mut outputs = Vec::with_capacity(batch.len());
+        for (index, observation) in batch.iter().enumerate() {
+            let value = self.predict(observation.value())?;
+            if !value.is_finite() {
+                return Err(RegressionError::NonFiniteOutput {
+                    observation: Some(index),
+                });
+            }
+            outputs.push(value);
+        }
+        Ok(outputs)
+    }
+}
+
+impl StateModel for LinearRegression64 {
+    /// The most recent prediction.
+    type State = f64;
+    type Observation = Observation<Vector64>;
+    type Error = RegressionError;
+
+    fn update(
+        &self,
+        _state: &f64,
+        observation: &Observation<Vector64>,
+    ) -> Result<f64, RegressionError> {
+        self.predict(observation.value())
+    }
+}
+
+/// A checked, borrowing view over an immutable [`LinearRegression64`].
+#[derive(Debug, Clone)]
+pub struct CheckedLinearRegression64<'a> {
+    inner: &'a LinearRegression64,
+}
+
+impl<'a> CheckedLinearRegression64<'a> {
+    /// Wraps an existing native-`f64` predictor by reference.
+    pub fn new(inner: &'a LinearRegression64) -> Self {
+        Self { inner }
+    }
+
+    /// The wrapped predictor.
+    pub fn predictor(&self) -> &LinearRegression64 {
+        self.inner
+    }
+
+    /// Checked single prediction.
+    pub fn predict_checked(&self, features: &Vector64) -> Result<f64, RegressionError> {
+        self.inner.predict_checked(features)
+    }
+
+    /// Checked grouped prediction.
+    pub fn predict_batch_checked(
+        &self,
+        batch: &[Observation<Vector64>],
+    ) -> Result<Vec<f64>, RegressionError> {
+        self.inner.predict_batch_checked(batch)
+    }
+}
+
+impl StateModel for CheckedLinearRegression64<'_> {
+    /// The most recent checked prediction.
+    type State = f64;
+    type Observation = Observation<Vector64>;
+    type Error = RegressionError;
+
+    fn update(
+        &self,
+        _state: &f64,
+        observation: &Observation<Vector64>,
+    ) -> Result<f64, RegressionError> {
         self.inner.predict_checked(observation.value())
     }
 }

@@ -55,6 +55,10 @@ name = "ols_temporal"
 path = "src/models/linear/ols/tests/ols_temporal.rs"
 
 [[test]]
+name = "ols_profiles"
+path = "src/models/linear/ols/tests/profiles.rs"
+
+[[test]]
 name = "rls"
 path = "src/models/linear/rls/tests/rls.rs"
 
@@ -69,6 +73,10 @@ path = "src/models/linear/ols/examples/predict.rs"
 [[example]]
 name = "fit_salary"
 path = "src/models/linear/ols/examples/fit_salary.rs"
+
+[[example]]
+name = "fit_profiles"
+path = "src/models/linear/ols/examples/fit_profiles.rs"
 
 [[example]]
 name = "rls_learn"

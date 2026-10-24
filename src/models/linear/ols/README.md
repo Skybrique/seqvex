@@ -1,6 +1,6 @@
 # Linear Regression — ordinary least squares
 
-This is the canonical OLS algorithm document. It describes user behavior, mathematical requirements, supported boundaries, issue ownership and evidence. **Current status: the implemented OLS baseline is accepted.** Dense unweighted fitting, rank/conversion checks, diagnostics, artifact v1, checked serving and deliberate refit handover are implemented and independently reviewed. This acceptance concerns the declared baseline; it does not establish suitability for every production workload.
+This is the canonical OLS algorithm document. It describes user behavior, mathematical requirements, supported boundaries, issue ownership and evidence. **Current status: the implemented OLS baseline is accepted.** Dense unweighted fitting, rank/conversion checks, diagnostics, artifact v1, checked serving and deliberate refit handover are implemented and independently reviewed. This acceptance concerns the declared baseline; it does not establish suitability for every production workload. The additive A/B/C precision profiles described in §16 are implemented on top of that baseline and are awaiting independent review; they do not change the accepted legacy behavior.
 
 The initial scope is dense, unweighted ordinary least squares with one scalar numeric response per observation, any supported number of input features and an optional intercept. Serving uses an immutable predictor, with streaming first and caller-bounded micro-batching as the additional execution mode. Periodic refitting and deliberate model acceptance are distinct from incremental learning. Ridge, Lasso, logistic classification with declared regularization support and RLS retain their own contracts. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
@@ -329,7 +329,9 @@ Run the applicable critical architecture review before choices affecting ownersh
 | `src/models/linear/ols/tests/ols_artifact.rs` | Artifact tests; Cargo target `ols_artifact` | #43 |
 | `src/models/linear/ols/tests/checked_serving.rs` | Checked serving/executor tests; Cargo target `ols_checked` | #43; #44 |
 | `src/models/linear/ols/tests/ols_temporal.rs` | Caller-constructed temporal selection tests; Cargo target `ols_temporal` | #45 |
+| `src/models/linear/ols/tests/profiles.rs` | Native-f64, checked serving and strict-f32 evidence; Cargo target `ols_profiles` | #43; numerical support #44 |
 | `src/models/linear/ols/examples/fit_salary.rs` | CSV fit/evaluation/artifact/refit demonstration; Cargo example `fit_salary` | #43 |
+| `src/models/linear/ols/examples/fit_profiles.rs` | Typed in-memory A/B/C training-only fit and held-out MAE/R² demonstration; Cargo example `fit_profiles` | #43; numerical support #44 |
 | `src/models/linear/ols/benches/fit.rs` | Fitting/checked serving/artifact/refit resource evidence; Cargo bench `ols_fit`, `harness = false` | #46 |
 | `src/models/linear/ols/tests/public_contract.rs` | Public-contract integration tests; Cargo target `linear_regression` | #43; numerical support #44 |
 | `src/models/linear/ols/benches/execution.rs` | Prediction benchmark; Cargo target `linear_regression`, `harness = false` | #43 for wiring; #46 for methodology/evidence |
@@ -345,6 +347,28 @@ User examples must ingest training data, execute the actual accepted fitting API
 Evidence names the capability, checked revision, fixture/workload, command/method, result and practical limits. Historical prediction evidence does not establish correctness or performance of an absent fitter. Required mathematical, temporal and resource acceptance stay with their respective owners.
 
 When a mismatch is found: identify the exact contract/evidence gap; revise the affected requirement for review; reconcile its existing issue; obtain the affected Architect design and Planner plan updates; implement and independently verify the accepted correction; update the README's actual behavior and evidence links. Do not create a child for one fixture, rerun or documentation correction. **([#23](https://github.com/Skybrique/seqvex/issues/23), supporting #43–#46)**
+
+## 16. Precision profiles A/B/C
+
+The additive typed profiles preserve the accepted legacy `fit`/`FitResult`/`LinearRegression` path, artifact v1, and `check_acceptance` behavior. They are implemented from the LF-3-r1 design and its approved implementation plan; the package is awaiting independent review and is not a new artifact or persistence format.
+
+| Profile | Fit entry point | Learned result | Serving |
+|---|---|---|---|
+| A: native f64 | `fit_f64(&[Vector64], &[f64], &[usize], &FitConfig64)` | `FitResult64` with `FitDiagnostics64` and f64 weights/intercept | `LinearRegression64` or borrowing `CheckedLinearRegression64` |
+| B: checked f32 serving | Same `fit_f64`/`FitResult64`; no separate learner | `FitResult64::to_serving_f32(&self, UnderflowPolicy)` | Owned existing `LinearRegression`; f64 learner remains available |
+| C: strict f32 | `fit_f32(&[Vector], &[f32], &[usize], &FitConfig32)` | `FitResult32` with `FitDiagnostics32` and f32 weights/intercept | Existing `LinearRegression`/`CheckedLinearRegression` |
+
+A and B share one native-f64 CPQR implementation; C uses a separate native-f32 CPQR path with f32 rank, solver, parameters, prediction and RSS arithmetic. All profiles inspect selected training rows only, preserve the legacy validation precedence and rank policy (with profile-specific unit roundoff), and expose single, streaming and caller-bounded grouped inference. They remain dataset fit/refit APIs: grouping does not imply incremental OLS.
+
+`to_serving_f32` is non-mutating and scans weights in index order, then the intercept when enabled. It rejects non-finite sources, finite-to-infinite overflow, and (by default) nonzero-to-zero underflow; `UnderflowPolicy::AllowLoss` explicitly accepts the zero. Representable subnormals and signed zero are preserved. The returned f32 predictor is independently owned; on conversion or later checked-acceptance failure, the f64 learner and any active predictor remain unchanged. There is no automatic install or fallback.
+
+Run the typed in-memory example with:
+
+```sh
+cargo run --locked --example fit_profiles
+```
+
+`PROFILE_QUALITY_FIXTURE` fits rows `[0,1,2,3,4]` only, predicts held-out rows `[5,6,7]`, and reports finite f64-evaluated MAE/R² for each profile. That evaluation is example-only and is not production C arithmetic; it is not an accuracy threshold, generalization claim or replacement for the independent numerical tests.
 
 ## References
 

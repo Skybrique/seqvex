@@ -20,7 +20,12 @@ pub use artifact::{
 };
 pub use fit::{
     AcceptanceCheckError, AcceptanceCheckReport, AllocationSource, ConversionCause,
-    DEFAULT_MAX_WORKSPACE_BYTES, FitConfig, FitDiagnostics, FitError, FitResult, SelectedField,
-    StoredDiagnostic, UnderflowPolicy, fit,
+    DEFAULT_MAX_WORKSPACE_BYTES, FitConfig, FitConfig32, FitConfig64, FitDiagnostics,
+    FitDiagnostics32, FitDiagnostics64, FitError, FitError32, FitError64, FitResult, FitResult32,
+    FitResult64, SelectedField, ServingConversionError, ServingField, StoredDiagnostic,
+    UnderflowPolicy, fit, fit_f32, fit_f64,
 };
-pub use predict::{CheckedLinearRegression, LinearRegression, RegressionError};
+pub use predict::{
+    CheckedLinearRegression, CheckedLinearRegression64, LinearRegression, LinearRegression64,
+    RegressionError,
+};

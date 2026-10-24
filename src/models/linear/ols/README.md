@@ -1,6 +1,6 @@
 # Linear Regression — ordinary least squares
 
-This is the canonical OLS algorithm document. It describes user behavior, mathematical requirements, supported boundaries, issue ownership and evidence. **Current status: the implemented OLS baseline is accepted.** Dense unweighted fitting, rank/conversion checks, diagnostics, artifact v1, checked serving and deliberate refit handover are implemented and independently reviewed. This acceptance concerns the declared baseline; it does not establish suitability for every production workload. The additive A/B/C precision profiles described in §16 are implemented on top of that baseline and are awaiting independent review; they do not change the accepted legacy behavior.
+This is the canonical OLS algorithm document. It describes user behavior, mathematical requirements, supported boundaries, issue ownership and evidence. **Current status: the implemented OLS baseline is accepted.** Dense unweighted fitting, rank/conversion checks, diagnostics, artifact v1, checked serving and deliberate refit handover are implemented and independently reviewed. This acceptance concerns the declared baseline; it does not establish suitability for every production workload. The additive A/B/C precision profiles described in §16 are implemented on top of that baseline; local design and implementation reviews are complete, and current PR #66 correction/integration verification is pending. They do not change the accepted legacy behavior.
 
 The initial scope is dense, unweighted ordinary least squares with one scalar numeric response per observation, any supported number of input features and an optional intercept. Serving uses an immutable predictor, with streaming first and caller-bounded micro-batching as the additional execution mode. Periodic refitting and deliberate model acceptance are distinct from incremental learning. Ridge, Lasso, logistic classification with declared regularization support and RLS retain their own contracts. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
@@ -350,7 +350,7 @@ When a mismatch is found: identify the exact contract/evidence gap; revise the a
 
 ## 16. Precision profiles A/B/C
 
-The additive typed profiles preserve the accepted legacy `fit`/`FitResult`/`LinearRegression` path, artifact v1, and `check_acceptance` behavior. They are implemented from the LF-3-r1 design and its approved implementation plan; the package is awaiting independent review and is not a new artifact or persistence format.
+The additive typed profiles preserve the accepted legacy `fit`/`FitResult`/`LinearRegression` path, artifact v1, and `check_acceptance` behavior. They are implemented from the LF-3-r1 design and its approved implementation plan; local design and implementation reviews are complete, and current PR #66 correction/integration verification remains pending. This is not a new artifact or persistence format.
 
 | Profile | Fit entry point | Learned result | Serving |
 |---|---|---|---|

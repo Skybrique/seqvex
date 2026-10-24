@@ -64,7 +64,7 @@ fn a_recovers_exact_and_noisy_lines_with_independent_references() {
         &FitConfig64::default(),
     );
     assert!((exact.weights().as_slice()[0] - 2.0).abs() <= 2.0e-12);
-    assert!((exact.intercept() - 1.0).abs() <= 2.0e-12);
+    assert!((exact.intercept() - 1.0).abs() <= 1.0e-12);
     assert!(exact.diagnostics().rss_f64.abs() <= 1.0e-12);
 
     let noisy = fit_a(
@@ -168,6 +168,35 @@ fn a_validation_precedence_and_selected_only_reads() {
         rank_deficient,
         Err(FitError64::RankDeficient { .. })
     ));
+}
+
+#[test]
+fn a_rank_controls_straddle_threshold_and_scaled_full_rank() {
+    let below = fit_f64(
+        &[row64(&[0.0]), row64(&[1.0e-17])],
+        &[0.0, 1.0e-17],
+        &[0, 1],
+        &FitConfig64::default(),
+    );
+    assert!(matches!(below, Err(FitError64::RankDeficient { .. })));
+
+    let above = fit_f64(
+        &[row64(&[0.0]), row64(&[1.0e-14])],
+        &[0.0, 1.0e-14],
+        &[0, 1],
+        &FitConfig64::default(),
+    )
+    .expect("above-threshold fixture is full rank");
+    assert_eq!(above.diagnostics().rank, 2);
+
+    let scaled = fit_f64(
+        &[row64(&[0.0]), row64(&[1.0e-8])],
+        &[1.0, 2.0],
+        &[0, 1],
+        &FitConfig64::default(),
+    )
+    .expect("scaled full-rank control succeeds");
+    assert_eq!(scaled.diagnostics().rank, 2);
 }
 
 #[test]
@@ -290,6 +319,16 @@ fn b_underflow_and_overflow_are_checked_and_preserve_the_learner() {
             field: ServingField::Weight { index: 0 },
         })
     );
+
+    let near_max = f64::from(f32::MAX) * (1.0 + 2.0f64.powi(-26));
+    let learner = one_weight(near_max);
+    let serving = learner
+        .to_serving_f32(UnderflowPolicy::Reject)
+        .expect("finite source rounding to f32::MAX is accepted");
+    assert_eq!(
+        serving.weights().as_slice()[0].to_bits(),
+        f32::MAX.to_bits()
+    );
 }
 
 #[test]
@@ -395,6 +434,45 @@ fn c_recovers_f32_models_and_matches_ordered_rss() {
     );
     assert!((noisy.weights().as_slice()[0] - 0.5).abs() <= 1.0e-5);
     assert!((noisy.intercept() - 7.0 / 6.0).abs() <= 1.0e-5);
+}
+
+#[test]
+fn c_recovers_multifeature_with_ordered_rss() {
+    let features = [
+        row32(&[0.0, 0.0]),
+        row32(&[1.0, 0.0]),
+        row32(&[0.0, 1.0]),
+        row32(&[1.0, 1.0]),
+        row32(&[2.0, 1.0]),
+        row32(&[1.0, 2.0]),
+    ];
+    let targets = [1.0f32, 3.0, -2.0, 0.0, 2.0, -3.0];
+    let result = fit_c(
+        &features,
+        &targets,
+        &[0, 1, 2, 3, 4, 5],
+        &FitConfig32::default(),
+    );
+    let weights = result.weights().as_slice();
+    let bias = result.intercept();
+    assert!((weights[0] - 2.0).abs() <= 1.0e-5);
+    assert!((weights[1] + 3.0).abs() <= 1.0e-5);
+    assert!((bias - 1.0).abs() <= 1.0e-5);
+
+    let mut rss = 0.0f32;
+    for (row, &target) in features.iter().zip(targets.iter()) {
+        let expected = 1.0 + 2.0 * row.as_slice()[0] - 3.0 * row.as_slice()[1];
+        let prediction = weights
+            .iter()
+            .zip(row.as_slice())
+            .map(|(&weight, &feature)| weight * feature)
+            .sum::<f32>()
+            + bias;
+        assert!((prediction - expected).abs() <= 1.0e-5);
+        let residual = prediction - target;
+        rss += residual * residual;
+    }
+    assert_eq!(result.diagnostics().rss_f32.to_bits(), rss.to_bits());
 }
 
 #[test]

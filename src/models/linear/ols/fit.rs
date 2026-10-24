@@ -1837,12 +1837,13 @@ pub fn fit_f64(
     let mut rss_f64 = 0.0f64;
     for &index in train {
         let row = features[index].as_slice();
-        let mut acc = 0.0f64;
-        for (j, &value) in row.iter().enumerate() {
-            acc += value * weights[j];
-        }
-        acc += bias;
-        let residual = acc - targets[index];
+        let prediction = weights
+            .iter()
+            .zip(row)
+            .map(|(&weight, &feature)| weight * feature)
+            .sum::<f64>()
+            + bias;
+        let residual = prediction - targets[index];
         rss_f64 += residual * residual;
     }
     if !rss_f64.is_finite() {
@@ -2100,12 +2101,13 @@ pub fn fit_f32(
     let mut rss_f32 = 0.0f32;
     for &index in train {
         let row = features[index].as_slice();
-        let mut acc = 0.0f32;
-        for (j, &value) in row.iter().enumerate() {
-            acc += value * weights[j];
-        }
-        acc += bias;
-        let residual = acc - targets[index];
+        let prediction = weights
+            .iter()
+            .zip(row)
+            .map(|(&weight, &feature)| weight * feature)
+            .sum::<f32>()
+            + bias;
+        let residual = prediction - targets[index];
         rss_f32 += residual * residual;
     }
     if !rss_f32.is_finite() {

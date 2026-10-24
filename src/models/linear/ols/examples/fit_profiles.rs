@@ -45,6 +45,8 @@ fn report(profile: &str, predictions: &[f64]) {
 }
 
 fn main() {
+    assert!(HELD_OUT.iter().all(|index| !TRAIN.contains(index)));
+
     let a_features: Vec<Vector64> = PROFILE_QUALITY_FIXTURE
         .iter()
         .map(|&value| Vector64::from_slice(&[f64::from(value)]))

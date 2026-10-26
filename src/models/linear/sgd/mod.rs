@@ -37,10 +37,23 @@
 //!
 //! The model accepts every finite positive learning rate. Per-sample damping
 //! (`η‖x‖² < 1`) is an example-level policy, not a model restriction.
+//!
+//! # Precision profiles
+//!
+//! [`Sgd`] remains the strict-`f32` profile. [`Sgd64`] is the native-`f64`
+//! learner; [`Sgd64::to_serving_f32`] produces an independently owned
+//! [`SgdServing32`] snapshot for fixed `f32` inference. A and C use the single
+//! output-validating `predict`; there is no bare/checked pair.
 
 use crate::foundation::numerical::{DimensionMismatch, Vector};
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
+
+mod profiles;
+
+pub use profiles::{
+    Sgd64, SgdError64, SgdSample64, SgdServing32, SgdServingConversionError, SgdState64,
+};
 
 /// Failure classes reported by SGD construction, prediction, or update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

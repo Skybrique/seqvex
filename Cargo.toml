@@ -98,6 +98,10 @@ path = "src/models/linear/sgd/examples/sgd_learn.rs"
 name = "sgd_regression"
 path = "src/models/linear/sgd/examples/sgd_regression.rs"
 
+[[example]]
+name = "sgd_profiles"
+path = "src/models/linear/sgd/examples/sgd_profiles.rs"
+
 [[bench]]
 name = "ols_fit"
 path = "src/models/linear/ols/benches/fit.rs"

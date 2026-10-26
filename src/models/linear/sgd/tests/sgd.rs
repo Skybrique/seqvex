@@ -787,3 +787,1127 @@ fn coupled_fixture_noiseless_meets_objective_criterion() {
 fn coupled_fixture_noisy_meets_objective_criterion() {
     check_coupled_fixture(true);
 }
+
+mod precision_profiles {
+    #![allow(clippy::needless_range_loop)]
+
+    use num_rational::BigRational;
+    use num_traits::Zero;
+
+    use seqvex::execution::streaming::StreamingExecutor;
+    use seqvex::foundation::numerical::{Vector, Vector64};
+    use seqvex::foundation::observation::Observation;
+    use seqvex::foundation::state::{StateModel, process_batch, process_one};
+    use seqvex::models::linear::sgd::{
+        Sgd, Sgd64, SgdError, SgdError64, SgdSample64, SgdServingConversionError, SgdState,
+        SgdState64,
+    };
+
+    use super::{TRAJECTORY_PATTERN, as_f64, bits, rat, sample};
+
+    const TRAJECTORY_PATTERN64: [([f64; 3], f64); 4] = [
+        ([0.5, 0.5, 1.0], 0.25),
+        ([-0.5, 0.5, 1.0], 0.0),
+        ([-0.5, -0.5, 1.0], -0.25),
+        ([0.5, -0.5, 1.0], 0.0),
+    ];
+
+    fn sample64(features: &[f64], target: f64) -> Observation<SgdSample64> {
+        Observation::new(SgdSample64 {
+            features: Vector64::from_slice(features),
+            target,
+        })
+    }
+
+    fn bits64(vector: &Vector64) -> Vec<u64> {
+        vector
+            .as_slice()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect()
+    }
+
+    fn rat64(value: f64) -> BigRational {
+        BigRational::from_float(value).expect("finite fixture")
+    }
+
+    fn reference_update64(eta: f64, w: &[f64], x: &[f64], y: f64) -> Vec<f64> {
+        let dot: f64 = w.iter().zip(x).map(|(w, x)| w * x).sum();
+        let error = y - dot;
+        let scale = eta * error;
+        x.iter().zip(w).map(|(x, w)| w + x * scale).collect()
+    }
+
+    fn reference_update32_sum(eta: f32, w: &[f32], x: &[f32], y: f32) -> Vec<f32> {
+        let dot: f32 = w.iter().zip(x).map(|(w, x)| w * x).sum();
+        let error = y - dot;
+        let scale = eta * error;
+        x.iter().zip(w).map(|(x, w)| w + x * scale).collect()
+    }
+
+    fn run_local_bounded64<const N: usize>(
+        model: &Sgd64,
+        mut state: SgdState64,
+        rows: &[([f64; N], f64)],
+        max_batch: usize,
+    ) -> Result<SgdState64, (usize, SgdState64, SgdError64)> {
+        for (index, (features, target)) in rows.iter().enumerate() {
+            if index >= max_batch {
+                return Ok(state);
+            }
+            match model.update(&state, &sample64(features, *target)) {
+                Ok(next) => state = next,
+                Err(error) => return Err((index, state, error)),
+            }
+        }
+        Ok(state)
+    }
+
+    fn run_local_bounded32<const N: usize>(
+        model: &Sgd,
+        mut state: SgdState,
+        rows: &[([f32; N], f32)],
+        max_batch: usize,
+    ) -> Result<SgdState, (usize, SgdState, SgdError)> {
+        for (index, (features, target)) in rows.iter().enumerate() {
+            if index >= max_batch {
+                return Ok(state);
+            }
+            match model.update(&state, &sample(features, *target)) {
+                Ok(next) => state = next,
+                Err(error) => return Err((index, state, error)),
+            }
+        }
+        Ok(state)
+    }
+
+    struct OrderTrace64 {
+        initial: Vec<u64>,
+        steps: Vec<(u64, Vec<u64>)>,
+    }
+
+    struct OrderTrace32 {
+        initial: Vec<u32>,
+        steps: Vec<(u32, Vec<u32>)>,
+    }
+
+    fn order16_rows64() -> Vec<([f64; 3], f64)> {
+        (0..16)
+            .map(|step| TRAJECTORY_PATTERN64[step % TRAJECTORY_PATTERN64.len()])
+            .collect()
+    }
+
+    fn order16_rows32() -> Vec<([f32; 3], f32)> {
+        (0..16)
+            .map(|step| TRAJECTORY_PATTERN[step % TRAJECTORY_PATTERN.len()])
+            .collect()
+    }
+
+    fn order16_trace64() -> OrderTrace64 {
+        let mut state = vec![0.0f64; 3];
+        let initial = state.iter().map(|value| value.to_bits()).collect();
+        let mut steps = Vec::with_capacity(16);
+        for (x, y) in order16_rows64() {
+            let prediction: f64 = state.iter().zip(x).map(|(w, x)| w * x).sum();
+            state = reference_update64(0.125, &state, &x, y);
+            steps.push((
+                prediction.to_bits(),
+                state.iter().map(|value| value.to_bits()).collect(),
+            ));
+        }
+        OrderTrace64 { initial, steps }
+    }
+
+    fn order16_trace32() -> OrderTrace32 {
+        let mut state = vec![0.0f32; 3];
+        let initial = state.iter().map(|value| value.to_bits()).collect();
+        let mut steps = Vec::with_capacity(16);
+        for (x, y) in order16_rows32() {
+            let prediction: f32 = state.iter().zip(x).map(|(w, x)| w * x).sum();
+            state = reference_update32_sum(0.125, &state, &x, y);
+            steps.push((
+                prediction.to_bits(),
+                state.iter().map(|value| value.to_bits()).collect(),
+            ));
+        }
+        OrderTrace32 { initial, steps }
+    }
+
+    fn expected_boundary64(trace: &OrderTrace64, boundary: usize) -> &[u64] {
+        if boundary == 0 {
+            &trace.initial
+        } else {
+            &trace.steps[boundary - 1].1
+        }
+    }
+
+    fn expected_boundary32(trace: &OrderTrace32, boundary: usize) -> &[u32] {
+        if boundary == 0 {
+            &trace.initial
+        } else {
+            &trace.steps[boundary - 1].1
+        }
+    }
+
+    fn assert_error_traits<T>()
+    where
+        T: std::error::Error + Clone + Copy + PartialEq + Eq + std::fmt::Debug,
+    {
+    }
+
+    #[test]
+    fn a_hand_derived_single_update() {
+        let model = Sgd64::new(1, 0.1).expect("valid configuration");
+        let next = model
+            .update(&model.initial_state(), &sample64(&[2.0], 4.0))
+            .expect("single update");
+        assert_eq!(next.w.as_slice()[0].to_bits(), 0.8f64.to_bits());
+    }
+
+    #[test]
+    fn a_construction_and_error_contract() {
+        assert_eq!(Sgd64::new(0, 0.1).unwrap_err(), SgdError64::ZeroDimension);
+        for rate in [0.0f64, -0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                Sgd64::new(3, rate).unwrap_err(),
+                SgdError64::InvalidLearningRate
+            );
+        }
+        for rate in [f64::MIN_POSITIVE, 1.0e-300, 1.0, 1.0e300] {
+            let model = Sgd64::new(3, rate).expect("finite positive rate");
+            assert_eq!(model.dimension(), 3);
+            assert_eq!(model.learning_rate().to_bits(), rate.to_bits());
+        }
+
+        assert_error_traits::<SgdError64>();
+        assert_error_traits::<SgdServingConversionError>();
+
+        let mismatch = SgdError64::DimensionMismatch {
+            expected: 4,
+            actual: 1,
+        };
+        assert_eq!(
+            mismatch.to_string(),
+            "dimension mismatch: expected 4, got 1"
+        );
+        assert!(std::error::Error::source(&mismatch).is_none());
+
+        let conversion = SgdServingConversionError::Underflow { index: 2 };
+        assert!(conversion.to_string().contains("underflows"));
+        assert!(std::error::Error::source(&conversion).is_none());
+
+        let state = Sgd64::new(2, 0.1)
+            .expect("valid configuration")
+            .initial_state();
+        assert!(state.w.as_slice().iter().all(|value| *value == 0.0));
+    }
+
+    #[test]
+    fn a_order16_every_step_bits_and_rational() {
+        let eta = 0.125f64;
+        let model = Sgd64::new(3, eta).expect("valid configuration");
+        let mut state = model.initial_state();
+        let mut reference = vec![0.0f64; 3];
+        let mut exact = [
+            BigRational::zero(),
+            BigRational::zero(),
+            BigRational::zero(),
+        ];
+        let eta_rat = rat64(eta);
+
+        for step in 0..16 {
+            let (x, y) = TRAJECTORY_PATTERN64[step % TRAJECTORY_PATTERN64.len()];
+
+            let predicted = model
+                .predict(&state, &Vector64::from_slice(&x))
+                .expect("finite prediction");
+            let reference_dot: f64 = reference.iter().zip(x).map(|(w, x)| w * x).sum();
+            assert_eq!(
+                predicted.to_bits(),
+                reference_dot.to_bits(),
+                "step {step}: pre-update prediction must be bitwise"
+            );
+
+            let mut dot = BigRational::zero();
+            for j in 0..3 {
+                dot = &dot + &(&exact[j] * &rat64(x[j]));
+            }
+            let error = &rat64(y) - &dot;
+            let scale = &eta_rat * &error;
+            for j in 0..3 {
+                exact[j] = &exact[j] + &(&scale * &rat64(x[j]));
+            }
+
+            reference = reference_update64(eta, &reference, &x, y);
+            state = model
+                .update(&state, &sample64(&x, y))
+                .expect("ordered update");
+
+            for j in 0..3 {
+                assert_eq!(
+                    state.w.as_slice()[j].to_bits(),
+                    reference[j].to_bits(),
+                    "step {step} component {j}: scalar recurrence must match bitwise"
+                );
+                let actual = state.w.as_slice()[j];
+                let expected = as_f64(&exact[j]);
+                let tolerance = 1e-12 * expected.abs().max(1.0);
+                assert!(
+                    (actual - expected).abs() <= tolerance,
+                    "step {step} component {j}: {actual} vs exact {expected} exceeds {tolerance}"
+                );
+            }
+
+            let norm_sq: f64 = exact.iter().map(|value| as_f64(value).powi(2)).sum();
+            assert!(norm_sq.sqrt() < 0.15, "step {step}: exact norm envelope");
+        }
+    }
+
+    #[test]
+    fn a_reduction_order_and_grouping_controls() {
+        let weights = [18_014_398_509_481_984.0f64, -18_014_398_509_481_984.0, 1.0];
+        let features = [1.0f64, 1.0, 1.0];
+        let model = Sgd64::new(3, 0.1).expect("valid configuration");
+        let state = SgdState64 {
+            w: Vector64::from_slice(&weights),
+        };
+
+        let mut sequential = 0.0f64;
+        for (weight, feature) in weights.iter().zip(features) {
+            sequential += weight * feature;
+        }
+        let mut reverse = 0.0f64;
+        for (weight, feature) in weights.iter().zip(features).rev() {
+            reverse += weight * feature;
+        }
+        assert_ne!(
+            sequential.to_bits(),
+            reverse.to_bits(),
+            "fixture must distinguish f64 reduction order"
+        );
+        let prediction = model
+            .predict(&state, &Vector64::from_slice(&features))
+            .expect("finite prediction");
+        assert_eq!(prediction.to_bits(), sequential.to_bits());
+        assert_ne!(prediction.to_bits(), reverse.to_bits());
+
+        let eta = 0.1f64;
+        let target = 0.3f64;
+        let feature = 0.7f64;
+        let model = Sgd64::new(1, eta).expect("valid configuration");
+        let state = model.initial_state();
+        let approved = (eta * (target - 0.0)) * feature;
+        let alternative = eta * ((target - 0.0) * feature);
+        assert_ne!(
+            approved.to_bits(),
+            alternative.to_bits(),
+            "fixture must distinguish f64 multiplication grouping"
+        );
+        let next = model
+            .update(&state, &sample64(&[feature], target))
+            .expect("update");
+        assert_eq!(next.w.as_slice()[0].to_bits(), approved.to_bits());
+    }
+
+    #[test]
+    fn c_order16_every_step_bits_and_rational() {
+        let eta = 0.125f32;
+        let model = Sgd::new(3, eta).expect("valid configuration");
+        let mut state = model.initial_state();
+        let mut reference = vec![0.0f32; 3];
+        let mut exact = [
+            BigRational::zero(),
+            BigRational::zero(),
+            BigRational::zero(),
+        ];
+        let eta_rat = rat(eta);
+
+        for step in 0..16 {
+            let (x, y) = TRAJECTORY_PATTERN[step % TRAJECTORY_PATTERN.len()];
+
+            let predicted = model
+                .predict(&state, &Vector::from_slice(&x))
+                .expect("finite prediction");
+            let reference_dot: f32 = reference.iter().zip(x).map(|(w, x)| w * x).sum();
+            assert_eq!(
+                predicted.to_bits(),
+                reference_dot.to_bits(),
+                "step {step}: pre-update prediction must be bitwise"
+            );
+
+            let mut dot = BigRational::zero();
+            for j in 0..3 {
+                dot = &dot + &(&exact[j] * &rat(x[j]));
+            }
+            let error = &rat(y) - &dot;
+            let scale = &eta_rat * &error;
+            for j in 0..3 {
+                exact[j] = &exact[j] + &(&scale * &rat(x[j]));
+            }
+
+            reference = reference_update32_sum(eta, &reference, &x, y);
+            state = model
+                .update(&state, &sample(&x, y))
+                .expect("ordered update");
+
+            for j in 0..3 {
+                assert_eq!(
+                    state.w.as_slice()[j].to_bits(),
+                    reference[j].to_bits(),
+                    "step {step} component {j}: scalar recurrence must match bitwise"
+                );
+                let actual = f64::from(state.w.as_slice()[j]);
+                let expected = as_f64(&exact[j]);
+                let tolerance = 1e-6 * expected.abs().max(1.0);
+                assert!(
+                    (actual - expected).abs() <= tolerance,
+                    "step {step} component {j}: {actual} vs exact {expected} exceeds {tolerance}"
+                );
+            }
+
+            let norm_sq: f64 = exact.iter().map(|value| as_f64(value).powi(2)).sum();
+            assert!(norm_sq.sqrt() < 0.15, "step {step}: exact norm envelope");
+        }
+    }
+
+    #[test]
+    fn native_f64_discriminator_and_b_snapshot() {
+        let model = Sgd64::new(1, 1.0).expect("valid configuration");
+        let mut state = model.initial_state();
+        state = model
+            .update(&state, &sample64(&[1.0], 0.0))
+            .expect("warm-up");
+        state = model
+            .update(&state, &sample64(&[1.0 + 2f64.powi(-24)], 2f64.powi(24)))
+            .expect("native f64 update");
+        assert_eq!(state.w.as_slice()[0].to_bits(), 16_777_217.0f64.to_bits());
+
+        let f32_model = Sgd::new(1, 1.0).expect("valid configuration");
+        let mut f32_state = f32_model.initial_state();
+        f32_state = f32_model
+            .update(&f32_state, &sample(&[1.0], 0.0))
+            .expect("warm-up");
+        f32_state = f32_model
+            .update(&f32_state, &sample(&[1.0], 2f32.powi(24)))
+            .expect("f32 update");
+        assert_eq!(
+            f32_state.w.as_slice()[0].to_bits(),
+            16_777_216.0f32.to_bits()
+        );
+        assert!(
+            (state.w.as_slice()[0] - f64::from(f32_state.w.as_slice()[0])).abs() > 0.5,
+            "native f64 must differ from the f32-quantized trajectory"
+        );
+
+        let snapshot = model.to_serving_f32(&state).expect("serving snapshot");
+        assert_eq!(
+            snapshot.weights().as_slice()[0].to_bits(),
+            16_777_216.0f32.to_bits()
+        );
+    }
+
+    #[test]
+    fn conversion_exact_bits_ties_and_special_values() {
+        let model = Sgd64::new(4, 0.1).expect("valid configuration");
+        let state = SgdState64 {
+            w: Vector64::from_slice(&[1.0, -2.0, 1.0 + 2f64.powi(-24), 1.0 + 3.0 * 2f64.powi(-24)]),
+        };
+        let snapshot = model.to_serving_f32(&state).expect("serving snapshot");
+        let expected = [1.0f32, -2.0, 1.0, 1.0 + 2f32.powi(-22)];
+        for (actual, expected) in snapshot.weights().as_slice().iter().zip(expected) {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+
+        let model = Sgd64::new(4, 0.1).expect("valid configuration");
+        let state = SgdState64 {
+            w: Vector64::from_slice(&[f32::MAX as f64, f32::from_bits(1) as f64, -0.0, 0.0]),
+        };
+        let snapshot = model.to_serving_f32(&state).expect("special values");
+        assert_eq!(
+            snapshot.weights().as_slice()[0].to_bits(),
+            f32::MAX.to_bits()
+        );
+        assert_eq!(snapshot.weights().as_slice()[1].to_bits(), 1);
+        assert_eq!(
+            snapshot.weights().as_slice()[2].to_bits(),
+            (-0.0f32).to_bits()
+        );
+        assert_eq!(snapshot.weights().as_slice()[3].to_bits(), 0.0f32.to_bits());
+
+        let model = Sgd64::new(1, 0.1).expect("valid configuration");
+        let underflow = SgdState64 {
+            w: Vector64::from_slice(&[2f64.powi(-200)]),
+        };
+        assert_eq!(
+            model.to_serving_f32(&underflow).unwrap_err(),
+            SgdServingConversionError::Underflow { index: 0 }
+        );
+    }
+
+    #[test]
+    fn conversion_dimension_overflow_nonfinite_and_preservation() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let source = SgdState64 {
+            w: Vector64::from_slice(&[f64::NAN]),
+        };
+        let source_bits = bits64(&source.w);
+        assert_eq!(
+            model.to_serving_f32(&source).unwrap_err(),
+            SgdServingConversionError::StateDimensionMismatch {
+                expected: 2,
+                actual: 1
+            }
+        );
+        assert_eq!(bits64(&source.w), source_bits);
+
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let source = SgdState64 {
+            w: Vector64::from_slice(&[f64::NAN, 1.0]),
+        };
+        assert_eq!(
+            model.to_serving_f32(&source).unwrap_err(),
+            SgdServingConversionError::SourceNonFinite { index: 0 }
+        );
+        let source = SgdState64 {
+            w: Vector64::from_slice(&[1.0, f64::INFINITY]),
+        };
+        assert_eq!(
+            model.to_serving_f32(&source).unwrap_err(),
+            SgdServingConversionError::SourceNonFinite { index: 1 }
+        );
+
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let source = SgdState64 {
+            w: Vector64::from_slice(&[f32::MAX as f64, f64::MAX]),
+        };
+        let source_bits = bits64(&source.w);
+        assert_eq!(
+            model.to_serving_f32(&source).unwrap_err(),
+            SgdServingConversionError::Overflow { index: 1 }
+        );
+        assert_eq!(bits64(&source.w), source_bits);
+
+        let model = Sgd64::new(1, 0.1).expect("valid configuration");
+        let active = model
+            .to_serving_f32(&SgdState64 {
+                w: Vector64::from_slice(&[1.0]),
+            })
+            .expect("active snapshot");
+        let active_bits = bits(active.weights());
+        let failed = model.to_serving_f32(&SgdState64 {
+            w: Vector64::from_slice(&[f64::MAX]),
+        });
+        assert_eq!(
+            failed.unwrap_err(),
+            SgdServingConversionError::Overflow { index: 0 }
+        );
+        assert_eq!(bits(active.weights()), active_bits);
+    }
+
+    #[test]
+    fn continued_learning_and_serving_replacement() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let mut s0 = model
+            .update(&model.initial_state(), &sample64(&[1.0, -0.5], 0.5))
+            .expect("learned state");
+        let b0 = model.to_serving_f32(&s0).expect("snapshot B0");
+        let b0_bits = bits(b0.weights());
+        let b0_prediction = b0
+            .predict(&Vector::from_slice(&[0.5, -0.5]))
+            .expect("B0 prediction")
+            .to_bits();
+
+        let expected_s1 = reference_update64(0.1, s0.w.as_slice(), &[0.25, 1.0], -0.25);
+        s0 = model
+            .update(&s0, &sample64(&[0.25, 1.0], -0.25))
+            .expect("continued learning");
+        assert_eq!(bits(b0.weights()), b0_bits, "B0 must remain immutable");
+        let s1 = s0;
+        assert_eq!(
+            bits64(&s1.w),
+            expected_s1.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+        let b1 = model.to_serving_f32(&s1).expect("snapshot B1");
+        assert_ne!(bits(b1.weights()), b0_bits);
+        assert_eq!(
+            b0.predict(&Vector::from_slice(&[0.5, -0.5]))
+                .expect("B0 prediction")
+                .to_bits(),
+            b0_prediction
+        );
+
+        let other_model = Sgd64::new(3, 0.1).expect("valid configuration");
+        let s1_bits = bits64(&s1.w);
+        assert_eq!(
+            other_model.to_serving_f32(&s1).unwrap_err(),
+            SgdServingConversionError::StateDimensionMismatch {
+                expected: 3,
+                actual: 2
+            }
+        );
+        assert_eq!(bits64(&s1.w), s1_bits);
+        assert_eq!(bits(b0.weights()), b0_bits);
+
+        let candidate_model = Sgd64::new(1, 0.1).expect("valid configuration");
+        let candidate = candidate_model
+            .to_serving_f32(&SgdState64 {
+                w: Vector64::from_slice(&[f32::MAX as f64]),
+            })
+            .expect("candidate snapshot");
+        assert_eq!(
+            candidate.predict(&Vector::from_slice(&[2.0])).unwrap_err(),
+            SgdError::NonFiniteOutput
+        );
+        assert_eq!(
+            bits(b0.weights()),
+            b0_bits,
+            "failed replacement preserves active"
+        );
+    }
+
+    #[test]
+    fn learned_state_failures_preserve_and_continue() {
+        let model = Sgd64::new(1, 1.0e308).expect("valid configuration");
+        let learned = model
+            .update(&model.initial_state(), &sample64(&[1.0], 1.0))
+            .expect("learned finite state");
+        let learned_bits = bits64(&learned.w);
+        assert_eq!(
+            model
+                .update(&learned, &sample64(&[1.0e308], 1.0e308))
+                .unwrap_err(),
+            SgdError64::NonFiniteCandidate
+        );
+        assert_eq!(bits64(&learned.w), learned_bits);
+        let next = model
+            .update(&learned, &sample64(&[0.0], 1.0))
+            .expect("valid continuation");
+        let expected = reference_update64(1.0e308, learned.w.as_slice(), &[0.0], 1.0);
+        assert_eq!(
+            bits64(&next.w),
+            expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+
+        let model = Sgd::new(1, 1.0e38).expect("valid configuration");
+        let learned = model
+            .update(&model.initial_state(), &sample(&[1.0], 1.0))
+            .expect("learned finite state");
+        let learned_bits = bits(&learned.w);
+        assert_eq!(
+            model
+                .update(&learned, &sample(&[3.0e38], 3.0e38))
+                .unwrap_err(),
+            SgdError::NonFiniteCandidate
+        );
+        assert_eq!(bits(&learned.w), learned_bits);
+        let next = model
+            .update(&learned, &sample(&[0.0], 1.0))
+            .expect("valid continuation");
+        let expected = reference_update32_sum(1.0e38, learned.w.as_slice(), &[0.0], 1.0);
+        assert_eq!(
+            bits(&next.w),
+            expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+
+        let model64 = Sgd64::new(2, 0.1).expect("valid configuration");
+        let learned = model64
+            .update(&model64.initial_state(), &sample64(&[1.0, -1.0], 0.5))
+            .expect("learned state");
+        let learned_bits = bits64(&learned.w);
+        assert_eq!(
+            model64
+                .predict(&learned, &Vector64::from_slice(&[1.0]))
+                .unwrap_err(),
+            SgdError64::DimensionMismatch {
+                expected: 2,
+                actual: 1
+            }
+        );
+        assert_eq!(
+            model64
+                .predict(&learned, &Vector64::from_slice(&[f64::NAN, 0.0]))
+                .unwrap_err(),
+            SgdError64::NonFiniteInput
+        );
+        let short = SgdState64 {
+            w: Vector64::zeros(1),
+        };
+        assert_eq!(
+            model64
+                .update(&short, &sample64(&[1.0, 0.0], 0.0))
+                .unwrap_err(),
+            SgdError64::DimensionMismatch {
+                expected: 2,
+                actual: 1
+            }
+        );
+        assert_eq!(
+            model64
+                .update(&learned, &sample64(&[1.0, 0.0], f64::INFINITY))
+                .unwrap_err(),
+            SgdError64::NonFiniteInput
+        );
+        assert_eq!(
+            model64
+                .update(&learned, &sample64(&[f64::NAN, 0.0], 0.5))
+                .unwrap_err(),
+            SgdError64::NonFiniteInput
+        );
+        assert_eq!(bits64(&learned.w), learned_bits);
+        let continued = model64
+            .update(&learned, &sample64(&[0.5, 1.0], 0.0))
+            .expect("valid continuation after failures");
+        let expected = reference_update64(0.1, learned.w.as_slice(), &[0.5, 1.0], 0.0);
+        assert_eq!(
+            bits64(&continued.w),
+            expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+
+        let model32 = Sgd::new(2, 0.1).expect("valid configuration");
+        let learned32 = model32
+            .update(&model32.initial_state(), &sample(&[1.0, -1.0], 0.5))
+            .expect("learned state");
+        let learned32_bits = bits(&learned32.w);
+        assert_eq!(
+            model32
+                .predict(&learned32, &Vector::from_slice(&[1.0]))
+                .unwrap_err(),
+            SgdError::DimensionMismatch {
+                expected: 2,
+                actual: 1
+            }
+        );
+        assert_eq!(
+            model32
+                .update(&learned32, &sample(&[1.0, 0.0], f32::INFINITY))
+                .unwrap_err(),
+            SgdError::NonFiniteInput
+        );
+        assert_eq!(
+            model32
+                .update(&learned32, &sample(&[f32::NAN, 0.0], 0.5))
+                .unwrap_err(),
+            SgdError::NonFiniteInput
+        );
+        // Deliberately constructed wrong-dimension state; the learned state above
+        // is checked separately for feature/target failures and continuation.
+        let short32 = SgdState {
+            w: Vector::zeros(1),
+        };
+        assert_eq!(
+            model32
+                .update(&short32, &sample(&[1.0, 0.0], 0.0))
+                .unwrap_err(),
+            SgdError::DimensionMismatch {
+                expected: 2,
+                actual: 1
+            }
+        );
+        assert_eq!(bits(&learned32.w), learned32_bits);
+        let continued32 = model32
+            .update(&learned32, &sample(&[0.5, 1.0], 0.0))
+            .expect("valid continuation after failures");
+        let expected32 = reference_update32_sum(0.1, learned32.w.as_slice(), &[0.5, 1.0], 0.0);
+        assert_eq!(
+            bits(&continued32.w),
+            expected32.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_output_and_precedence_failures_preserve_state() {
+        let model = Sgd64::new(1, 0.1).expect("valid configuration");
+        // Deliberately constructed extreme state for the output-overflow boundary;
+        // it is not a learned state.
+        let extreme = SgdState64 {
+            w: Vector64::from_slice(&[f64::MAX]),
+        };
+        let extreme_bits = bits64(&extreme.w);
+        assert_eq!(
+            model
+                .predict(&extreme, &Vector64::from_slice(&[2.0]))
+                .unwrap_err(),
+            SgdError64::NonFiniteOutput
+        );
+        assert_eq!(bits64(&extreme.w), extreme_bits);
+
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let state = model.initial_state();
+        let state_bits = bits64(&state.w);
+        assert_eq!(
+            model
+                .predict(&state, &Vector64::from_slice(&[f64::NAN]))
+                .unwrap_err(),
+            SgdError64::DimensionMismatch {
+                expected: 2,
+                actual: 1
+            }
+        );
+        assert_eq!(bits64(&state.w), state_bits);
+
+        let snapshot = model.to_serving_f32(&state).expect("snapshot");
+        let snapshot_bits = bits(snapshot.weights());
+        assert_eq!(
+            snapshot
+                .predict(&Vector::from_slice(&[f32::NAN]))
+                .unwrap_err(),
+            SgdError::DimensionMismatch {
+                expected: 2,
+                actual: 1
+            }
+        );
+        assert_eq!(bits(snapshot.weights()), snapshot_bits);
+    }
+
+    #[test]
+    fn a_execution_equivalence_and_prefix() {
+        let model = Sgd64::new(3, 0.125).expect("valid configuration");
+        let rows = order16_rows64();
+        let trace = order16_trace64();
+
+        let initial = model.initial_state();
+        assert_eq!(bits64(&initial.w), trace.initial);
+
+        let mut direct = model.initial_state();
+        for (step, (x, y)) in rows.iter().enumerate() {
+            let prediction = model
+                .predict(&direct, &Vector64::from_slice(x))
+                .expect("direct prediction");
+            assert_eq!(
+                prediction.to_bits(),
+                trace.steps[step].0,
+                "direct step {step} incoming prediction"
+            );
+            direct = model
+                .update(&direct, &sample64(x, *y))
+                .expect("direct update");
+            assert_eq!(
+                bits64(&direct.w),
+                trace.steps[step].1,
+                "direct step {step} state"
+            );
+        }
+
+        let mut single = model.initial_state();
+        for (step, (x, y)) in rows.iter().enumerate() {
+            let prediction = model
+                .predict(&single, &Vector64::from_slice(x))
+                .expect("process_one prediction");
+            assert_eq!(prediction.to_bits(), trace.steps[step].0);
+            single = process_one(&model, &single, &sample64(x, *y)).expect("process_one");
+            assert_eq!(bits64(&single.w), trace.steps[step].1);
+        }
+
+        let mut executor = StreamingExecutor::new(&model, model.initial_state());
+        for (step, (x, y)) in rows.iter().enumerate() {
+            let prediction = model
+                .predict(executor.state(), &Vector64::from_slice(x))
+                .expect("executor prediction");
+            assert_eq!(prediction.to_bits(), trace.steps[step].0);
+            executor
+                .process_one(&sample64(x, *y))
+                .expect("executor update");
+            assert_eq!(bits64(&executor.state().w), trace.steps[step].1);
+        }
+
+        let observations: Vec<_> = rows.iter().map(|(x, y)| sample64(x, *y)).collect();
+        let batch = process_batch(&model, model.initial_state(), observations).expect("batch");
+        assert_eq!(bits64(&batch.w), trace.steps[15].1);
+
+        let boundaries = [0usize, 3, 3, 6, 9, 12, 15, 16];
+        let mut chunked = model.initial_state();
+        for pair in boundaries.windows(2) {
+            let (start, end) = (pair[0], pair[1]);
+            let observations: Vec<_> = rows[start..end]
+                .iter()
+                .map(|(x, y)| sample64(x, *y))
+                .collect();
+            chunked = process_batch(&model, chunked, observations).expect("chunk boundary");
+            assert_eq!(
+                bits64(&chunked.w),
+                expected_boundary64(&trace, end),
+                "chunk boundary {end}"
+            );
+        }
+
+        let bounded = run_local_bounded64(&model, model.initial_state(), &rows, 7)
+            .expect("local bounded success");
+        assert_eq!(bits64(&bounded.w), trace.steps[6].1);
+
+        let mut failure_rows = rows.clone();
+        failure_rows[5].1 = f64::NAN;
+        let (index, prefix_state, error) =
+            run_local_bounded64(&model, model.initial_state(), &failure_rows, 16)
+                .expect_err("local bounded failure");
+        assert_eq!(index, 5);
+        assert_eq!(bits64(&prefix_state.w), expected_boundary64(&trace, 5));
+        assert_eq!(error, SgdError64::NonFiniteInput);
+
+        let failure_obs: Vec<_> = rows[..5]
+            .iter()
+            .map(|(x, y)| sample64(x, *y))
+            .chain(std::iter::once(sample64(&rows[5].0, f64::NAN)))
+            .collect();
+        let prefix = process_batch(&model, model.initial_state(), failure_obs)
+            .expect_err("batch prefix failure");
+        assert_eq!(bits64(&prefix.state.w), expected_boundary64(&trace, 5));
+        assert_eq!(prefix.error, SgdError64::NonFiniteInput);
+
+        let mut errors = 0usize;
+        let mut executor = StreamingExecutor::new(&model, model.initial_state());
+        let stream_state = executor
+            .process_stream(
+                vec![
+                    sample64(&rows[0].0, rows[0].1),
+                    sample64(&[0.0, 0.0, 0.0], f64::NAN),
+                    sample64(&rows[2].0, rows[2].1),
+                ],
+                |_| errors += 1,
+            )
+            .clone();
+        assert_eq!(errors, 1);
+        let expected_stream = reference_update64(
+            0.125,
+            &reference_update64(0.125, &[0.0; 3], &rows[0].0, rows[0].1),
+            &rows[2].0,
+            rows[2].1,
+        );
+        assert_eq!(
+            bits64(&stream_state.w),
+            expected_stream
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn c_execution_equivalence() {
+        let model = Sgd::new(3, 0.125).expect("valid configuration");
+        let rows = order16_rows32();
+        let trace = order16_trace32();
+
+        let initial = model.initial_state();
+        assert_eq!(bits(&initial.w), trace.initial);
+
+        let mut direct = model.initial_state();
+        for (step, (x, y)) in rows.iter().enumerate() {
+            let prediction = model
+                .predict(&direct, &Vector::from_slice(x))
+                .expect("direct prediction");
+            assert_eq!(
+                prediction.to_bits(),
+                trace.steps[step].0,
+                "direct step {step} incoming prediction"
+            );
+            direct = model
+                .update(&direct, &sample(x, *y))
+                .expect("direct update");
+            assert_eq!(
+                bits(&direct.w),
+                trace.steps[step].1,
+                "direct step {step} state"
+            );
+        }
+
+        let mut single = model.initial_state();
+        for (step, (x, y)) in rows.iter().enumerate() {
+            let prediction = model
+                .predict(&single, &Vector::from_slice(x))
+                .expect("process_one prediction");
+            assert_eq!(prediction.to_bits(), trace.steps[step].0);
+            single = process_one(&model, &single, &sample(x, *y)).expect("process_one");
+            assert_eq!(bits(&single.w), trace.steps[step].1);
+        }
+
+        let mut executor = StreamingExecutor::new(&model, model.initial_state());
+        for (step, (x, y)) in rows.iter().enumerate() {
+            let prediction = model
+                .predict(executor.state(), &Vector::from_slice(x))
+                .expect("executor prediction");
+            assert_eq!(prediction.to_bits(), trace.steps[step].0);
+            executor
+                .process_one(&sample(x, *y))
+                .expect("executor update");
+            assert_eq!(bits(&executor.state().w), trace.steps[step].1);
+        }
+
+        let observations: Vec<_> = rows.iter().map(|(x, y)| sample(x, *y)).collect();
+        let batch = process_batch(&model, model.initial_state(), observations).expect("batch");
+        assert_eq!(bits(&batch.w), trace.steps[15].1);
+
+        let boundaries = [0usize, 3, 3, 6, 9, 12, 15, 16];
+        let mut chunked = model.initial_state();
+        for pair in boundaries.windows(2) {
+            let (start, end) = (pair[0], pair[1]);
+            let observations: Vec<_> = rows[start..end]
+                .iter()
+                .map(|(x, y)| sample(x, *y))
+                .collect();
+            chunked = process_batch(&model, chunked, observations).expect("chunk boundary");
+            assert_eq!(
+                bits(&chunked.w),
+                expected_boundary32(&trace, end),
+                "chunk boundary {end}"
+            );
+        }
+
+        let bounded = run_local_bounded32(&model, model.initial_state(), &rows, 7)
+            .expect("local bounded success");
+        assert_eq!(bits(&bounded.w), trace.steps[6].1);
+
+        let mut failure_rows = rows.clone();
+        failure_rows[5].1 = f32::NAN;
+        let (index, prefix_state, error) =
+            run_local_bounded32(&model, model.initial_state(), &failure_rows, 16)
+                .expect_err("local bounded failure");
+        assert_eq!(index, 5);
+        assert_eq!(bits(&prefix_state.w), expected_boundary32(&trace, 5));
+        assert_eq!(error, SgdError::NonFiniteInput);
+
+        let failure_obs: Vec<_> = rows[..5]
+            .iter()
+            .map(|(x, y)| sample(x, *y))
+            .chain(std::iter::once(sample(&rows[5].0, f32::NAN)))
+            .collect();
+        let prefix = process_batch(&model, model.initial_state(), failure_obs)
+            .expect_err("batch prefix failure");
+        assert_eq!(bits(&prefix.state.w), expected_boundary32(&trace, 5));
+        assert_eq!(prefix.error, SgdError::NonFiniteInput);
+
+        let mut errors = 0usize;
+        let mut executor = StreamingExecutor::new(&model, model.initial_state());
+        let stream_state = executor
+            .process_stream(
+                vec![
+                    sample(&rows[0].0, rows[0].1),
+                    sample(&[0.0, 0.0, 0.0], f32::NAN),
+                    sample(&rows[2].0, rows[2].1),
+                ],
+                |_| errors += 1,
+            )
+            .clone();
+        assert_eq!(errors, 1);
+        let expected_stream = reference_update32_sum(
+            0.125,
+            &reference_update32_sum(0.125, &[0.0; 3], &rows[0].0, rows[0].1),
+            &rows[2].0,
+            rows[2].1,
+        );
+        assert_eq!(
+            bits(&stream_state.w),
+            expected_stream
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_order_and_fixed_inference() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let a = ([1.0f64, 1.0], 1.0f64);
+        let b = ([2.0f64, -1.0], -1.0f64);
+
+        let ab = model
+            .update(
+                &model
+                    .update(&model.initial_state(), &sample64(&a.0, a.1))
+                    .expect("a"),
+                &sample64(&b.0, b.1),
+            )
+            .expect("b");
+        let ba = model
+            .update(
+                &model
+                    .update(&model.initial_state(), &sample64(&b.0, b.1))
+                    .expect("b"),
+                &sample64(&a.0, a.1),
+            )
+            .expect("a");
+        assert_ne!(bits64(&ab.w), bits64(&ba.w));
+
+        let repeat = model
+            .update(
+                &model
+                    .update(&model.initial_state(), &sample64(&a.0, a.1))
+                    .expect("a"),
+                &sample64(&b.0, b.1),
+            )
+            .expect("b");
+        assert_eq!(bits64(&ab.w), bits64(&repeat.w));
+
+        let features = Vector64::from_slice(&[0.5, -0.5]);
+        let state_bits = bits64(&ab.w);
+        let first = model.predict(&ab, &features).expect("prediction");
+        let second = model.predict(&ab, &features).expect("prediction");
+        assert_eq!(first.to_bits(), second.to_bits());
+        assert_eq!(bits64(&ab.w), state_bits);
+    }
+
+    #[test]
+    fn a_stream_isolation() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let mut first = model.initial_state();
+        let mut second = model.initial_state();
+
+        let second_bits = bits64(&second.w);
+        first = model
+            .update(&first, &sample64(&[1.0, -1.0], 0.5))
+            .expect("first stream update");
+        assert_eq!(bits64(&second.w), second_bits);
+
+        let first_bits = bits64(&first.w);
+        second = model
+            .update(&second, &sample64(&[1.0, 1.0], 1.0))
+            .expect("second stream update");
+        assert_eq!(bits64(&first.w), first_bits);
+        assert_ne!(bits64(&first.w), bits64(&second.w));
+
+        let expected_first = model
+            .update(&model.initial_state(), &sample64(&[1.0, -1.0], 0.5))
+            .expect("independent first expectation");
+        let expected_second = model
+            .update(&model.initial_state(), &sample64(&[1.0, 1.0], 1.0))
+            .expect("independent second expectation");
+        assert_eq!(bits64(&first.w), bits64(&expected_first.w));
+        assert_eq!(bits64(&second.w), bits64(&expected_second.w));
+    }
+
+    #[test]
+    fn b_prediction_validation_and_overflow() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let snapshot = model
+            .to_serving_f32(&SgdState64 {
+                w: Vector64::from_slice(&[1.0, -2.0]),
+            })
+            .expect("snapshot");
+        assert_eq!(
+            snapshot.predict(&Vector::from_slice(&[1.0])).unwrap_err(),
+            SgdError::DimensionMismatch {
+                expected: 2,
+                actual: 1
+            }
+        );
+        assert_eq!(
+            snapshot
+                .predict(&Vector::from_slice(&[f32::NAN, 0.0]))
+                .unwrap_err(),
+            SgdError::NonFiniteInput
+        );
+        let bits_before = bits(snapshot.weights());
+        let _ = snapshot.predict(&Vector::from_slice(&[0.5, -0.5]));
+        assert_eq!(bits(snapshot.weights()), bits_before);
+
+        let model = Sgd64::new(1, 0.1).expect("valid configuration");
+        let overflow = model
+            .to_serving_f32(&SgdState64 {
+                w: Vector64::from_slice(&[f32::MAX as f64]),
+            })
+            .expect("overflow-capable snapshot");
+        assert_eq!(
+            overflow.predict(&Vector::from_slice(&[2.0])).unwrap_err(),
+            SgdError::NonFiniteOutput
+        );
+    }
+}

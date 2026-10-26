@@ -71,7 +71,7 @@ this matrix does not create or close Issues.
 | **K-Nearest Neighbors** | #25 | Brute-force distance + neighbor selection | Stored reference observations + `k` | Per-query distance scratch `O(N)`; neighbor set `O(k)` | Streaming per-query; independent queries may micro-batch | Reference-data ingestion and query paths implemented; full lifecycle acceptance not established; regression only |
 | **GRU bounded micro-batch** | #34 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Recurrence/execution components implemented; training missing; historical bounded batch-size sweep recorded |
 | **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Supervised learning updates and execution paths implemented; fitted-readiness and full lifecycle acceptance require evidence; historical batch-size sweep recorded |
-| **SGD Linear Regression** | #50 | Ordered single-observation squared-error learning and prediction from learned weights | Adaptive `w` per stream (immutable model config) | Transient delta/candidate `f32` vectors per update; no persistent model-owned workspace or scratch | Ordered, state-dependent; **not** independent | Implemented and reviewed (validation 2026-10-17; original slice merged via PR #51; replacement #55 baseline measured/reviewed from an uncommitted cyclic-control correction on base 67d421c; integration tracked in #55): ordered learning, output-validating prediction, atomic failures, two runnable examples, Check A/B evidence and a release benchmark baseline; documentation/integration gates pending |
+| **SGD Linear Regression** | #50 | Ordered single-observation squared-error learning and prediction from learned weights | Adaptive `w` per stream (immutable model config); A/B also carry caller-owned native-f64 state and an independently owned f32 serving snapshot | Transient delta/candidate vectors per update; no persistent model-owned workspace or scratch | Ordered, state-dependent; **not** independent | Implemented and reviewed (original validation 2026-10-17; original slice merged via PR #51; replacement #55 baseline measured/reviewed from an uncommitted cyclic-control correction on base 67d421c; profile continuation #71/#72): ordered learning, output-validating prediction, atomic failures, A/B/C precision profiles, three runnable examples, Check A/B and `SGD-QUALITY800` evidence, and a release benchmark baseline; historical documentation/integration gates remain separate |
 
 Two families emerge from the matrix and are the point of the exercise:
 
@@ -363,25 +363,37 @@ relabelled strict C.
 
 ### SGD Linear Regression (#50)
 
-Canonical location: `src/models/linear/sgd/`. `Sgd` holds only immutable
-configuration (`D`, fixed `η`) and implements `StateModel` with a `&self`
-contract; the learned `w` lives in per-stream `SgdState`, owned by the execution
-session. Each update creates transient delta/candidate `f32` vectors; there is
-no persistent model-owned workspace or RNG. Prediction validates output
-finiteness; updates compute a local candidate and commit only on success. The
-caller supplies the intercept feature and any preprocessing; the model performs
-no implicit scaling or shuffling.
+Canonical location: `src/models/linear/sgd/`. `Sgd` is the strict-`f32` C
+profile and remains unchanged: it holds only immutable configuration (`D`, fixed
+`η`) and implements `StateModel` with a `&self` contract; the learned `w` lives
+in per-stream `SgdState`, owned by the execution session. Each update creates
+transient delta/candidate `f32` vectors; there is no persistent model-owned
+workspace or RNG. Prediction validates output finiteness; updates compute a
+local candidate and commit only on success. The caller supplies the intercept
+feature and any preprocessing; the model performs no implicit scaling or
+shuffling. `Sgd64` is the native-`f64` A learner; B reuses A's learner and
+produces an independently owned, immutable `SgdServing32` snapshot through
+checked conversion. B has no update/resume/transform/back-conversion path, and
+all profiles expose one output-validating `predict`; there is no bare/checked
+pair.
 
 **Learning, API and test evidence.** `update` performs ordered
 single-observation updates `w' = w + η·e·x`; `predict` computes `ŷ = wᵀx` from
-the learned weights. The `sgd` test target has **16 passing tests** on default
-Rust 1.97.1 and MSRV Rust 1.85.1, covering hand-derived and explicit-`f32`
-arithmetic controls, a rounding-sensitive reduction-order control, a
-multiplication-grouping control, an exact-rational trajectory, an
-analytic-gradient check, validation precedence, overflow, atomicity, isolation,
-continuation/reset and order/reproducibility. The two rounding-sensitive
-controls were added in a test-only follow-up; the example sources are unchanged.
-`sgd_learn` has 2 embedded tests and `sgd_regression` has 13.
+the learned weights. The historical 2026-10-17 record is preserved: the `sgd`
+test target had **16 passing tests** on default Rust 1.97.1 and MSRV Rust 1.85.1.
+The current target has **33 passing tests** on both toolchains, adding A/B/C
+every-step prediction/state controls, exact-rational trajectories, native-f64
+reduction/grouping and discrimination, conversion boundaries,
+output/precedence failures, learned-state failures, continuation, execution
+equivalence, A stream isolation, order/reproducibility and serving replacement to
+the original hand-derived, grouping/reduction, gradient, validation, overflow,
+atomicity, isolation and continuation coverage. `sgd_learn` has 2 embedded
+tests, `sgd_regression` has 13, and `sgd_profiles` has 5. Default and MSRV
+all-target tests and doctests passed; default all-target Clippy passed. The
+documentation build produced only the known unrelated `Matrix`-link warning. `sgd_learn` is a supplied-`f32`
+model demonstration whose generator computes in `f64`; it is not strict-C
+generation evidence. `sgd_regression` is mixed-precision legacy because its
+standardizer is `f64`; it is not relabelled strict C.
 
 **Approximation evidence (Check B).** A frozen `D=4`, `N=64` fixture
 (advance-before-draw generator, supplied `f32` values, `η=0.01`, 200 ordered
@@ -396,8 +408,28 @@ same `f32` values. Both sub-fixtures pass the unchanged criterion
 
 The noiseless `J*` is a small nonzero `f32` floor, not an exact-zero claim.
 
-**Executed examples.** Both examples were executed and independently reproduced
-before the test-only follow-up; the follow-up changed only tests. `sgd_learn`
+**`SGD-QUALITY800` profile evidence.** The deterministic in-memory fixture uses
+`D=3`, 400 training rows, 400 held-out scoring rows, `η=0.01`, and 200 ordered
+passes. A and C each perform 80,000 updates; B performs zero training updates and
+one checked conversion; each profile makes 400 fixed scoring predictions. The
+accepted design-time conditioning value is `κ≈1.44790 ≤ 10`. Recorded on default
+Rust 1.97.1 and MSRV Rust 1.85.1:
+
+| Profile | Updates | Conversions | Scores | MAE | R² |
+|---|---:|---:|---:|---:|---:|
+| A native `f64` | 80,000 | 0 | 400 | `3.871902798380e-15` | `1.000000000000000` |
+| B checked `f32` serving | 0 | 1 | 400 | `4.409977633041e-8` | `0.999999999999997` |
+| C strict `f32` | 80,000 | 0 | 400 | `2.736076712608e-6` | `0.999999999991000` |
+
+These are deterministic-fixture results, not general accuracy, convergence,
+performance or production-readiness claims. A/B use f64 data; `SGD-QUALITY800-C`
+generates its features, targets and `η` in f32 and is the strict-C generation
+evidence; B narrows A's serving features explicitly and is scored against A's
+f64 targets. The fixture has no CSV/preprocessing dependency.
+
+**Executed examples.** The legacy `sgd_learn` and `sgd_regression` examples were
+executed and independently reproduced before the test-only follow-up; the
+follow-up changed only tests. `sgd_learn`
 (1000 rows, 400 learned, 600 scored, regime change at row 500, `η=0.05`, 20
 ordered passes) reports frozen and adaptive MAE/RMSE overall and before/after
 the regime change, with expanding-target-mean and previous-target baselines on
@@ -422,7 +454,12 @@ a River benchmark reproduction, and not production readiness. Adaptive SGD beats
 the expanding-mean and raw-feature-mean baselines but not the previous-target
 baseline; results are reported as measured.
 
-**Status.** The original SGD slice is merged through PR #51. The replacement
+**Status.** The original SGD slice is merged through PR #51. The precision-profile
+continuation is tracked under [#71](https://github.com/Skybrique/seqvex/issues/71)
+(parent) and [#72](https://github.com/Skybrique/seqvex/issues/72) (implementation);
+independent numerical and sequential/quality acceptance are
+[#73](https://github.com/Skybrique/seqvex/issues/73) and
+[#74](https://github.com/Skybrique/seqvex/issues/74). The replacement
 performance/resource baseline was measured and reviewed from an uncommitted
 cyclic-control correction on base
 `67d421cc9afcacd3b3f11c401075e91ee411a11c`; current integration status is

@@ -70,10 +70,13 @@ generally unstable. This is not the RLS weighted-least-squares recurrence.
 Canonical namespace: `seqvex::models::linear::sgd`.
 
 ```rust
-use seqvex::foundation::numerical::Vector;
+use seqvex::foundation::numerical::{Vector, Vector64};
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::StateModel;
-use seqvex::models::linear::sgd::{Sgd, SgdError, SgdSample, SgdState};
+use seqvex::models::linear::sgd::{
+    Sgd, Sgd64, SgdError, SgdError64, SgdSample, SgdSample64, SgdServing32,
+    SgdServingConversionError, SgdState, SgdState64,
+};
 ```
 
 | Item | Signature / shape |
@@ -83,12 +86,29 @@ use seqvex::models::linear::sgd::{Sgd, SgdError, SgdSample, SgdState};
 | `Sgd::learning_rate` | `-> f32` |
 | `Sgd::initial_state` | `-> SgdState` (`w = 0`) |
 | `Sgd::predict` | `predict(&self, state: &SgdState, features: &Vector) -> Result<f32, SgdError>` |
-| `StateModel::update` | `update(&self, state: &SgdState, observation: &Observation<SgdSample>) -> Result<SgdState, SgdError>` |
-| `SgdState` | `{ pub w: Vector }` — per-execution learned weights |
+| `StateModel::update` (C) | `update(&self, state: &SgdState, observation: &Observation<SgdSample>) -> Result<SgdState, SgdError>` |
+| `SgdState` | `{ pub w: Vector }` — per-execution `f32` learned weights |
 | `SgdSample` | `{ pub features: Vector, pub target: f32 }` |
 | `SgdError` | `ZeroDimension`, `DimensionMismatch { expected, actual }`, `InvalidLearningRate`, `NonFiniteInput`, `NonFiniteCandidate`, `NonFiniteOutput` |
+| `Sgd64::new` | `new(dimension: usize, learning_rate: f64) -> Result<Sgd64, SgdError64>` |
+| `Sgd64::predict` | `predict(&self, state: &SgdState64, features: &Vector64) -> Result<f64, SgdError64>` |
+| `Sgd64::to_serving_f32` | `to_serving_f32(&self, state: &SgdState64) -> Result<SgdServing32, SgdServingConversionError>` |
+| `StateModel::update` (A) | `update(&self, state: &SgdState64, observation: &Observation<SgdSample64>) -> Result<SgdState64, SgdError64>` |
+| `SgdState64` / `SgdSample64` | `{ pub w: Vector64 }` / `{ pub features: Vector64, pub target: f64 }` |
+| `SgdServing32` | Immutable `f32` snapshot; `dimension`, `weights`, output-validating `predict(&Vector) -> Result<f32, SgdError>` |
+| `SgdServingConversionError` | `StateDimensionMismatch { expected, actual }`, `SourceNonFinite { index }`, `Overflow { index }`, `Underflow { index }` |
 
-There is **no** `fit` method on `Sgd`. Learning is `update`; historical
+**Precision profiles.** `Sgd` is the existing strict-`f32` C surface and is
+unchanged. `Sgd64` is the native-`f64` A learner. B reuses A's learner and creates
+an independently owned, immutable `SgdServing32` snapshot through checked
+conversion; the snapshot has no update, resume, transform or back-conversion
+path. A and C expose one output-validating `predict`; there is no bare/checked
+pair. Conversion checks the state dimension first, then source finiteness, cast
+overflow and nonzero-to-zero underflow, and accepts finite values that round to
+`f32::MAX` without clamping. Serving replacement is caller-owned and explicit;
+a failed conversion or acceptance does not install a snapshot.
+
+There is **no** `fit` method on `Sgd` or `Sgd64`. Learning is `update`; historical
 learning is an ordered sequence of `update` calls owned by the caller.
 
 ## Minimal data → learning → prediction example
@@ -153,7 +173,9 @@ shuffle; repeated passes replay the caller's order.
   part of the workflow.
 - Targets stay in their original units.
 - `sgd_regression` demonstrates prefix-only population standardization; that is
-  an example policy, not a property of `Sgd`.
+  an example policy, not a property of `Sgd`. Its standardizer computes in `f64`
+  before narrowing to `f32`, so `sgd_regression` is mixed-precision legacy, not
+  strict C.
 
 ## Ownership, continuation and reset
 
@@ -164,6 +186,10 @@ shuffle; repeated passes replay the caller's order.
   delta/candidate vectors).
 - Continue by passing the committed `SgdState` to the next `update`. Reset with
   `model.initial_state()`.
+- `Sgd64` holds only immutable configuration and owns no state; `SgdState64` is
+  the caller-owned native-`f64` learning state. B's `SgdServing32` owns only
+  serving weights and is immutable. Continued A learning does not mutate an
+  already-created snapshot; converting again creates a new snapshot.
 - `StreamingExecutor` (`use seqvex::execution::streaming::StreamingExecutor;`)
   owns one state per execution and borrows the model immutably:
   `StreamingExecutor::new(&model, model.initial_state())`, `process_one`, and
@@ -246,9 +272,45 @@ cargo run --locked --example sgd_learn
 cargo +1.85.1 run --locked --example sgd_learn
 ```
 
-The seeded LCG generates the synthetic data. **SGD itself needs no RNG** and does
-not shuffle. The recorded run is reported in the Evidence section; it does not
-promise improvement on other data.
+The seeded LCG generates the synthetic data in `f64` and then supplies `f32` model
+rows. **SGD itself needs no RNG** and does not shuffle. `sgd_learn` is therefore a
+supplied-`f32` model demonstration, not strict-C generation evidence. The
+recorded run is reported in the Evidence section; it does not promise improvement
+on other data.
+
+### `sgd_profiles` — deterministic A/B/C quality fixture
+
+`SGD-QUALITY800` is an in-memory, no-CSV fixture. A and B use native-`f64`
+features and targets; C generates in strict `f32`. The named configuration is
+`D=3` (two features plus an appended `1.0` intercept), 400 training rows, 400
+held-out scoring rows, `η=0.01`, and 200 ordered passes (80,000 updates for each
+of A and C). B performs no training updates: it is one checked conversion of A's
+post-training state, evaluated with explicitly narrowed `f32` features against
+A's `f64` targets. Scoring is exactly 400 fixed predictions per profile; no
+labels enter the predictor and no updates occur during or after scoring.
+
+The fixture records MAE and R² for A, B and C and enforces the frozen limits:
+
+| Profile | MAE limit | R² limit |
+|---|---:|---:|
+| A native `f64` | `1e-5` | `1 - 1e-9` |
+| B checked `f32` serving | `1e-4` | `1 - 1e-6` |
+| C strict `f32` | `1e-4` | `1 - 1e-6` |
+
+The accepted design-time conditioning check is `κ≈1.44790 ≤ 10`; the example
+prints that accepted value and does not recompute a new conditioning study.
+`SGD-QUALITY800-C` is the strict-C generation evidence: its features, targets and
+`η` are generated in `f32`, not narrowed from f64.
+
+Run:
+
+```sh
+cargo run --locked --example sgd_profiles --all-features
+cargo +1.85.1 run --locked --example sgd_profiles --all-features
+```
+
+These are deterministic-fixture results, not general accuracy, convergence,
+performance or production-readiness claims.
 
 ### `sgd_regression` — real CSV learning and prediction
 
@@ -308,6 +370,8 @@ RLS directory; the command simply supplies the supplied dataset's path.
 
 `sgd_learn` prints the settings, feature order, a metrics table for frozen,
 adaptive and both baselines, and a small sample of adaptive predictions.
+`sgd_profiles` prints the accepted conditioning value and one line per profile
+with updates, conversions, scores, MAE and R².
 `sgd_regression` prints the dataset path/checksum, row and prefix/scored counts,
 `M_prefix` and `η·M_prefix`, prefix-boundary weights, the metrics table for
 frozen, adaptive and all baselines, and sample predictions.
@@ -325,19 +389,31 @@ extra headers, malformed or non-finite numbers, non-increasing/duplicate
 
 ## Evidence
 
-Validation evidence was recorded on 2026-10-17. Documentation and integration
-gates remain pending; this is not a production-readiness claim.
+Validation evidence was updated on 2026-10-26 for the A/B/C profile package.
+The earlier 2026-10-17 evidence remains historical; this is not a
+production-readiness claim.
 
-- `sgd` test target: **16 passed** on default Rust 1.97.1 and on MSRV Rust 1.85.1.
-  Coverage includes hand-derived and explicit-`f32` arithmetic controls, a
-  rounding-sensitive reduction-order control, a multiplication-grouping control,
-  an exact-rational trajectory, an analytic-gradient check, validation
-  precedence, overflow, atomicity, isolation, continuation/reset and
-  order/reproducibility. The two rounding-sensitive controls were added in a
-  test-only follow-up; example sources are unchanged.
-- Example tests: `sgd_learn` **2 passed**; `sgd_regression` **13 passed**.
-- Both examples were executed and independently reproduced before the test-only
-  follow-up. The follow-up changed only tests.
+- **Historical 2026-10-17 record:** the `sgd` test target had **16 passed** on
+  default Rust 1.97.1 and MSRV Rust 1.85.1. That record is preserved here and is
+  not silently rewritten.
+- **Current `sgd` test target:** **33 passed** on default Rust 1.97.1 and MSRV
+  Rust 1.85.1. The original 17 tests remain, plus A/B/C controls for native-f64
+  and strict-f32 every-step predictions/states, exact-rational trajectories,
+  native-f64 reduction/grouping and discrimination, conversion boundaries,
+  output/precedence failures, learned-state failures, continuation, execution
+  equivalence, A stream isolation, order/reproducibility and serving replacement.
+- **Example tests:** `sgd_learn` **2 passed**; `sgd_regression` **13 passed**;
+  `sgd_profiles` **5 passed**.
+- **All-target tests:** default and MSRV `cargo test --locked --all-targets
+  --all-features` passed, including the existing harness-free benchmark mains as
+  test evidence only. No performance claim is made from those runs.
+- **Doctests:** default and MSRV `cargo test --locked --doc --all-features`
+  passed with 0 tests.
+- **Documentation build:** `cargo doc --locked --no-deps --all-features` produced
+  only the known unrelated unresolved-`Matrix` warning at
+  `src/models/classic/decision_tree.rs:14`; no new warning was introduced.
+- **Clippy:** `cargo clippy --locked --all-targets --all-features -- -D warnings`
+  passed.
 - Check B (frozen `D=4`, `N=64`, advance-before-draw supplied `f32` fixture,
   `η=0.01`, 200 ordered passes, exact-rational oracle). Both sub-fixtures pass the
   unchanged criterion `J_sgd − J* ≤ 1e-6·J_initial + 1e-3·J*`:
@@ -349,6 +425,24 @@ gates remain pending; this is not a production-readiness claim.
 
   The noisy fixture's `κ(X)` is 1.916249. The noiseless `J*` is a small nonzero
   `f32` floor, not an exact-zero claim.
+
+### `SGD-QUALITY800` profile result
+
+The deterministic in-memory fixture uses `D=3`, 400 training rows, 400 held-out
+scoring rows, `η=0.01`, and 200 ordered passes. A and C each perform 80,000
+updates; B performs zero updates and one checked conversion; every profile makes
+400 fixed scoring predictions. The accepted design-time conditioning value is
+`κ≈1.44790 ≤ 10`.
+
+| Profile | Updates | Conversions | Scores | MAE | R² |
+|---|---:|---:|---:|---:|---:|
+| A native `f64` | 80,000 | 0 | 400 | `3.871902798380e-15` | `1.000000000000000` |
+| B checked `f32` serving | 0 | 1 | 400 | `4.409977633041e-8` | `0.999999999999997` |
+| C strict `f32` | 80,000 | 0 | 400 | `2.736076712608e-6` | `0.999999999991000` |
+
+These values were identical on default Rust 1.97.1 and MSRV Rust 1.85.1. They are
+deterministic-fixture results, not general accuracy, convergence, performance or
+production-readiness claims.
 
 ### Executed real-data result
 
@@ -514,8 +608,9 @@ Deferred: L1/L2/elastic-net regularization; mini-batch or gradient-averaging
 updates; learning-rate schedules/decay and update counters; momentum/Adam or
 other optimizers; sampling/shuffling and IID mini-batches; generic
 optimizer/model/`fit` traits; convergence detection or early stopping;
-serialization/checkpointing; performance optimization; `f64`
-accumulation; and cross-algorithm/pre-hardware audit work.
+serialization/checkpointing; performance optimization; hidden `f64`
+accumulation in the strict-`f32` C path (use A for native f64); and
+cross-algorithm/pre-hardware audit work.
 
 Limitations: ordered updates are order-dependent; a fixed learning rate does not
 guarantee convergence or stability for arbitrary data; fixed-step passes can
@@ -528,9 +623,11 @@ nowcasting evidence only.
 
 | Path | Purpose |
 |---|---|
-| `mod.rs` | `Sgd`, `SgdState`, `SgdSample`, `SgdError`, `StateModel` implementation |
-| `tests/sgd.rs` | Integration target `sgd` |
+| `mod.rs` | C `Sgd`/`SgdState`/`SgdSample`/`SgdError`; canonical A/B reexports |
+| `profiles.rs` | A `Sgd64`/`SgdState64`/`SgdSample64`/`SgdError64`; B `SgdServing32` and checked conversion |
+| `tests/sgd.rs` | Integration target `sgd`, including A/B/C profile controls |
 | `examples/sgd_learn.rs` | Synthetic learning/prediction example `sgd_learn` |
+| `examples/sgd_profiles.rs` | Deterministic A/B/C `SGD-QUALITY800` example |
 | `examples/sgd_regression.rs` | Real-data CSV example `sgd_regression` |
 | `benches/sgd.rs` | Benchmark target `sgd` (performance/resource baseline, #55) |
 | `../README.md` | Linear-family membership |
@@ -543,6 +640,10 @@ issue-linked review records and are not duplicated here.
 
 - [Issue #50](https://github.com/Skybrique/seqvex/issues/50)
 - [Issue #55](https://github.com/Skybrique/seqvex/issues/55)
+- [SGD continuation #71](https://github.com/Skybrique/seqvex/issues/71),
+  [implementation #72](https://github.com/Skybrique/seqvex/issues/72),
+  [numerical acceptance #73](https://github.com/Skybrique/seqvex/issues/73),
+  [sequential/quality acceptance #74](https://github.com/Skybrique/seqvex/issues/74)
 - [Development contract](../../../../docs/DEVELOPMENT.md)
 - [Feature development runbook](../../../../FEATURE_DEVELOPMENT.md)
 - [Failure and recovery](../../../../docs/FAILURE_AND_RECOVERY.md)

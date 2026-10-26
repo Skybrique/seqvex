@@ -6,7 +6,9 @@
 //! canonical types. See `docs/ML_VERTICAL_SLICES.md`.
 
 pub mod rls {
-    pub use crate::models::linear::rls::{Rls, RlsBatchError, RlsError, RlsSample, RlsState};
+    pub use crate::models::linear::rls::{
+        Rls, RlsBatchError, RlsError, RlsSample, RlsState, RlsStateAdmissionError,
+    };
 }
 
-pub use rls::{Rls, RlsBatchError, RlsError, RlsSample, RlsState};
+pub use rls::{Rls, RlsBatchError, RlsError, RlsSample, RlsState, RlsStateAdmissionError};

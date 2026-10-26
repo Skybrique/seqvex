@@ -317,6 +317,50 @@ generic `StreamingExecutor`, which borrows the model immutably (`&M`) and owns
 the per-stream State. The former `&mut M` limitation was removed by the
 execution-ownership refactor.
 
+#### Precision-profile delivery (candidate working tree)
+
+The RLS package now exposes three declared precision paths under
+`models::linear::rls`:
+
+- **A:** `Rls64`/`RlsState64`/`RlsSample64` with native `f64` learning,
+  retained coupled state and inference.
+- **B:** the same A learner plus checked `Rls64::to_serving_f32` conversion into
+  an independently owned `RlsServing32` weight-only snapshot. B does not retain
+  covariance, resumable learner state or back-conversion.
+- **C:** the existing strict-`f32` `Rls` surface, unchanged in arithmetic and
+  legacy behavior except for additive `RlsState::admit` and the shared
+  `RlsStateAdmissionError` compatibility reexport.
+
+`RlsState64::admit` and `RlsState::admit` check zero dimension, square
+covariance, weight length, finite weights/covariance entries and bitwise
+symmetry in a fixed order. They do not certify positive semidefiniteness,
+conditioning, provenance or future denominator positivity and do not repair
+state. Legacy C fields remain public, so C admission is not a permanent
+invariant. The denominator guard remains observation-local: with `P=diag(-1,1)`
+and `λ=1`, `x=[0,1]` passes while `x=[1,0]` rejects.
+
+Candidate working-tree evidence based on
+`e027eb13454bf7d429184f37d1581f8c2da1cfbd` (uncommitted implementation) with
+default Rust/Cargo `1.97.1` and MSRV `1.85.1` passed the named A/C same-order
+scalar trajectory,
+literal weighted-objective, `RLS-ORDER4`, `RLS-PERM30-A/C`, admission,
+failure/prefix/continuation, conversion-boundary, native-f64 discriminator and
+caller collector/handover tests in the existing `rls` target. The
+`RLS-QUALITY800` example performed exactly 400 ordered updates and 400 frozen
+held-out checked predictions per profile, with one B conversion:
+
+| Profile | MAE | R² |
+|---|---:|---:|
+| A | `4.518996794317e-6` | `0.999999999973` |
+| B | `4.525293214072e-6` | `0.999999999973` |
+| C | `5.498211830854e-6` | `0.999999999961` |
+
+These are bounded deterministic fixture results, not production readiness,
+general accuracy, performance, persistence or statistical-validity claims. The
+historical `f32` benchmark and R5 envelopes above remain legacy C evidence and
+are not transferred to A/B. The mixed-precision Trump standardizer is not
+relabelled strict C.
+
 ### SGD Linear Regression (#50)
 
 Canonical location: `src/models/linear/sgd/`. `Sgd` holds only immutable

@@ -87,6 +87,10 @@ name = "rls_trump_approval"
 path = "src/models/linear/rls/examples/rls_trump_approval.rs"
 
 [[example]]
+name = "rls_profiles"
+path = "src/models/linear/rls/examples/rls_profiles.rs"
+
+[[example]]
 name = "sgd_learn"
 path = "src/models/linear/sgd/examples/sgd_learn.rs"
 

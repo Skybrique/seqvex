@@ -12,15 +12,21 @@ member of the linear-model family. The canonical namespace is
 
 - Canonical: `seqvex::models::linear::rls` (`src/models/linear/rls/`).
 - Compatibility: `seqvex::models::online::rls` and `seqvex::models::online`
-  re-export the same canonical `Rls`, `RlsState`, `RlsSample`, `RlsError`, and
-  `RlsBatchError` types and add no behavior. See the
-  [vertical-slice evidence](../../../../docs/ML_VERTICAL_SLICES.md).
+  re-export the same canonical `Rls`, `RlsState`, `RlsSample`, `RlsError`,
+  `RlsBatchError`, and `RlsStateAdmissionError` types and add no behavior. See
+  the [vertical-slice evidence](../../../../docs/ML_VERTICAL_SLICES.md).
 
 ## Responsibility
 
-- `rls` — the immutable configuration `Rls`, its adaptive state `RlsState`, the
-  supervised observation payload `RlsSample`, the reference prediction and
-  update, and its explicit failure classification.
+- Legacy strict-`f32` surface — `Rls`, `RlsState`, `RlsSample`, `RlsError`,
+  `RlsBatchError`, prediction, ordered update, and bounded
+  `process_batch_reference`.
+- Native-`f64` profile — `Rls64`, `RlsState64`, `RlsSample64`, `RlsError64`, and
+  `RlsBatchError64`, with the same ordered recurrence and coupled commit.
+- Checked `f32` serving — `RlsServing32` plus
+  `Rls64::to_serving_f32`/`RlsServingConversionError`.
+- External-state admission — shared `RlsStateAdmissionError`, with
+  `RlsState64::admit` and legacy `RlsState::admit`.
 
 ## Relationship to Seqvex
 
@@ -43,6 +49,56 @@ the model immutably (`&Model`), so one immutable `Rls` can drive two executors
 with independent States. One shared `&Rls` with independent states is also
 expressible through the foundation `process_one`/`process_stream` functions,
 which take `&M`, and the tests exercise that.
+
+## Precision profiles
+
+| Profile | Learning | Retained learner state | Inference |
+|---|---|---|---|
+| **A: native `f64`** | `Rls64::update` in `f64` | private `RlsState64 { w64, P64 }` | `Rls64::{predict,predict_checked}` in `f64` |
+| **B: `f64` learning, `f32` serving** | same A learner | authoritative `RlsState64` | `Rls64::to_serving_f32` creates `RlsServing32`; checked `f32` prediction |
+| **C: strict `f32`** | existing `Rls::update` in `f32` | public legacy `RlsState { w32, P32 }` | existing `Rls::{predict,predict_checked}` in `f32` |
+
+B converts only weights. The serving snapshot has no covariance, configuration,
+learner state, update path, resume path, or back-conversion. Conversion checks
+the state dimension before any coefficient, then scans weights in increasing
+index order. A non-finite source reports `SourceNonFinite`; a finite source that
+rounds beyond `f32` reports `Overflow`; a nonzero source that rounds to zero
+reports `Underflow`. Representable subnormals, signed zero, and finite values
+rounding to `f32::MAX` are preserved without clamping. There is no
+`AllowLoss` policy.
+
+The snapshot is a selected serving version, not a live mirror. Continued `f64`
+learning remains authoritative. Conversion and checked acceptance do not install
+anything: replacement is explicit caller assignment after a nonempty checked
+selection succeeds. A failed conversion or acceptance leaves the source weights,
+the active snapshot, and in-flight work unchanged.
+
+### External-state admission
+
+`RlsState64::admit(weights, covariance)` and legacy
+`RlsState::admit(weights, covariance)` return `RlsStateAdmissionError` after
+checking, in order: zero dimension; square covariance; weight length; finite
+weights at the first index; finite covariance entries at the first row-major
+entry; bitwise covariance symmetry at the first row-major pair. Admission
+establishes only those structural, finite-value, and exact-symmetry facts. It
+does not establish positive semidefiniteness, conditioning, update provenance,
+learned readiness, accuracy, or future denominator positivity, and it performs
+no repair.
+
+Legacy `RlsState` fields remain public for compatibility. A caller can bypass
+admission or mutate a state after admission, so C admission describes that call,
+not a permanent invariant, and legacy update/prediction gain no new check.
+A private `RlsState64` can be created through `admit` or internally by learning.
+
+### Fixed-model inference
+
+No batch, streaming, or executor adapter is added for fixed inference. A caller
+loops in input order over one committed `RlsState64`, one `RlsServing32`, or one
+legacy `RlsState`. A grouped checked caller may discard its local output vector
+and return the first error, producing no partial group; an empty group returns
+empty. That all-or-error behavior is a documented and tested caller protocol,
+not a library batch API or a transaction over outputs already published one at a
+time. A model-version change requires a new state or snapshot and a new call.
 
 ## Equations
 
@@ -76,9 +132,16 @@ one `RlsState` only after both validate, so a failed update leaves the committed
 without the other. The tests assert bitwise state preservation after every
 failure class, directly and through the executor.
 
-The incoming `P` is expected symmetric PSD; the reference does not run a general
-positive-definiteness check (it would add a primitive and a hidden `O(D³)` cost).
-The denominator guard catches corrupted/indefinite `P` and overflow.
+The incoming `P` is assumed symmetric positive semidefinite. States produced by
+`initial_state` and successful updates are bitwise symmetric. External states in
+checked workflows enter through admission, which verifies dimensions, finite
+entries, and bitwise symmetry but does not establish positive semidefiniteness.
+The denominator guard rejects a non-finite or nonpositive `λ + xᵀPx` for the
+current observation; it does not certify general symmetry or positive
+semidefiniteness and may pass an indefinite `P` in an unexcited direction. With
+`λ=1`, `P=diag(-1,1)`, and `x=[0,1]`, the update succeeds and `P` remains
+indefinite; with `x=[1,0]`, the denominator is zero and the update rejects. No
+silent covariance repair is performed.
 
 ## Checked prediction
 
@@ -96,6 +159,14 @@ unchanged.
 The guard checks only the output value. It does not establish general state
 finiteness, covariance symmetry or positive-definiteness, accuracy, or
 statistical validity. The supplied state is unchanged.
+
+The A and B forms follow the same bare/checked split. `Rls64::predict` checks
+features, weights, covariance rows, then covariance columns before feature
+finiteness and returns the ordered `f64` dot; `Rls64::predict_checked` rejects a
+non-finite output. `RlsServing32::predict` checks feature length and finiteness,
+then evaluates the ordered `f32` dot; its checked form rejects a non-finite
+output. Neither path updates, fixes a model version implicitly, or substitutes a
+default or stale prediction.
 
 ## Applicability and statistical contract
 
@@ -383,15 +454,22 @@ fully excited envelope):
 
 ### `f32` versus `f64`
 
-The production representation is `f32`, and R1–R4 did **not** justify changing
-it. `f64` is used only as a test-local/reference diagnostic (literal objective,
-direct solve, Jacobi spectrum). `f32` is adequate wherever the mathematical and
-statistical conditions hold inside the demonstrated envelope; numerical risk
-rises with conditioning, feature-scale disparity, and dynamic range
-(`λ=1`, `P→0`). A production precision change would require a reproducible
-failure **inside** the pass region attributable to `f32` precision rather than
-data/design, plus a future CRITICAL ARCHITECTURE REVIEW. No `f64` mode,
-configurable precision, normalisation, or preconditioning is added. See
+The historical R1–R4 evidence remains bounded legacy **C** evidence generated by
+the strict-`f32` recurrence; its measured envelopes, tolerances, allocation
+counts, and timings are not transferred to A or B. C remains native `f32`
+through configuration, state, updates, admission, and inference. Test-side
+`f64` oracles and metrics are outside that production path.
+
+A is a separate native-`f64` learner, not a widened C trajectory and not a
+precision selector. The native-f64 discriminator test uses
+`(x=1,y=0)` then `(x=1+2⁻²⁴,y=2²⁴)` with `D=λ=δ=1`: A produces
+`w≈5592405.444444`, while quantized C produces `5592405.5`; the gap is greater
+than `0.05`. B may round to the same serving coefficient while its source `w/P`
+remain distinct and authoritative.
+
+No runtime precision switch, configurable scalar framework, automatic
+normalisation, preconditioning, or universal accuracy claim is added. Persistence
+and `AllowLoss` remain deferred. See
 [Major deferred decisions](#major-deferred-decisions).
 
 ### User and data responsibilities
@@ -516,10 +594,10 @@ double-buffered `P` could remove it, but **where the second buffer lives**
 is deliberately not introduced here. Any such optimization requires CRITICAL
 ARCHITECTURE REVIEW.
 
-The long-run test (`tests/rls.rs`) runs 10,000 deterministic observations at
-`D = 4`, `λ = 0.999`, and asserts every state stays finite, matches the
-independent scalar reference bitwise, and remains exactly symmetric. Symmetry is
-preserved because `v_i v_j == v_j v_i` exactly in IEEE `f32`.
+The 10,000-observation test checks weight and covariance finiteness after every
+update. The scalar reference advances at every iteration. After the loop, the
+final state is compared bitwise with that reference, and the final covariance is
+checked for exact symmetry.
 
 ### Release batch-size sweep ([new run], recorded run-time revision `b63da4f`)
 
@@ -623,17 +701,44 @@ run does not establish a CPU profile, a bottleneck identification, a universal
 speedup, or production readiness, and it does not alter the RLS
 production-readiness gates.
 
+### Precision-profile quality evidence (`RLS-QUALITY800`)
+
+Candidate working-tree run based on `e027eb13454bf7d429184f37d1581f8c2da1cfbd`
+(uncommitted implementation), verified with default Rust/Cargo `1.97.1` and
+MSRV `1.85.1`, via `cargo run --locked --example rls_profiles -j 1`. The
+fixture uses `D=2`, `λ=1`, `δ=1000`, exactly 400 ordered training updates,
+one frozen A state, one
+one-time B conversion, and exactly 400 checked scored rows per profile over
+rows 400–799 with no refit or scoring update.
+
+| Profile | Training updates | Scored calls | MAE | R² |
+|---|---:|---:|---:|---:|
+| A native `f64` | 400 | 400 | `4.518996794317e-6` | `0.999999999973` |
+| B `f64` learn / `f32` serve | 400 (A) | 400 | `4.525293214072e-6` | `0.999999999973` |
+| C strict `f32` | 400 | 400 | `5.498211830854e-6` | `0.999999999961` |
+
+Declared limits were A `MAE≤1e-5`, `R²≥1−1e−9`; B/C `MAE≤1e-4`,
+`R²≥1−1e−6`. These are bounded fixture results, not universal accuracy or
+production-readiness claims. The prior `1/δ=1e-3` dominates the small A error;
+B additionally includes feature and weight serving quantization, and C includes
+native `f32` generation and recurrence.
+
 ## Major deferred decisions
 
 - Shared-model / multi-stream execution (the former `&mut M` question) is now
   supported by the immutable-borrow executor; where an optimized `P`
   double-buffer would live, if optimization is ever justified, remains deferred
   and requires a workspace decision.
-- Whether `f32` suffices for RLS at larger `D` and long runs, or whether a
-  numerical-representation decision is required. Numerical stability under weak
-  excitation (variable/adaptive forgetting, ridge, `f64` covariance, UD or
-  square-root forms) is deferred; the reference uses the existing `f32`
-  substrate because observations are already `Observation<Vector>`.
+- Persistence/checkpoint identity and round-trip across profiles remain
+  deferred; no serialized learner or serving format is introduced.
+- `UnderflowPolicy`/`AllowLoss` for B conversion remains deferred. A nonzero
+  coefficient that rounds to zero is rejected in this package.
+- Full PSD certification, covariance repair, conditioning diagnostics,
+  variable/adaptive forgetting, ridge extensions, and UD/square-root forms
+  remain deferred. Admission is structural/finite/symmetric only.
+- Numerical performance envelopes for A/B, optimized covariance buffers, and
+  any production precision selection remain open. C's historical `f32` evidence
+  is preserved as bounded legacy evidence.
 
 ## Examples
 
@@ -650,7 +755,15 @@ target is consumed.
   files or network.
 - [`examples/rls_trump_approval.rs`](examples/rls_trump_approval.rs) —
   real-data validation on a caller-supplied CSV
-  (`cargo run --example rls_trump_approval --all-features -- <csv>`).
+  (`cargo run --example rls_trump_approval --all-features -- <csv>`). Its `f64`
+  standardizer is mixed-precision legacy preprocessing, **not strict C**.
+- [`examples/rls_profiles.rs`](examples/rls_profiles.rs) —
+  deterministic in-memory `RLS-QUALITY800` for A/B/C
+  (`cargo run --example rls_profiles`). It performs exactly 400 ordered
+  training updates per learner, freezes the states, converts A once into B's
+  independent snapshot, and makes exactly 400 checked predictions per profile
+  over rows 400–799 with no refit or scoring update. It also embeds caller
+  collect/accept failure tests.
 
 ### Real-data example (`rls_trump_approval`)
 
@@ -716,11 +829,21 @@ unchanged.
 
 ## Current tests / specification
 
-- [`tests/rls.rs`](tests/rls.rs): integration target `rls`, including independent
-  mathematical checks and checked chronological acceptance.
+- [`tests/rls.rs`](tests/rls.rs): integration target `rls`. The
+  `precision_profiles` module adds A/B/C API/visibility, admission precedence,
+  independent same-order scalar controls, literal weighted-objective checks for
+  every nonempty named prefix, `RLS-ORDER4`, both orders of `RLS-PERM30-A/C`,
+  B conversion/serving bounds, failure/prefix/continuation, native-f64
+  discrimination, conversion boundaries, and caller collector/handover tests.
+- [`profiles.rs`](profiles.rs): module-local private-state tests cover
+  `SourceNonFinite`, malformed shapes, dimension-before-NaN precedence, and
+  unchanged source/active bytes. They do not expose an invalid-state constructor.
+- [`examples/rls_profiles.rs`](examples/rls_profiles.rs): embedded
+  `RLS-QUALITY800` and caller-protocol tests.
 - [`examples/rls_trump_approval.rs`](examples/rls_trump_approval.rs): embedded
   example tests using synthetic temporary CSVs only.
 
 Run the embedded tests explicitly with
+`cargo test --locked --example rls_profiles --all-features` and
 `cargo test --locked --example rls_trump_approval --all-features`.
 Automated tests do not require the local real dataset.

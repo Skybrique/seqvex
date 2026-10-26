@@ -13,10 +13,13 @@
 //!   direct solve differ in precision and reduction order.
 
 use seqvex::execution::streaming::StreamingExecutor;
-use seqvex::foundation::numerical::{Matrix, Vector};
+use seqvex::foundation::numerical::{Matrix, Matrix64, Vector, Vector64};
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::{StateModel, process_batch, process_one, process_stream};
-use seqvex::models::linear::rls::{Rls, RlsBatchError, RlsError, RlsSample, RlsState};
+use seqvex::models::linear::rls::{
+    Rls, Rls64, RlsBatchError, RlsBatchError64, RlsError, RlsError64, RlsSample, RlsSample64,
+    RlsServing32, RlsServingConversionError, RlsState, RlsState64, RlsStateAdmissionError,
+};
 
 // Compile-time compatibility pin: the relocated canonical RLS types are the
 // same types reachable through both retained `models::online` namespaces. Each
@@ -72,6 +75,14 @@ assert_same_type!(
 assert_same_type!(
     seqvex::models::linear::rls::RlsBatchError,
     seqvex::models::online::RlsBatchError
+);
+assert_same_type!(
+    seqvex::models::linear::rls::RlsStateAdmissionError,
+    seqvex::models::online::rls::RlsStateAdmissionError
+);
+assert_same_type!(
+    seqvex::models::linear::rls::RlsStateAdmissionError,
+    seqvex::models::online::RlsStateAdmissionError
 );
 
 fn model(dimension: usize) -> Rls {
@@ -4132,5 +4143,1595 @@ fn acceptance_checked_prequential_matches_literal_objective_and_e9_quality() {
             control_late > 5.0 * late,
             "lambda=1 error {control_late} not clearly above lambda<1 error {late}"
         );
+    }
+}
+
+mod precision_profiles {
+    use super::*;
+    use std::error::Error as StdError;
+
+    fn sample64(features: &[f64], target: f64) -> Observation<RlsSample64> {
+        Observation::new(RlsSample64 {
+            features: Vector64::from_slice(features),
+            target,
+        })
+    }
+
+    fn model64(dimension: usize, lambda: f64, delta: f64) -> Rls64 {
+        Rls64::new(dimension, lambda, delta).unwrap()
+    }
+
+    struct RefState64 {
+        w: Vec<f64>,
+        p: Vec<Vec<f64>>,
+    }
+
+    fn ref_initial64(dimension: usize, delta: f64) -> RefState64 {
+        RefState64 {
+            w: vec![0.0; dimension],
+            p: (0..dimension)
+                .map(|row| {
+                    (0..dimension)
+                        .map(|column| if row == column { delta } else { 0.0 })
+                        .collect()
+                })
+                .collect(),
+        }
+    }
+
+    fn ref_predict64(state: &RefState64, x: &[f64]) -> f64 {
+        state.w.iter().zip(x).map(|(w, x)| w * x).sum()
+    }
+
+    fn ref_predict(state: &RefState, x: &[f32]) -> f32 {
+        state.w.iter().zip(x).map(|(w, x)| w * x).sum()
+    }
+
+    fn ref_step64(state: &RefState64, x: &[f64], y: f64, lambda: f64) -> RefState64 {
+        let v: Vec<f64> = state
+            .p
+            .iter()
+            .map(|row| row.iter().zip(x).map(|(p, x)| p * x).sum())
+            .collect();
+        let denominator = lambda + x.iter().zip(&v).map(|(x, v)| x * v).sum::<f64>();
+        let prediction = ref_predict64(state, x);
+        let error = y - prediction;
+        let next_w: Vec<f64> = state
+            .w
+            .iter()
+            .zip(&v)
+            .map(|(w, v)| w + (v / denominator) * error)
+            .collect();
+        let next_p: Vec<Vec<f64>> = state
+            .p
+            .iter()
+            .enumerate()
+            .map(|(row, values)| {
+                values
+                    .iter()
+                    .enumerate()
+                    .map(|(column, p)| (p - (v[row] * v[column]) / denominator) / lambda)
+                    .collect()
+            })
+            .collect();
+        RefState64 {
+            w: next_w,
+            p: next_p,
+        }
+    }
+
+    fn to_state64(reference: &RefState64) -> RlsState64 {
+        let rows: Vec<&[f64]> = reference.p.iter().map(Vec::as_slice).collect();
+        RlsState64::admit(
+            Vector64::from_slice(&reference.w),
+            Matrix64::from_rows(&rows).unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn reference_from_state64(state: &RlsState64) -> RefState64 {
+        RefState64 {
+            w: state.weights().as_slice().to_vec(),
+            p: (0..state.covariance().rows())
+                .map(|row| {
+                    (0..state.covariance().cols())
+                        .map(|column| state.covariance().get(row, column).unwrap())
+                        .collect()
+                })
+                .collect(),
+        }
+    }
+
+    fn assert_f64_bits_eq(actual: f64, expected: f64) {
+        assert_eq!(
+            actual.to_bits(),
+            expected.to_bits(),
+            "expected bitwise equality: {actual} vs {expected}"
+        );
+    }
+
+    fn assert_state64_bitwise_eq(actual: &RlsState64, expected: &RlsState64) {
+        assert_eq!(
+            actual.weights().len(),
+            expected.weights().len(),
+            "w length mismatch"
+        );
+        for (actual, expected) in actual
+            .weights()
+            .as_slice()
+            .iter()
+            .zip(expected.weights().as_slice())
+        {
+            assert_f64_bits_eq(*actual, *expected);
+        }
+        assert_eq!(
+            actual.covariance().as_slice().len(),
+            expected.covariance().as_slice().len(),
+            "P length mismatch"
+        );
+        for (actual, expected) in actual
+            .covariance()
+            .as_slice()
+            .iter()
+            .zip(expected.covariance().as_slice())
+        {
+            assert_f64_bits_eq(*actual, *expected);
+        }
+    }
+
+    fn covariance_residual64(a: &[Vec<f64>], p_rec: &Matrix64) -> f64 {
+        let d = p_rec.rows();
+        let mut max_residual = 0.0_f64;
+        for (row, a_row) in a.iter().enumerate() {
+            for column in 0..d {
+                let product: f64 = a_row
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &coefficient)| coefficient * p_rec.get(k, column).unwrap())
+                    .sum();
+                let identity = if row == column { 1.0 } else { 0.0 };
+                max_residual = max_residual.max((product - identity).abs());
+            }
+        }
+        max_residual
+    }
+
+    fn assert_a_objective(
+        lambda: f64,
+        delta: f64,
+        state: &RlsState64,
+        xs: &[Vec<f64>],
+        ys: &[f64],
+        weight_tolerance: f64,
+        covariance_tolerance: f64,
+    ) {
+        let (a, b) = objective_normal_equations(lambda, delta, xs, ys);
+        let w_ref = solve(&a, &b);
+        let mut max_weight_error = 0.0_f64;
+        for (index, (&actual, &expected)) in
+            state.weights().as_slice().iter().zip(&w_ref).enumerate()
+        {
+            let weight_error = (actual - expected).abs() / expected.abs().max(1.0);
+            max_weight_error = max_weight_error.max(weight_error);
+            assert!(
+                weight_error <= weight_tolerance,
+                "A w[{index}]: recurrence {actual} vs objective oracle {expected} \
+                 (scaled error {weight_error}, tolerance {weight_tolerance})"
+            );
+        }
+        assert!(max_weight_error <= weight_tolerance);
+        assert!(
+            max_abs_normal_residual(&a, &b, &w_ref) <= 1e-12,
+            "the native-f64 oracle solution does not satisfy its own normal equations"
+        );
+        let residual = covariance_residual64(&a, state.covariance());
+        assert!(
+            residual <= covariance_tolerance,
+            "A covariance residual {residual} exceeds {covariance_tolerance}"
+        );
+    }
+
+    fn assert_c_objective(lambda: f64, delta: f64, state: &RlsState, xs: &[Vec<f32>], ys: &[f32]) {
+        let (a, b, w_ref) = oracle_solution(lambda, delta, xs, ys);
+        assert_weights_match_oracle(state, &w_ref, 5e-3);
+        assert!(
+            max_abs_normal_residual(&a, &b, &w_ref) <= 1e-9,
+            "the f32-data objective oracle does not satisfy its own normal equations"
+        );
+        let residual = covariance_residual(&a, &state.p);
+        assert!(
+            residual <= 1e-2,
+            "C covariance residual {residual} exceeds 1e-2"
+        );
+    }
+
+    fn run_a_prefixes(model: &Rls64, xs: &[Vec<f64>], ys: &[f64]) -> RlsState64 {
+        let mut state = model.initial_state();
+        let mut reference = ref_initial64(model.dimension(), model.delta());
+        assert_state64_bitwise_eq(&state, &to_state64(&reference));
+        for (index, (x, &y)) in xs.iter().zip(ys).enumerate() {
+            let expected_prediction = ref_predict64(&reference, x);
+            let actual_prediction = model
+                .predict(&state, &Vector64::from_slice(x))
+                .unwrap_or_else(|error| panic!("A prediction failed at row {index}: {error:?}"));
+            assert_f64_bits_eq(actual_prediction, expected_prediction);
+            state = model
+                .update(&state, &sample64(x, y))
+                .unwrap_or_else(|error| panic!("A update failed at row {index}: {error:?}"));
+            reference = ref_step64(&reference, x, y, model.lambda());
+            assert_state64_bitwise_eq(&state, &to_state64(&reference));
+            assert_a_objective(
+                model.lambda(),
+                model.delta(),
+                &state,
+                &xs[..=index],
+                &ys[..=index],
+                1e-12,
+                1e-10,
+            );
+        }
+        state
+    }
+
+    fn run_c_prefixes(model: &Rls, xs: &[Vec<f32>], ys: &[f32]) -> RlsState {
+        let mut state = model.initial_state();
+        let mut reference = ref_initial(model.dimension(), model.delta());
+        for (index, (x, &y)) in xs.iter().zip(ys).enumerate() {
+            let expected_prediction = ref_predict(&reference, x);
+            let actual_prediction = model
+                .predict(&state, &Vector::from_slice(x))
+                .unwrap_or_else(|error| panic!("C prediction failed at row {index}: {error:?}"));
+            assert_f32_bits_eq(actual_prediction, expected_prediction);
+            state = model
+                .update(&state, &sample(x, y))
+                .unwrap_or_else(|error| panic!("C update failed at row {index}: {error:?}"));
+            reference = ref_step(&reference, x, y, model.lambda());
+            assert_state_bitwise_eq(&state, &to_state(&reference));
+            assert_c_objective(
+                f64::from(model.lambda()),
+                f64::from(model.delta()),
+                &state,
+                &xs[..=index],
+                &ys[..=index],
+            );
+        }
+        state
+    }
+
+    fn sinusoidal_data64(d: usize, n: usize) -> (Vec<Vec<f64>>, Vec<f64>) {
+        let mut xs = Vec::with_capacity(n);
+        let mut ys = Vec::with_capacity(n);
+        for k in 0..n {
+            let x: Vec<f64> = (0..d)
+                .map(|j| (((k + 1) * (j + 1)) as f64 * 0.37_f64).sin())
+                .collect();
+            let y = (k as f64 * 0.29_f64).cos() + 0.25_f64 * x[0];
+            xs.push(x);
+            ys.push(y);
+        }
+        (xs, ys)
+    }
+
+    #[test]
+    fn admission_precedence_and_non_certification_are_explicit() {
+        let zero =
+            RlsState64::admit(Vector64::zeros(0), Matrix64::from_fn(0, 5, |_, _| 1.0)).unwrap_err();
+        assert_eq!(zero, RlsStateAdmissionError::ZeroDimension);
+
+        let not_square = RlsState64::admit(
+            Vector64::from_slice(&[1.0, 2.0]),
+            Matrix64::from_fn(2, 3, |row, column| (row + column) as f64),
+        )
+        .unwrap_err();
+        assert_eq!(
+            not_square,
+            RlsStateAdmissionError::CovarianceNotSquare { rows: 2, cols: 3 }
+        );
+
+        let wrong_length = RlsState64::admit(
+            Vector64::from_slice(&[f64::NAN]),
+            Matrix64::from_fn(2, 2, |row, column| if row == column { 1.0 } else { 0.0 }),
+        )
+        .unwrap_err();
+        assert_eq!(
+            wrong_length,
+            RlsStateAdmissionError::WeightDimensionMismatch {
+                expected: 2,
+                actual: 1,
+            }
+        );
+
+        let bad_weight = RlsState64::admit(
+            Vector64::from_slice(&[1.0, f64::NAN, f64::INFINITY]),
+            Matrix64::from_fn(3, 3, |row, column| if row == column { 1.0 } else { 0.0 }),
+        )
+        .unwrap_err();
+        assert_eq!(
+            bad_weight,
+            RlsStateAdmissionError::NonFiniteWeight { index: 1 }
+        );
+
+        let bad_covariance = RlsState64::admit(
+            Vector64::from_slice(&[1.0, 2.0]),
+            Matrix64::from_rows(&[&[1.0, f64::NAN], &[0.0, 1.0]]).unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            bad_covariance,
+            RlsStateAdmissionError::NonFiniteCovariance { row: 0, column: 1 }
+        );
+
+        let signed_zero_asymmetry = RlsState64::admit(
+            Vector64::from_slice(&[1.0, 2.0]),
+            Matrix64::from_rows(&[&[1.0, 0.0], &[-0.0, 1.0]]).unwrap(),
+        )
+        .unwrap_err();
+        assert_eq!(
+            signed_zero_asymmetry,
+            RlsStateAdmissionError::AsymmetricCovariance { row: 0, column: 1 }
+        );
+
+        let indefinite = RlsState64::admit(
+            Vector64::from_slice(&[0.0, 0.0]),
+            Matrix64::from_rows(&[&[-1.0, 0.0], &[0.0, 1.0]]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(indefinite.covariance().get(0, 0), Some(-1.0));
+
+        let c_indefinite = RlsState::admit(
+            Vector::from_slice(&[0.0, 0.0]),
+            Matrix::from_rows(&[&[-1.0, 0.0], &[0.0, 1.0]]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(c_indefinite.p.get(0, 0), Some(-1.0));
+
+        let mut mutated = c_indefinite;
+        mutated.w = Vector::from_slice(&[1.0, 2.0]);
+        let c_model = Rls::new(2, 1.0, 1.0).unwrap();
+        assert_eq!(
+            c_model
+                .predict(&mutated, &Vector::from_slice(&[1.0, 1.0]))
+                .unwrap(),
+            3.0
+        );
+
+        let bypassed = RlsState {
+            w: Vector::from_slice(&[0.0, 0.0]),
+            p: Matrix::from_rows(&[&[1.0, 0.0], &[1.0, 1.0]]).unwrap(),
+        };
+        assert!(
+            c_model.update(&bypassed, &sample(&[1.0, 1.0], 0.0)).is_ok(),
+            "legacy update must not acquire a new admission check"
+        );
+    }
+
+    #[test]
+    fn native_f64_order4_same_order_controls_and_objective_match() {
+        let pairs = [
+            ([1.0_f64, 0.0], 1.0),
+            ([0.0, 1.0], -2.0),
+            ([0.5, 0.5], 3.0),
+            ([-0.25, 0.75], 0.5),
+        ];
+        for lambda in [1.0_f64, 0.9, 0.95] {
+            let model = model64(2, lambda, 5.0);
+            let mut direct = model.initial_state();
+            let mut reference = ref_initial64(2, 5.0);
+            let mut expected_states = vec![to_state64(&reference)];
+            let observations: Vec<_> = pairs.iter().map(|(x, y)| sample64(x, *y)).collect();
+            for (index, (x, y)) in pairs.iter().enumerate() {
+                let expected_prediction = ref_predict64(&reference, x);
+                let actual_prediction = model.predict(&direct, &Vector64::from_slice(x)).unwrap();
+                assert_f64_bits_eq(actual_prediction, expected_prediction);
+                direct = model.update(&direct, &sample64(x, *y)).unwrap();
+                reference = ref_step64(&reference, x, *y, lambda);
+                let expected = to_state64(&reference);
+                assert_state64_bitwise_eq(&direct, &expected);
+                expected_states.push(expected);
+                assert_a_objective(
+                    lambda,
+                    5.0,
+                    &direct,
+                    &pairs[..=index]
+                        .iter()
+                        .map(|(x, _)| x.to_vec())
+                        .collect::<Vec<_>>(),
+                    &pairs[..=index].iter().map(|(_, y)| *y).collect::<Vec<_>>(),
+                    1e-12,
+                    1e-10,
+                );
+            }
+            let mut executor = StreamingExecutor::new(&model, model.initial_state());
+            for (index, observation) in observations.iter().enumerate() {
+                executor.process_one(observation).unwrap();
+                assert_state64_bitwise_eq(executor.state(), &expected_states[index + 1]);
+            }
+            assert_state64_bitwise_eq(executor.state(), &direct);
+            let mut chunked = model.initial_state();
+            for (start, end) in [(0, 0), (0, 2), (2, 2), (2, 4)] {
+                chunked = model
+                    .process_batch_reference(chunked, &observations[start..end], end - start)
+                    .unwrap();
+                assert_state64_bitwise_eq(&chunked, &expected_states[end]);
+            }
+            assert_state64_bitwise_eq(&chunked, &direct);
+
+            let mut failure_rows = observations.clone();
+            failure_rows[2] = sample64(&pairs[2].0, f64::NAN);
+            match model.process_batch_reference(model.initial_state(), &failure_rows, 4) {
+                Err(RlsBatchError64::Transition {
+                    failed_index,
+                    state,
+                    error,
+                }) => {
+                    assert_eq!(failed_index, 2);
+                    assert_eq!(error, RlsError64::NonFiniteInput);
+                    assert_state64_bitwise_eq(&state, &expected_states[2]);
+                }
+                other => panic!("expected A failure at ORDER4 row 2, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn strict_f32_order4_and_named_wls_prefixes_keep_both_controls() {
+        let pairs = [
+            ([1.0_f32, 0.0], 1.0),
+            ([0.0, 1.0], -2.0),
+            ([0.5, 0.5], 3.0),
+            ([-0.25, 0.75], 0.5),
+        ];
+        for lambda in [1.0_f32, 0.9, 0.95] {
+            let model = Rls::new(2, lambda, 5.0).unwrap();
+            let mut direct = model.initial_state();
+            let mut reference = ref_initial(2, 5.0);
+            let mut expected_states = vec![to_state(&reference)];
+            let observations: Vec<_> = pairs.iter().map(|(x, y)| sample(x, *y)).collect();
+            for (index, (x, y)) in pairs.iter().enumerate() {
+                let expected_prediction = ref_predict(&reference, x);
+                let actual_prediction = model.predict(&direct, &Vector::from_slice(x)).unwrap();
+                assert_f32_bits_eq(actual_prediction, expected_prediction);
+                direct = model.update(&direct, &sample(x, *y)).unwrap();
+                reference = ref_step(&reference, x, *y, lambda);
+                let expected = to_state(&reference);
+                assert_state_bitwise_eq(&direct, &expected);
+                expected_states.push(expected);
+                assert_c_objective(
+                    f64::from(lambda),
+                    5.0,
+                    &direct,
+                    &pairs[..=index]
+                        .iter()
+                        .map(|(x, _)| x.to_vec())
+                        .collect::<Vec<_>>(),
+                    &pairs[..=index].iter().map(|(_, y)| *y).collect::<Vec<_>>(),
+                );
+            }
+            let mut executor = StreamingExecutor::new(&model, model.initial_state());
+            for (index, observation) in observations.iter().enumerate() {
+                executor.process_one(observation).unwrap();
+                assert_state_bitwise_eq(executor.state(), &expected_states[index + 1]);
+            }
+            assert_state_bitwise_eq(executor.state(), &direct);
+            let mut chunked = model.initial_state();
+            for (start, end) in [(0, 0), (0, 2), (2, 2), (2, 4)] {
+                chunked = model
+                    .process_batch_reference(chunked, &observations[start..end], end - start)
+                    .unwrap();
+                assert_state_bitwise_eq(&chunked, &expected_states[end]);
+            }
+            assert_state_bitwise_eq(&chunked, &direct);
+
+            let mut failure_rows = observations.clone();
+            failure_rows[2] = sample(&pairs[2].0, f32::NAN);
+            match model.process_batch_reference(model.initial_state(), &failure_rows, 4) {
+                Err(RlsBatchError::Transition {
+                    failed_index,
+                    state,
+                    error,
+                }) => {
+                    assert_eq!(failed_index, 2);
+                    assert_eq!(error, RlsError::NonFiniteInput);
+                    assert_state_bitwise_eq(&state, &expected_states[2]);
+                }
+                other => panic!("expected C failure at ORDER4 row 2, got {other:?}"),
+            }
+        }
+
+        let cases = [
+            (2, 20, 1.0_f64),
+            (2, 100, 1.0),
+            (4, 20, 1.0),
+            (4, 100, 1.0),
+            (2, 20, 0.9),
+            (2, 60, 0.9),
+            (4, 20, 0.9),
+            (4, 60, 0.9),
+            (2, 20, 0.99),
+            (2, 60, 0.99),
+            (4, 20, 0.99),
+            (4, 60, 0.99),
+        ];
+        for (dimension, rows, lambda) in cases {
+            let (xs64, ys64) = sinusoidal_data64(dimension, rows);
+            let model_a = model64(dimension, lambda, 1000.0);
+            run_a_prefixes(&model_a, &xs64, &ys64);
+
+            let (xs32, ys32) = sinusoidal_data(dimension, rows);
+            let model_c = Rls::new(dimension, lambda as f32, 1000.0_f32).unwrap();
+            run_c_prefixes(&model_c, &xs32, &ys32);
+        }
+
+        let model_a = model64(2, 0.9, 1.0);
+        let xs64 = vec![vec![1.0, 2.0]; 40];
+        let ys64 = vec![3.0; 40];
+        run_a_prefixes(&model_a, &xs64, &ys64);
+
+        let model_c = Rls::new(2, 0.9, 1.0).unwrap();
+        let xs32 = vec![vec![1.0, 2.0]; 40];
+        let ys32 = vec![3.0; 40];
+        run_c_prefixes(&model_c, &xs32, &ys32);
+    }
+
+    #[test]
+    fn prior_forgetting_and_initialization_are_checked_for_every_prefix() {
+        let xs64 = vec![vec![0.0]; 12];
+        let ys64: Vec<f64> = (0..12).map(|j| j as f64).collect();
+        let model_a = model64(1, 0.9, 1000.0);
+        let mut state_a = model_a.initial_state();
+        let mut reference_a = ref_initial64(1, 1000.0);
+        assert_f64_bits_eq(state_a.weights().get(0).unwrap(), 0.0);
+        assert_f64_bits_eq(state_a.covariance().get(0, 0).unwrap(), 1000.0);
+        for index in 0..12 {
+            assert_f64_bits_eq(
+                model_a
+                    .predict(&state_a, &Vector64::from_slice(&xs64[index]))
+                    .unwrap(),
+                ref_predict64(&reference_a, &xs64[index]),
+            );
+            state_a = model_a
+                .update(&state_a, &sample64(&xs64[index], ys64[index]))
+                .unwrap();
+            reference_a = ref_step64(&reference_a, &xs64[index], ys64[index], 0.9);
+            assert_state64_bitwise_eq(&state_a, &to_state64(&reference_a));
+            assert_f64_bits_eq(state_a.weights().get(0).unwrap(), 0.0);
+            assert_a_objective(
+                0.9,
+                1000.0,
+                &state_a,
+                &xs64[..=index],
+                &ys64[..=index],
+                1e-12,
+                1e-10,
+            );
+        }
+
+        let xs32 = vec![vec![0.0_f32]; 12];
+        let ys32: Vec<f32> = (0..12).map(|j| j as f32).collect();
+        let model_c = Rls::new(1, 0.9, 1000.0).unwrap();
+        let mut state_c = model_c.initial_state();
+        let mut reference_c = ref_initial(1, 1000.0);
+        for index in 0..12 {
+            assert_f32_bits_eq(
+                model_c
+                    .predict(&state_c, &Vector::from_slice(&xs32[index]))
+                    .unwrap(),
+                ref_predict(&reference_c, &xs32[index]),
+            );
+            state_c = model_c
+                .update(&state_c, &sample(&xs32[index], ys32[index]))
+                .unwrap();
+            reference_c = ref_step(&reference_c, &xs32[index], ys32[index], 0.9);
+            assert_state_bitwise_eq(&state_c, &to_state(&reference_c));
+            assert_f32_bits_eq(state_c.w.get(0).unwrap(), 0.0);
+            assert_c_objective(0.9, 1000.0, &state_c, &xs32[..=index], &ys32[..=index]);
+        }
+    }
+
+    fn permutation_pairs64(dimension: usize) -> Vec<(Vec<f64>, f64)> {
+        let (xs, ys) = sinusoidal_data64(dimension, 30);
+        xs.into_iter().zip(ys).collect()
+    }
+
+    fn permutation_pairs32() -> Vec<(Vec<f32>, f32)> {
+        let (xs, ys) = sinusoidal_data(2, 30);
+        xs.into_iter().zip(ys).collect()
+    }
+
+    fn permuted<T: Clone>(pairs: &[(Vec<T>, T)]) -> Vec<(Vec<T>, T)> {
+        let n = pairs.len();
+        (0..n).map(|k| pairs[(7 * k + 13) % n].clone()).collect()
+    }
+
+    fn run_a_pairs(model: &Rls64, pairs: &[(Vec<f64>, f64)]) -> RlsState64 {
+        let mut state = model.initial_state();
+        let mut reference = ref_initial64(model.dimension(), model.delta());
+        for (index, (x, y)) in pairs.iter().enumerate() {
+            assert_f64_bits_eq(
+                model.predict(&state, &Vector64::from_slice(x)).unwrap(),
+                ref_predict64(&reference, x),
+            );
+            state = model
+                .update(&state, &sample64(x, *y))
+                .unwrap_or_else(|error| panic!("A pair update failed at {index}: {error:?}"));
+            reference = ref_step64(&reference, x, *y, model.lambda());
+            assert_state64_bitwise_eq(&state, &to_state64(&reference));
+        }
+        state
+    }
+
+    fn run_c_pairs(model: &Rls, pairs: &[(Vec<f32>, f32)]) -> RlsState {
+        let mut state = model.initial_state();
+        let mut reference = ref_initial(model.dimension(), model.delta());
+        for (index, (x, y)) in pairs.iter().enumerate() {
+            assert_f32_bits_eq(
+                model.predict(&state, &Vector::from_slice(x)).unwrap(),
+                ref_predict(&reference, x),
+            );
+            state = model
+                .update(&state, &sample(x, *y))
+                .unwrap_or_else(|error| panic!("C pair update failed at {index}: {error:?}"));
+            reference = ref_step(&reference, x, *y, model.lambda());
+            assert_state_bitwise_eq(&state, &to_state(&reference));
+        }
+        state
+    }
+
+    #[test]
+    fn native_f64_hand_and_rational_controls_are_exact() {
+        let hand_model = model64(2, 1.0, 1.0);
+        let mut hand_state = hand_model.initial_state();
+        assert_f64_bits_eq(
+            hand_model
+                .predict(&hand_state, &Vector64::from_slice(&[1.0, 0.0]))
+                .unwrap(),
+            0.0,
+        );
+        hand_state = hand_model
+            .update(&hand_state, &sample64(&[1.0, 0.0], 1.0))
+            .unwrap();
+        assert_eq!(hand_state.weights().as_slice(), &[0.5, 0.0]);
+        assert_eq!(hand_state.covariance().as_slice(), &[0.5, 0.0, 0.0, 1.0]);
+        assert_f64_bits_eq(
+            hand_model
+                .predict(&hand_state, &Vector64::from_slice(&[0.0, 1.0]))
+                .unwrap(),
+            0.0,
+        );
+        hand_state = hand_model
+            .update(&hand_state, &sample64(&[0.0, 1.0], 3.0))
+            .unwrap();
+        assert_eq!(hand_state.weights().as_slice(), &[0.5, 1.5]);
+        assert_eq!(hand_state.covariance().as_slice(), &[0.5, 0.0, 0.0, 0.5]);
+        assert_f64_bits_eq(
+            hand_model
+                .predict(&hand_state, &Vector64::from_slice(&[1.0, 1.0]))
+                .unwrap(),
+            2.0,
+        );
+
+        let rational_model = model64(1, 1.0, 1.0);
+        let mut rational_state = rational_model.initial_state();
+        assert_f64_bits_eq(
+            rational_model
+                .predict(&rational_state, &Vector64::from_slice(&[1.0]))
+                .unwrap(),
+            0.0,
+        );
+        rational_state = rational_model
+            .update(&rational_state, &sample64(&[1.0], 2.0))
+            .unwrap();
+        assert_eq!(rational_state.weights().as_slice(), &[1.0]);
+        assert_eq!(rational_state.covariance().as_slice(), &[0.5]);
+        assert_f64_bits_eq(
+            rational_model
+                .predict(&rational_state, &Vector64::from_slice(&[1.0]))
+                .unwrap(),
+            1.0,
+        );
+        rational_state = rational_model
+            .update(&rational_state, &sample64(&[1.0], 4.0))
+            .unwrap();
+        assert_eq!(rational_state.weights().as_slice(), &[2.0]);
+        let covariance_error = (rational_state.covariance().get(0, 0).unwrap() - 1.0 / 3.0).abs();
+        assert!(
+            covariance_error <= 1e-15,
+            "1/3 covariance error {covariance_error}"
+        );
+        assert_f64_bits_eq(
+            rational_model
+                .predict(&rational_state, &Vector64::from_slice(&[1.0]))
+                .unwrap(),
+            2.0,
+        );
+    }
+
+    fn matrix_rows64(matrix: &Matrix64) -> Vec<Vec<f64>> {
+        (0..matrix.rows())
+            .map(|row| {
+                (0..matrix.cols())
+                    .map(|column| matrix.get(row, column).unwrap())
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn matrix_rows32(matrix: &Matrix) -> Vec<Vec<f64>> {
+        (0..matrix.rows())
+            .map(|row| {
+                (0..matrix.cols())
+                    .map(|column| f64::from(matrix.get(row, column).unwrap()))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn matrix_infinity_norm64(matrix: &[Vec<f64>]) -> f64 {
+        matrix
+            .iter()
+            .map(|row| row.iter().map(|value| value.abs()).sum::<f64>())
+            .fold(0.0_f64, f64::max)
+    }
+
+    fn matrix_difference_infinity_norm64(left: &[Vec<f64>], right: &[Vec<f64>]) -> f64 {
+        left.iter()
+            .zip(right)
+            .map(|(left, right)| {
+                left.iter()
+                    .zip(right)
+                    .map(|(left, right)| (left - right).abs())
+                    .sum::<f64>()
+            })
+            .fold(0.0_f64, f64::max)
+    }
+
+    fn a_order_diagnostics(forward: &RlsState64, permuted: &RlsState64) -> (f64, f64, f64, f64) {
+        let d_w = max_abs_difference(forward.weights().as_slice(), permuted.weights().as_slice());
+        let s_w = 1.0 + infinity_norm(forward.weights().as_slice());
+        let forward_p = matrix_rows64(forward.covariance());
+        let permuted_p = matrix_rows64(permuted.covariance());
+        let d_p = matrix_difference_infinity_norm64(&forward_p, &permuted_p);
+        let s_p = 1.0 + matrix_infinity_norm64(&forward_p);
+        (d_w, s_w, d_p, s_p)
+    }
+
+    fn c_order_diagnostics(forward: &RlsState, permuted: &RlsState) -> (f64, f64, f64, f64) {
+        let forward_w: Vec<f64> = forward.w.as_slice().iter().map(|&v| f64::from(v)).collect();
+        let permuted_w: Vec<f64> = permuted
+            .w
+            .as_slice()
+            .iter()
+            .map(|&v| f64::from(v))
+            .collect();
+        let d_w = max_abs_difference(&forward_w, &permuted_w);
+        let s_w = 1.0 + infinity_norm(&forward_w);
+        let forward_p = matrix_rows32(&forward.p);
+        let permuted_p = matrix_rows32(&permuted.p);
+        let d_p = matrix_difference_infinity_norm64(&forward_p, &permuted_p);
+        let s_p = 1.0 + matrix_infinity_norm64(&forward_p);
+        (d_w, s_w, d_p, s_p)
+    }
+
+    fn a_objective_for_pairs(
+        model: &Rls64,
+        state: &RlsState64,
+        pairs: &[(Vec<f64>, f64)],
+        weight_tolerance: f64,
+        covariance_tolerance: f64,
+    ) {
+        let xs: Vec<Vec<f64>> = pairs.iter().map(|(x, _)| x.clone()).collect();
+        let ys: Vec<f64> = pairs.iter().map(|(_, y)| *y).collect();
+        assert_a_objective(
+            model.lambda(),
+            model.delta(),
+            state,
+            &xs,
+            &ys,
+            weight_tolerance,
+            covariance_tolerance,
+        );
+    }
+
+    fn c_objective_for_pairs(model: &Rls, state: &RlsState, pairs: &[(Vec<f32>, f32)]) {
+        let xs: Vec<Vec<f32>> = pairs.iter().map(|(x, _)| x.clone()).collect();
+        let ys: Vec<f32> = pairs.iter().map(|(_, y)| *y).collect();
+        assert_c_objective(
+            f64::from(model.lambda()),
+            f64::from(model.delta()),
+            state,
+            &xs,
+            &ys,
+        );
+    }
+
+    #[test]
+    fn permutation_and_conversion_semantics_match_named_bounds() {
+        let forward_pairs = permutation_pairs64(2);
+        let permuted_pairs = permuted(&forward_pairs);
+        for (lambda, order_weight_tolerance, order_covariance_tolerance) in
+            [(1.0_f64, 1e-12, 1e-10), (0.5_f64, 1e-10, 1e-9)]
+        {
+            let model = model64(2, lambda, 1000.0);
+            let forward = run_a_pairs(&model, &forward_pairs);
+            let permuted_state = run_a_pairs(&model, &permuted_pairs);
+            let observations: Vec<_> = forward_pairs.iter().map(|(x, y)| sample64(x, *y)).collect();
+            let batched = model
+                .process_batch_reference(model.initial_state(), &observations, 30)
+                .unwrap();
+            assert_state64_bitwise_eq(&batched, &forward);
+            let permuted_observations: Vec<_> = permuted_pairs
+                .iter()
+                .map(|(x, y)| sample64(x, *y))
+                .collect();
+            let permuted_batched = model
+                .process_batch_reference(model.initial_state(), &permuted_observations, 30)
+                .unwrap();
+            assert_state64_bitwise_eq(&permuted_batched, &permuted_state);
+
+            a_objective_for_pairs(
+                &model,
+                &forward,
+                &forward_pairs,
+                order_weight_tolerance,
+                order_covariance_tolerance,
+            );
+            a_objective_for_pairs(
+                &model,
+                &permuted_state,
+                &permuted_pairs,
+                order_weight_tolerance,
+                order_covariance_tolerance,
+            );
+            let (d_w, s_w, d_p, s_p) = a_order_diagnostics(&forward, &permuted_state);
+            if lambda == 1.0 {
+                assert!(d_w <= 1e-10 * s_w, "A λ=1 D_w={d_w}, S_w={s_w}");
+                assert!(d_p <= 1e-9 * s_p, "A λ=1 D_P={d_p}, S_P={s_p}");
+            } else {
+                assert!(d_w > 1e-3, "A λ=0.5 D_w={d_w}");
+            }
+
+            let serving_forward = model.to_serving_f32(&forward).unwrap();
+            let serving_permuted = model.to_serving_f32(&permuted_state).unwrap();
+            let expected_forward: Vec<f32> = forward
+                .weights()
+                .as_slice()
+                .iter()
+                .map(|&value| value as f32)
+                .collect();
+            let expected_permuted: Vec<f32> = permuted_state
+                .weights()
+                .as_slice()
+                .iter()
+                .map(|&value| value as f32)
+                .collect();
+            for (actual, expected) in serving_forward
+                .weights()
+                .as_slice()
+                .iter()
+                .zip(&expected_forward)
+            {
+                assert_eq!(actual.to_bits(), expected.to_bits());
+            }
+            for (actual, expected) in serving_permuted
+                .weights()
+                .as_slice()
+                .iter()
+                .zip(&expected_permuted)
+            {
+                assert_eq!(actual.to_bits(), expected.to_bits());
+            }
+            let serving_features: Vec<Vector> = forward_pairs
+                .iter()
+                .map(|(x, _)| {
+                    let narrowed: Vec<f32> = x
+                        .iter()
+                        .map(|&value| {
+                            assert!(value.is_finite());
+                            let narrowed = value as f32;
+                            assert!(narrowed.is_finite());
+                            narrowed
+                        })
+                        .collect();
+                    Vector::from_slice(&narrowed)
+                })
+                .collect();
+            let mut q_forward = Vec::with_capacity(serving_features.len());
+            let mut q_permuted = Vec::with_capacity(serving_features.len());
+            for features in &serving_features {
+                let expected: f32 = serving_forward
+                    .weights()
+                    .as_slice()
+                    .iter()
+                    .zip(features.as_slice())
+                    .map(|(w, x)| w * x)
+                    .sum();
+                let actual = serving_forward
+                    .predict_checked(features)
+                    .expect("forward serving prediction must be finite");
+                assert_eq!(actual.to_bits(), expected.to_bits());
+                let other = serving_permuted
+                    .predict_checked(features)
+                    .expect("permuted serving prediction must be finite");
+                let expected_other: f32 = serving_permuted
+                    .weights()
+                    .as_slice()
+                    .iter()
+                    .zip(features.as_slice())
+                    .map(|(w, x)| w * x)
+                    .sum();
+                assert_eq!(other.to_bits(), expected_other.to_bits());
+                q_forward.push(f64::from(actual));
+                q_permuted.push(f64::from(other));
+            }
+            let d_q = max_abs_difference(&q_forward, &q_permuted);
+            let s_q = 1.0 + infinity_norm(&q_forward);
+            if lambda == 1.0 {
+                assert!(d_q <= 1e-6 * s_q, "B λ=1 D_q={d_q}, S_q={s_q}");
+            } else {
+                assert!(d_q > 1e-4, "B λ=0.5 D_q={d_q}");
+            }
+        }
+
+        let forward_pairs = permutation_pairs32();
+        let permuted_pairs = permuted(&forward_pairs);
+        for lambda in [1.0_f32, 0.5] {
+            let model = Rls::new(2, lambda, 1000.0).unwrap();
+            let forward = run_c_pairs(&model, &forward_pairs);
+            let permuted_state = run_c_pairs(&model, &permuted_pairs);
+            let observations: Vec<_> = forward_pairs.iter().map(|(x, y)| sample(x, *y)).collect();
+            let batched = model
+                .process_batch_reference(model.initial_state(), &observations, 30)
+                .unwrap();
+            assert_state_bitwise_eq(&batched, &forward);
+            let permuted_observations: Vec<_> =
+                permuted_pairs.iter().map(|(x, y)| sample(x, *y)).collect();
+            let permuted_batched = model
+                .process_batch_reference(model.initial_state(), &permuted_observations, 30)
+                .unwrap();
+            assert_state_bitwise_eq(&permuted_batched, &permuted_state);
+            c_objective_for_pairs(&model, &forward, &forward_pairs);
+            c_objective_for_pairs(&model, &permuted_state, &permuted_pairs);
+            let (d_w, s_w, d_p, s_p) = c_order_diagnostics(&forward, &permuted_state);
+            if lambda == 1.0 {
+                assert!(d_w <= 1e-4 * s_w, "C λ=1 D_w={d_w}, S_w={s_w}");
+                assert!(d_p <= 1e-3 * s_p, "C λ=1 D_P={d_p}, S_P={s_p}");
+            } else {
+                assert!(d_w > 1e-3, "C λ=0.5 D_w={d_w}");
+            }
+        }
+    }
+
+    fn learned_state64() -> (Rls64, RlsState64) {
+        let model = model64(2, 0.9, 1000.0);
+        let pairs = [
+            (vec![1.0, -0.5], 2.0),
+            (vec![0.25, 1.0], -1.0),
+            (vec![-0.75, 0.5], 0.5),
+        ];
+        let state = run_a_pairs(&model, &pairs);
+        (model, state)
+    }
+
+    fn diagonal64(values: &[f64]) -> Matrix64 {
+        Matrix64::from_fn(values.len(), values.len(), |row, column| {
+            if row == column { values[row] } else { 0.0 }
+        })
+    }
+
+    fn admitted64(weights: &[f64], diagonal: &[f64]) -> RlsState64 {
+        RlsState64::admit(Vector64::from_slice(weights), diagonal64(diagonal)).unwrap()
+    }
+
+    #[test]
+    fn failure_preservation_candidate_overflow_and_continuation_are_exact() {
+        let (model, learned) = learned_state64();
+        let learned_snapshot = learned.clone();
+
+        let shape_error = model.update(&learned, &sample64(&[1.0, 2.0, 3.0], 1.0));
+        assert_eq!(
+            shape_error,
+            Err(RlsError64::DimensionMismatch {
+                expected: 2,
+                actual: 3,
+            })
+        );
+        assert_state64_bitwise_eq(&learned, &learned_snapshot);
+
+        assert_eq!(
+            model.update(&learned, &sample64(&[f64::NAN, 0.0], 1.0)),
+            Err(RlsError64::NonFiniteInput)
+        );
+        assert_state64_bitwise_eq(&learned, &learned_snapshot);
+        assert_eq!(
+            model.update(&learned, &sample64(&[1.0, 0.0], f64::NAN)),
+            Err(RlsError64::NonFiniteInput)
+        );
+        assert_state64_bitwise_eq(&learned, &learned_snapshot);
+
+        let indefinite = RlsState64::admit(
+            learned.weights().clone(),
+            Matrix64::from_rows(&[&[-1.0, 0.0], &[0.0, 1.0]]).unwrap(),
+        )
+        .unwrap();
+        let indefinite_snapshot = indefinite.clone();
+        assert_eq!(
+            model.update(&indefinite, &sample64(&[1.0, 0.0], 1.0)),
+            Err(RlsError64::InvalidDenominator)
+        );
+        assert_state64_bitwise_eq(&indefinite, &indefinite_snapshot);
+        let unexcited = model
+            .update(&indefinite, &sample64(&[0.0, 1.0], 1.0))
+            .expect("the unexcited direction passes the denominator guard");
+        assert_state64_bitwise_eq(&indefinite, &indefinite_snapshot);
+        assert!(unexcited.covariance().get(0, 0).unwrap() < 0.0);
+
+        let huge_covariance = admitted64(learned.weights().as_slice(), &[f64::MAX, 1.0]);
+        let huge_snapshot = huge_covariance.clone();
+        assert_eq!(
+            model.update(&huge_covariance, &sample64(&[2.0, 0.0], 0.0)),
+            Err(RlsError64::InvalidDenominator)
+        );
+        assert_state64_bitwise_eq(&huge_covariance, &huge_snapshot);
+
+        let overflow_state = admitted64(&[f64::MAX, 0.0], &[1.0, 1.0]);
+        let overflow_snapshot = overflow_state.clone();
+        assert_eq!(
+            model.update(&overflow_state, &sample64(&[2.0, 0.0], -f64::MAX)),
+            Err(RlsError64::NonFiniteCandidate)
+        );
+        assert_state64_bitwise_eq(&overflow_state, &overflow_snapshot);
+
+        let continuation = model
+            .update(&learned, &sample64(&[0.5, -0.25], 2.0))
+            .unwrap();
+        let reference = ref_step64(
+            &reference_from_state64(&learned),
+            &[0.5, -0.25],
+            2.0,
+            model.lambda(),
+        );
+        assert_state64_bitwise_eq(&continuation, &to_state64(&reference));
+    }
+
+    #[test]
+    fn bounded_fold_recovers_exact_prefixes_bounds_and_continuation() {
+        let model = model64(1, 1.0, 1.0);
+        let first = model
+            .update(&model.initial_state(), &sample64(&[1.0], 1.0))
+            .unwrap();
+        let second = model.update(&first, &sample64(&[1.0], 2.0)).unwrap();
+        let valid = [
+            sample64(&[1.0], 1.0),
+            sample64(&[1.0], 2.0),
+            sample64(&[1.0], 3.0),
+        ];
+        let prefixes = [model.initial_state(), first.clone(), second];
+
+        for (failed_index, expected) in prefixes.into_iter().enumerate() {
+            let mut batch = valid.clone();
+            batch[failed_index] = sample64(&[1.0], f64::NAN);
+            let error = model
+                .process_batch_reference(model.initial_state(), &batch, 3)
+                .unwrap_err();
+            match error {
+                RlsBatchError64::Transition {
+                    failed_index: actual_index,
+                    state,
+                    error,
+                } => {
+                    assert_eq!(actual_index, failed_index);
+                    assert_state64_bitwise_eq(&state, &expected);
+                    assert_eq!(error, RlsError64::NonFiniteInput);
+                    assert_eq!(
+                        StdError::source(&error).map(|source| source.to_string()),
+                        None
+                    );
+                }
+                other => panic!("unexpected batch failure: {other:?}"),
+            }
+        }
+
+        let mut invalid = valid.clone();
+        invalid[1] = sample64(&[1.0], f64::NAN);
+        let error = model
+            .process_batch_reference(model.initial_state(), &invalid, 3)
+            .unwrap_err();
+        let display = error.to_string();
+        assert!(display.contains("1 observations were committed"));
+        assert!(display.contains("no whole-batch rollback"));
+        assert_eq!(
+            StdError::source(&error).and_then(|source| source.downcast_ref::<RlsError64>()),
+            Some(&RlsError64::NonFiniteInput)
+        );
+
+        let too_large_error = model
+            .process_batch_reference(model.initial_state(), &valid, 2)
+            .unwrap_err();
+        let message = too_large_error.to_string();
+        assert!(message.contains("exceeds maximum 2"));
+        assert!(too_large_error.source().is_none());
+        let returned = match too_large_error {
+            RlsBatchError64::BatchTooLarge { max, actual, state } => {
+                assert_eq!((max, actual), (2, 3));
+                state
+            }
+            other => panic!("unexpected bound failure: {other:?}"),
+        };
+        let empty: [Observation<RlsSample64>; 0] = [];
+        assert_state64_bitwise_eq(
+            &model
+                .process_batch_reference(returned.clone(), &empty, 0)
+                .unwrap(),
+            &returned,
+        );
+        let foreign_model = model64(2, 1.0, 1.0);
+        let foreign = foreign_model.initial_state();
+        assert_state64_bitwise_eq(
+            &model.process_batch_reference(foreign, &empty, 0).unwrap(),
+            &foreign_model.initial_state(),
+        );
+        let nonempty_zero_bound = model
+            .process_batch_reference(returned.clone(), &valid, 0)
+            .unwrap_err();
+        assert!(matches!(
+            nonempty_zero_bound,
+            RlsBatchError64::BatchTooLarge { .. }
+        ));
+
+        let moved = match model.process_batch_reference(returned, &valid, 2) {
+            Err(RlsBatchError64::BatchTooLarge { state, .. }) => state,
+            _ => panic!("expected bound rejection"),
+        };
+        let moved_next = model.update(&moved, &sample64(&[1.0], 1.0)).unwrap();
+        let direct_next = model
+            .update(&model.initial_state(), &sample64(&[1.0], 1.0))
+            .unwrap();
+        assert_state64_bitwise_eq(&moved_next, &direct_next);
+
+        let (model, learned) = learned_state64();
+        let sequence = [
+            (vec![1.0, 0.0], 2.0),
+            (vec![1.0, 0.0], 3.0),
+            (vec![0.0, 1.0], -1.0),
+            (vec![0.5, 0.5], 0.25),
+            (vec![-1.0, 2.0], 0.75),
+        ];
+        let observations: Vec<_> = sequence.iter().map(|(x, y)| sample64(x, *y)).collect();
+        let mut direct = learned.clone();
+        for (x, y) in &sequence {
+            direct = model.update(&direct, &sample64(x, *y)).unwrap();
+        }
+        let mut chunked = learned.clone();
+        for (start, end, bound) in [(0, 2, 2), (2, 2, 0), (2, 3, 1), (3, 5, 2)] {
+            chunked = model
+                .process_batch_reference(chunked, &observations[start..end], bound)
+                .unwrap();
+        }
+        assert_state64_bitwise_eq(&chunked, &direct);
+    }
+
+    #[test]
+    fn streaming_continuation_is_ordered_and_independent_streams_do_not_interfere() {
+        let model = model64(1, 1.0, 1.0);
+        let observations = [
+            sample64(&[1.0], 1.0),
+            sample64(&[1.0], f64::NAN),
+            sample64(&[1.0], 2.0),
+        ];
+        let mut failures = 0_usize;
+        let streamed = process_stream(
+            &model,
+            model.initial_state(),
+            observations.clone(),
+            |_error| failures += 1,
+        );
+        assert_eq!(failures, 1);
+        let first = model
+            .update(&model.initial_state(), &sample64(&[1.0], 1.0))
+            .unwrap();
+        let expected = model.update(&first, &sample64(&[1.0], 2.0)).unwrap();
+        assert_state64_bitwise_eq(&streamed, &expected);
+        let bounded = model
+            .process_batch_reference(model.initial_state(), &observations, 3)
+            .unwrap_err();
+        match bounded {
+            RlsBatchError64::Transition {
+                failed_index,
+                state,
+                ..
+            } => {
+                assert_eq!(failed_index, 1);
+                assert_state64_bitwise_eq(&state, &first);
+            }
+            other => panic!("unexpected bounded failure: {other:?}"),
+        }
+
+        let (model, _) = learned_state64();
+        let mut left = model.initial_state();
+        let mut right = model.initial_state();
+        let left_rows = [([0.5, -0.5], 1.0), ([1.0, 2.0], -1.0)];
+        let right_rows = [([-1.0, 0.25], 3.0), ([0.0, -2.0], 0.5)];
+        for ((x, y), (x2, y2)) in left_rows.iter().zip(&right_rows) {
+            left = model.update(&left, &sample64(x, *y)).unwrap();
+            right = model.update(&right, &sample64(x2, *y2)).unwrap();
+        }
+        let mut left_reference = model.initial_state();
+        for (x, y) in &left_rows {
+            left_reference = model.update(&left_reference, &sample64(x, *y)).unwrap();
+        }
+        assert_state64_bitwise_eq(&left, &left_reference);
+        let mut right_reference = model.initial_state();
+        for (x, y) in &right_rows {
+            right_reference = model.update(&right_reference, &sample64(x, *y)).unwrap();
+        }
+        assert_state64_bitwise_eq(&right, &right_reference);
+    }
+
+    fn state64_with_weights(model: &Rls64, weights: &[f64]) -> RlsState64 {
+        let diagonal = vec![1.0; model.dimension()];
+        RlsState64::admit(Vector64::from_slice(weights), diagonal64(&diagonal)).unwrap()
+    }
+
+    fn snapshot_bits(snapshot: &RlsServing32) -> Vec<u32> {
+        snapshot
+            .weights()
+            .as_slice()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect()
+    }
+
+    #[test]
+    fn conversion_boundaries_are_checked_without_overflow_or_underflow_repair() {
+        let model = model64(1, 1.0, 1.0);
+        let exact_cases: [(f64, f32); 7] = [
+            (1.0, 1.0),
+            (-2.0, -2.0),
+            (1.0 + 2f64.powi(-24), 1.0),
+            (1.0 + 3.0 * 2f64.powi(-24), 1.0 + 2f32.powi(-22)),
+            (f64::from(f32::MAX) * (1.0 + 2f64.powi(-26)), f32::MAX),
+            (-0.0, -0.0),
+            (f64::from(f32::from_bits(1)), f32::from_bits(1)),
+        ];
+        for (source, expected) in exact_cases {
+            let state = state64_with_weights(&model, &[source]);
+            let before = state.clone();
+            let snapshot = model.to_serving_f32(&state).unwrap();
+            assert_eq!(
+                snapshot.weights().get(0).unwrap().to_bits(),
+                expected.to_bits()
+            );
+            assert_state64_bitwise_eq(&state, &before);
+        }
+
+        let overflow = state64_with_weights(&model, &[2.0 * f64::from(f32::MAX)]);
+        let overflow_before = overflow.clone();
+        assert_eq!(
+            model.to_serving_f32(&overflow).unwrap_err(),
+            RlsServingConversionError::Overflow { index: 0 }
+        );
+        assert_state64_bitwise_eq(&overflow, &overflow_before);
+
+        let underflow = state64_with_weights(&model, &[2f64.powi(-200)]);
+        let underflow_before = underflow.clone();
+        let active = model.to_serving_f32(&model.initial_state()).unwrap();
+        let active_bits = snapshot_bits(&active);
+        assert_eq!(
+            model.to_serving_f32(&underflow).unwrap_err(),
+            RlsServingConversionError::Underflow { index: 0 }
+        );
+        assert_state64_bitwise_eq(&underflow, &underflow_before);
+        assert_eq!(snapshot_bits(&active), active_bits);
+
+        let wide_model = model64(2, 1.0, 1.0);
+        let other_dimension = model64(3, 1.0, 1.0).initial_state();
+        assert_eq!(
+            wide_model.to_serving_f32(&other_dimension).unwrap_err(),
+            RlsServingConversionError::StateDimensionMismatch {
+                expected: 2,
+                actual: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn native_f64_discriminator_is_not_a_quantized_f32_trajectory() {
+        let model = model64(1, 1.0, 1.0);
+        let first = model
+            .update(&model.initial_state(), &sample64(&[1.0], 0.0))
+            .unwrap();
+        let second_input = 1.0 + 2f64.powi(-24);
+        let native = model
+            .update(&first, &sample64(&[second_input], 2f64.powi(24)))
+            .unwrap();
+        let reference = ref_step64(
+            &ref_step64(&ref_initial64(1, 1.0), &[1.0], 0.0, 1.0),
+            &[second_input],
+            2f64.powi(24),
+            1.0,
+        );
+        assert_state64_bitwise_eq(&native, &to_state64(&reference));
+        let expected = 5_592_405.444_444_444_f64;
+        let actual = native.weights().get(0).unwrap();
+        assert!(
+            (actual - expected).abs() <= 1e-12 * expected.abs().max(1.0),
+            "native f64 weight {actual} is not the expected {expected}"
+        );
+
+        let quantized_model = Rls::new(1, 1.0, 1.0).unwrap();
+        let first = quantized_model
+            .update(&quantized_model.initial_state(), &sample(&[1.0], 0.0))
+            .unwrap();
+        let quantized = quantized_model
+            .update(&first, &sample(&[1.0], 2f32.powi(24)))
+            .unwrap();
+        assert_eq!(
+            quantized.w.get(0).unwrap().to_bits(),
+            5_592_405.5_f32.to_bits()
+        );
+        assert!((actual - f64::from(quantized.w.get(0).unwrap())).abs() > 0.05);
+
+        let serving = model.to_serving_f32(&native).unwrap();
+        assert_eq!(
+            serving.weights().get(0).unwrap().to_bits(),
+            quantized.w.get(0).unwrap().to_bits()
+        );
+    }
+
+    fn collect_a(
+        model: &Rls64,
+        state: &RlsState64,
+        rows: &[Vector64],
+    ) -> Result<Vec<f64>, RlsError64> {
+        let mut outputs = Vec::with_capacity(rows.len());
+        for row in rows {
+            outputs.push(model.predict_checked(state, row)?);
+        }
+        Ok(outputs)
+    }
+
+    fn collect_f32(
+        rows: &[Vector],
+        mut predict: impl FnMut(&Vector) -> Result<f32, RlsError>,
+    ) -> Result<Vec<f32>, RlsError> {
+        let mut outputs = Vec::with_capacity(rows.len());
+        for row in rows {
+            outputs.push(predict(row)?);
+        }
+        Ok(outputs)
+    }
+
+    fn accept_candidate(
+        active: &mut RlsServing32,
+        candidate: RlsServing32,
+        rows: &[Vector],
+    ) -> Result<bool, RlsError> {
+        if rows.is_empty() {
+            return Ok(false);
+        }
+        let _ = collect_f32(rows, |row| candidate.predict_checked(row))?;
+        *active = candidate;
+        Ok(true)
+    }
+
+    #[test]
+    fn prediction_precedence_collectors_and_handover_preserve_versions() {
+        let (model, learned) = learned_state64();
+        let finite = Vector64::from_slice(&[0.5, -0.25]);
+        let bare = model.predict(&learned, &finite).unwrap();
+        let checked = model.predict_checked(&learned, &finite).unwrap();
+        assert_eq!(bare.to_bits(), checked.to_bits());
+
+        let latent = Vector64::from_slice(&[f64::NAN, 0.0, 0.0]);
+        assert_eq!(
+            model.predict_checked(&learned, &latent),
+            Err(RlsError64::DimensionMismatch {
+                expected: 2,
+                actual: 3,
+            })
+        );
+        assert_eq!(
+            model.predict_checked(&learned, &Vector64::from_slice(&[f64::NAN, 0.0])),
+            Err(RlsError64::NonFiniteInput)
+        );
+        let huge_source = state64_with_weights(&model, &[f64::MAX, 0.0]);
+        let huge_features = Vector64::from_slice(&[2.0, 0.0]);
+        let huge_before = huge_source.clone();
+        assert!(
+            model
+                .predict(&huge_source, &huge_features)
+                .unwrap()
+                .is_infinite()
+        );
+        assert_eq!(
+            model.predict_checked(&huge_source, &huge_features),
+            Err(RlsError64::NonFiniteOutput)
+        );
+        assert_state64_bitwise_eq(&huge_source, &huge_before);
+
+        let active = model.to_serving_f32(&learned).unwrap();
+        let snapshot_before = active.clone();
+        let serving_finite = Vector::from_slice(&[0.5, -0.25]);
+        let serving_bare = active.predict(&serving_finite).unwrap();
+        let serving_checked = active.predict_checked(&serving_finite).unwrap();
+        assert_eq!(serving_bare.to_bits(), serving_checked.to_bits());
+        assert_eq!(
+            active.predict_checked(&Vector::from_slice(&[f32::NAN, 0.0, 0.0])),
+            Err(RlsError::DimensionMismatch {
+                expected: 2,
+                actual: 3,
+            })
+        );
+        assert_eq!(
+            active.predict_checked(&Vector::from_slice(&[f32::NAN, 0.0])),
+            Err(RlsError::NonFiniteInput)
+        );
+        assert_eq!(
+            active.weights().as_slice(),
+            snapshot_before.weights().as_slice()
+        );
+
+        let huge_serving = model
+            .to_serving_f32(&state64_with_weights(&model, &[f32::MAX as f64, 0.0]))
+            .unwrap();
+        let huge_serving_features = Vector::from_slice(&[2.0, 0.0]);
+        assert!(
+            huge_serving
+                .predict(&huge_serving_features)
+                .unwrap()
+                .is_infinite()
+        );
+        assert_eq!(
+            huge_serving.predict_checked(&huge_serving_features),
+            Err(RlsError::NonFiniteOutput)
+        );
+
+        let c_model = Rls::new(2, 1.0, 1.0).unwrap();
+        let c_state = RlsState {
+            w: Vector::from_slice(&[f32::MAX, 0.0]),
+            p: Matrix::from_rows(&[&[1.0, 0.0], &[0.0, 1.0]]).unwrap(),
+        };
+        let c_features = Vector::from_slice(&[2.0, 0.0]);
+        assert!(
+            c_model
+                .predict(&c_state, &c_features)
+                .unwrap()
+                .is_infinite()
+        );
+        assert_eq!(
+            c_model.predict_checked(&c_state, &c_features),
+            Err(RlsError::NonFiniteOutput)
+        );
+
+        let empty_a: [Vector64; 0] = [];
+        assert!(collect_a(&model, &learned, &empty_a).unwrap().is_empty());
+        let empty_c: [Vector; 0] = [];
+        assert!(
+            collect_f32(&empty_c, |row| active.predict_checked(row))
+                .unwrap()
+                .is_empty()
+        );
+
+        let failure_rows = [
+            Vector::from_slice(&[2.0, 0.0]),
+            Vector::from_slice(&[1.0, 0.0]),
+            Vector::from_slice(&[1.0, 0.0]),
+        ];
+        for start in 0..failure_rows.len() {
+            let mut rows = failure_rows.clone();
+            rows.rotate_left(start);
+            assert_eq!(
+                collect_f32(&rows, |row| huge_serving.predict_checked(row)),
+                Err(RlsError::NonFiniteOutput)
+            );
+            let rows64: Vec<Vector64> = rows
+                .iter()
+                .map(|row| {
+                    Vector64::from_slice(
+                        &row.as_slice()
+                            .iter()
+                            .map(|&v| f64::from(v))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                collect_a(&model, &huge_source, &rows64),
+                Err(RlsError64::NonFiniteOutput)
+            );
+            assert_eq!(
+                collect_f32(&rows, |row| c_model.predict_checked(&c_state, row)),
+                Err(RlsError::NonFiniteOutput)
+            );
+        }
+
+        let mut active = model.to_serving_f32(&learned).unwrap();
+        let learned_before = learned.clone();
+        let wrong_model = model64(3, 1.0, 1.0);
+        let wrong_state = wrong_model.initial_state();
+        assert_eq!(
+            model.to_serving_f32(&wrong_state),
+            Err(RlsServingConversionError::StateDimensionMismatch {
+                expected: 2,
+                actual: 3,
+            })
+        );
+        assert_state64_bitwise_eq(&learned, &learned_before);
+        assert_eq!(
+            snapshot_bits(&active),
+            snapshot_bits(&model.to_serving_f32(&learned).unwrap())
+        );
+
+        let continued = model
+            .update(&learned, &sample64(&[0.75, -0.5], 1.5))
+            .unwrap();
+        let candidate = model.to_serving_f32(&continued).unwrap();
+        assert_eq!(
+            snapshot_bits(&active),
+            snapshot_bits(&model.to_serving_f32(&learned).unwrap()),
+            "conversion must not install a candidate"
+        );
+        let acceptance_rows = [
+            Vector::from_slice(&[0.5, -0.25]),
+            Vector::from_slice(&[1.0, 0.25]),
+        ];
+        assert!(!accept_candidate(&mut active, candidate.clone(), &[]).unwrap());
+        assert_eq!(
+            snapshot_bits(&active),
+            snapshot_bits(&model.to_serving_f32(&learned).unwrap())
+        );
+        assert!(accept_candidate(&mut active, candidate.clone(), &acceptance_rows).unwrap());
+        assert_eq!(snapshot_bits(&active), snapshot_bits(&candidate));
+
+        let failing_source = state64_with_weights(&model, &[f32::MAX as f64, 0.0]);
+        let failing_source_before = failing_source.clone();
+        let failing_candidate = model.to_serving_f32(&failing_source).unwrap();
+        let active_before_failure = snapshot_bits(&active);
+        assert_eq!(
+            accept_candidate(
+                &mut active,
+                failing_candidate,
+                &[Vector::from_slice(&[2.0, 0.0])],
+            ),
+            Err(RlsError::NonFiniteOutput)
+        );
+        assert_eq!(snapshot_bits(&active), active_before_failure);
+        assert_state64_bitwise_eq(&failing_source, &failing_source_before);
+
+        let next = model
+            .update(&learned, &sample64(&[0.25, 0.75], -0.5))
+            .unwrap();
+        let reference = ref_step64(
+            &reference_from_state64(&learned),
+            &[0.25, 0.75],
+            -0.5,
+            model.lambda(),
+        );
+        assert_state64_bitwise_eq(&next, &to_state64(&reference));
+    }
+
+    #[test]
+    fn streaming_publication_keeps_prior_success_after_later_checked_failure() {
+        let model = model64(1, 1.0, 1.0);
+        let source = state64_with_weights(&model, &[f64::from(f32::MAX)]);
+        let source_before = source.clone();
+        let active = model.to_serving_f32(&source).unwrap();
+        let active_before = snapshot_bits(&active);
+        let rows = [Vector::from_slice(&[1.0]), Vector::from_slice(&[2.0])];
+        let mut published = Vec::new();
+        let mut failure = None;
+        for row in &rows {
+            match active.predict_checked(row) {
+                Ok(prediction) => published.push(prediction),
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        assert_eq!(failure, Some(RlsError::NonFiniteOutput));
+        assert_eq!(published, [f32::MAX]);
+        assert_eq!(snapshot_bits(&active), active_before);
+        assert_state64_bitwise_eq(&source, &source_before);
     }
 }

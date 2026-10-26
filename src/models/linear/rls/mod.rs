@@ -50,20 +50,33 @@
 //! `(w, P)` only on success. The foundation `process_batch` remains the
 //! **unbounded** reference fold.
 //!
-//! # Numerics
+//! # Precision profiles
 //!
-//! The `f32` substrate ([`Vector`], [`Matrix`]) is reused: observations are
-//! already `Observation<Vector>`-shaped and no `f64` matrix representation
-//! exists. Whether `f32` suffices for large `D` over long runs is an empirical
-//! question, deliberately not resolved here.
+//! - **A — native `f64`:** [`Rls64`], [`RlsState64`] and [`RlsSample64`] learn
+//!   and predict in `f64`.
+//! - **B — `f64` learning, `f32` serving:** the same [`Rls64`] learner plus
+//!   [`Rls64::to_serving_f32`], which produces an independently owned
+//!   [`RlsServing32`] snapshot containing only converted weights.
+//! - **C — strict `f32`:** the legacy [`Rls`], [`RlsState`] and [`RlsBatchError`]
+//!   surface, unchanged except for checked external-state admission through
+//!   [`RlsState::admit`].
 //!
-//! Validation order is deterministic: dimensions, then observation finiteness,
-//! then the denominator `d = λ + xᵀPx` (finite and `> 0`), then candidate
-//! finiteness.
+//! A and C share the same validation precedence: dimensions, then observation
+//! finiteness, then the denominator `d = λ + xᵀPx` (finite and `> 0`), then
+//! candidate finiteness. B prediction checks feature shape and finiteness only.
+//! Admission checks structure, finiteness and bitwise covariance symmetry; it
+//! does not certify positive semidefiniteness or future denominator positivity.
 
 use crate::foundation::numerical::{DimensionMismatch, Matrix, Vector};
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
+
+mod profiles;
+
+pub use profiles::{
+    Rls64, RlsBatchError64, RlsError64, RlsSample64, RlsServing32, RlsServingConversionError,
+    RlsState64, RlsStateAdmissionError,
+};
 
 /// Failure classes reported by RLS construction, prediction, or update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

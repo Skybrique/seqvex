@@ -466,7 +466,7 @@ The Architect defines the learning, numerical/error and recovery contracts; the 
 Use the [mandatory model-training contract](docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory) checklist when preparing or reviewing the separate design and plan:
 
 - [ ] Map A, B and strict Compact across the declared precision boundaries, conversions, persistence and actual implementation evidence; identify prospective completion gaps without rewriting accepted history.
-- [ ] Check the learning equations and learning/inference delivery matrix, method applicability, order, labels and preprocessing; verify any variant has the required design, independent verification and approval.
+- [ ] Check the learning equations and learning/inference delivery matrix, method applicability, temporal availability, preprocessing boundaries, prediction/update interleaving and serving freshness against the mandatory model-training contract linked above; verify any variant has the required design, independent verification and approval.
 - [ ] Check complete resumable state, failures, committed progress and validation against the approved design revision and implementation tasks.
 - [ ] Keep callable fit/refit separate from automatic scheduling; retain the four deferrals and optional serving-version boundary.
 - [ ] Reconcile required tests with specified expected outcomes and actual revision-linked results; leave readiness blocked for missing, failed, deferred, not-run or unverified required checks.

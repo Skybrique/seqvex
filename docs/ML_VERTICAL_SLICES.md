@@ -764,6 +764,15 @@ The reference path is retained; optimization and profiling are deferred. This
 run does not establish a CPU profile, a bottleneck identification, or production
 readiness.
 
+## Execution package reconciliation (LF-EXEC-D3)
+
+The profile code is present at current main. The recorded run identities,
+timings and quality results in this document remain historical/candidate
+evidence unless a current-main rerun is separately recorded. The LF-EXEC-D3
+execution package adds caller protocols for bounded admission, temporal
+availability, serving freshness and publication; it does not rewrite the
+historical numerical evidence or claim a new quality/performance result.
+
 ## Matrix growth rule
 
 > **The matrix is not expanded without evidence.**

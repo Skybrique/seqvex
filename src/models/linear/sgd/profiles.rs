@@ -230,6 +230,13 @@ impl StateModel for Sgd64 {
 /// An immutable `f32` serving snapshot produced from an [`Sgd64`] state.
 ///
 /// It owns only weights and has no update, resume, or back-conversion path.
+/// The caller must explicitly choose `FrozenSelected` or `LatestEligible`; this
+/// snapshot does not store or enforce that policy. `served_through` is the
+/// number of learning observations represented by the snapshot;
+/// `serving_identity` is opaque and is never
+/// compared with a learning watermark. `LatestEligible` requires equality for the
+/// eligible pre-prediction prefix. Conversion failure leaves the source state
+/// unchanged and installs no snapshot.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SgdServing32 {
     weights: Vector,

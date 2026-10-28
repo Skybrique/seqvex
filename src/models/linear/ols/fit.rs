@@ -1205,7 +1205,10 @@ impl FitResult64 {
     ///
     /// Weights are checked in increasing index order, then the intercept when
     /// present. The learner is not mutated and remains the continuation state.
-    /// See [`ServingConversionError`] for the checked failure classes.
+    /// Conversion does not install the predictor or validate transform pairing;
+    /// the caller runs its declared acceptance operation and replaces predictor
+    /// and preprocessing together. See [`ServingConversionError`] for the checked
+    /// failure classes.
     pub fn to_serving_f32(
         &self,
         on_underflow: UnderflowPolicy,

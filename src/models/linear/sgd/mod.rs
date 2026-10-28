@@ -44,6 +44,12 @@
 //! learner; [`Sgd64::to_serving_f32`] produces an independently owned
 //! [`SgdServing32`] snapshot for fixed `f32` inference. A and C use the single
 //! output-validating `predict`; there is no bare/checked pair.
+//!
+//! Bounded learning and grouped prediction are caller protocols over the
+//! public single-step APIs, not additional public SGD batch methods. Oversized
+//! groups must return the unchanged supplied state and perform no transition or
+//! observation validation. Fixed prediction calculation is separate from
+//! caller-owned external publication.
 
 use crate::foundation::numerical::{DimensionMismatch, Vector};
 use crate::foundation::observation::Observation;

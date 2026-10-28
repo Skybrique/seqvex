@@ -234,8 +234,11 @@ impl LinearRegression {
     /// returned immediately, so an earlier output failure is never masked by a
     /// later invalid input. Input errors keep their existing categories; a
     /// non-finite output returns [`RegressionError::NonFiniteOutput`] with
-    /// `observation = Some(index)` for its zero-based group position. No partial
+    /// `observation: Some(index)` for its zero-based group position. No partial
     /// output vector is returned. An empty group returns an empty success.
+    /// The group length is not configured or enforced here; callers may impose a
+    /// `max_predictions` before calling. Returning a calculated vector is not
+    /// external publication.
     pub fn predict_batch_checked(
         &self,
         batch: &[Observation<Vector>],

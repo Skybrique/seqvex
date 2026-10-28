@@ -486,6 +486,12 @@ unbounded, stop-on-first-failure fold — not a bounded micro-batch
 implementation. A bounded micro-batch is introduced per algorithm, only where
 that algorithm's semantics permit it (`docs/ML_VERTICAL_SLICES.md`).
 
+Continue-after-error is the intentional contract of `process_stream`. Strict
+fail-stop learning is a caller workflow over `process_one`/`update` (or an
+algorithm-local bounded method such as RLS `process_batch_reference`). Prediction
+calculation is not external publication; acknowledgement is caller-owned. No
+second generic executor or sink abstraction is introduced.
+
 ### Larger batch
 
 A secondary capability for algorithms or workloads that benefit from larger aggregation, including historical/offline computation.

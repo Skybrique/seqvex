@@ -249,6 +249,100 @@ does not become recoverable by retrying. Do not use
 `StreamingExecutor::process_stream` for learning; it continues past failures by
 design.
 
+## Bounded ordered caller protocol
+
+SGD has no public bounded-learning method. The caller protocol over a borrowed
+slice is:
+
+```rust
+use seqvex::foundation::observation::Observation;
+use seqvex::models::linear::sgd::{Sgd, SgdError, SgdSample, SgdState};
+
+enum Failure {
+    TooLarge { max: usize, actual: usize, state: SgdState },
+    Transition {
+        failed_index: usize,
+        committed: usize,
+        state: SgdState,
+        error: SgdError,
+    },
+}
+
+fn replay_bounded(
+    model: &Sgd,
+    mut state: SgdState,
+    rows: &[Observation<SgdSample>],
+    max_batch: usize,
+) -> Result<SgdState, Failure> {
+    if rows.len() > max_batch {
+        return Err(Failure::TooLarge {
+            max: max_batch,
+            actual: rows.len(),
+            state,
+        });
+    }
+    for (failed_index, row) in rows.iter().enumerate() {
+        match model.update(&state, row) {
+            Ok(next) => state = next,
+            Err(error) => {
+                return Err(Failure::Transition {
+                    failed_index,
+                    committed: failed_index,
+                    state,
+                    error,
+                });
+            }
+        }
+    }
+    Ok(state)
+}
+```
+
+The native-f64 `Sgd64` form is identical with `SgdState64`, `SgdSample64` and
+`SgdError64`. Oversize is rejected before transitions or observation validation;
+the unchanged supplied state is returned in `TooLarge`, so continuation needs no
+reset or duplicate update. Empty returns the supplied state unchanged; zero
+accepts only empty. Successive updates remain the ordered, non-averaged SGD
+recurrence.
+
+`run_local_bounded64`, `run_local_bounded32` and the example collectors are
+test-local evidence, not public APIs. Their stopping behavior does not establish
+public oversize rejection.
+
+## Bounded fixed-inference and publication
+
+Check a caller-defined `max_predictions` before prediction; pin one state or B
+snapshot; collect checked outputs privately and return them only after full
+success. Calculation failure yields no partial vector. External publication is
+caller-owned: full acknowledgement, definitely no write, acknowledged-prefix/
+definitely-unwritten suffix, acknowledged-prefix/potentially-written suffix and
+unclassified failure are distinct. Only the definitely-unwritten suffix is
+directly retryable; uncertain output requires reconciliation or declared sink
+idempotency; unclassified failure is not no-write. All three acknowledgement-
+bearing outcomes preserve the certain prefix. Publication never repeats learning
+or recalculates a pending historical output with a newer state.
+
+## B freshness and temporal modes
+
+Every B workflow must explicitly select `FrozenSelected { serving_identity }` or
+`LatestEligible`; omission is an error. `FrozenSelected` pins a snapshot and does
+not claim latest state. `LatestEligible` requires `served_through ==
+learning_watermark` for the eligible pre-prediction prefix. At time `t`,
+prediction phase `P(t)` precedes label-release phase `L(t)`; labels in `L(t)` are
+not required for `P(t)` and become required at a later cutoff. Conversion may be
+deferred until just before the prediction phase but cannot be skipped; a failed
+conversion leaves A's committed progress and the old snapshot intact and blocks a
+fresh-requiring prediction. Retrying conversion must not repeat the update.
+
+`HistoricalReplay` may apply available labels without per-row predictions and makes
+no live-adaptation claim. `LiveAdaptive` records a prediction before applying its
+label; “recorded” is local retention, not external acknowledgement. Pending
+capacity is `C + 1`: ordinary `C` plus a reserved head slot. Refusal returns the
+payload intact; the head is inspected without consumption and removed only after
+successful commit or explicit discard. A failed head retains work and capacity.
+Use the original feature/state snapshot for a missing prediction or return
+`MissingPrediction`; never fabricate it from a newer state.
+
 ## Examples
 
 ### `sgd_learn` — deterministic synthetic learning and prediction

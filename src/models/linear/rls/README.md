@@ -336,17 +336,16 @@ required protocol for any honest sequential evaluation is:
 3. update and commit `(w_t, P_t)` from `(x_t, y_t)`;
 4. continue strictly in temporal order.
 
-Conceptually **prohibited**: shuffling, sorting, resampling, using future
-observations, building labels from future observations, and scoring an
-observation after fitting it on itself. `λ=1` is order-invariant only for the
-final pooled fit; the *trajectory* and the prequential error remain temporal.
+Conceptually **prohibited**: shuffling, sorting, resampling, using information before its declared availability, consuming `y_t` before the prediction for observation `t` is recorded in `LiveAdaptive`, and scoring an observation after fitting it on itself. `HistoricalReplay` explicitly permits ordered training without per-row predictions and makes no live-adaptation claim. A future-horizon label is permitted only after its declared availability time; future origin alone is not leakage. `λ=1` is order-invariant only for the final pooled fit; the *trajectory* and the prequential error remain temporal.
 
 Additional semantics:
 
 - **Warm-up.** Early estimates reflect the prior `P_0 = δI`; they should be
   discarded or flagged until the data dominates.
-- **Reset.** `reset` starts a new sequence (`w = 0`, `P = δI`) and discards
-  history; it is the explicit recovery from a diverged or overflowed state.
+- **Reset.** `StreamingExecutor::reset` installs the caller-supplied state. It
+  restores `w = 0, P = δI` only when the caller passes `initial_state()`; it is
+  not automatic recovery. Reset discards retained history by explicit caller
+  choice.
 - **Continued learning.** Preserving `(w, P)` across a boundary continues the
   same estimator; this is the difference from reset.
 - **Regime changes.** Evaluate pre-shift steady state, peak transient,
@@ -356,6 +355,66 @@ Additional semantics:
   information available at `t`; the update, once `y_t` arrives, must preserve the
   original observation order. Buffering and matching labels to observations is a
   caller responsibility.
+- **Workflow modes.** `HistoricalReplay` applies available labels in original
+  order at the declared historical cutoff without requiring per-row predictions;
+  it makes no live-adaptation claim. `LiveAdaptive` must calculate and record a
+  prediction for observation `t` before applying `y_t`. “Recorded” means the
+  local output, observation identity, selected/serving identity and cutoff are
+  retained; it does not mean the sink acknowledged external publication.
+- **Equal-time phase.** At time `t`, prediction phase `P(t)` precedes label-release
+  phase `L(t)`. A `LatestEligible` prediction at cutoff `t` requires labels with
+  availability strictly before `t` for preceding observations; labels released in
+  `L(t)` are not required and cannot block `P(t)`. They become required for a
+  later cutoff after they commit. Example: observation 1’s prediction is recorded
+  earlier; its label and observation 2’s prediction both occur at `t=10`; `P(10)`
+  uses S0/served 0, `L(10)` commits label 1, then S1/served 1 is installed for a
+  later cutoff.
+- **Pending admission.** Use ordinary capacity `C` plus one reserved head slot,
+  never exceeding `C+1`. A full ordinary buffer refuses later work while returning
+  its payload intact; the gap-filling head is admitted into the reserved slot.
+  Inspect the head without consuming it; remove it only after a successful
+  learning commit or explicit discard. A failed update retains the head and its
+  charged capacity. Zero ordinary capacity permits only in-order/head work. If the
+  source cannot deliver the gap event under backpressure, stop and report that
+  limitation.
+- **Missing prediction.** If a label arrives without a prediction record, do not
+  apply it. Recalculate only from the original eligible feature snapshot and exact
+  selected/serving state snapshot if retained; otherwise return
+  `MissingPrediction`. Never fabricate a prediction from a later state.
+
+### Bounded fixed-inference caller protocol
+
+Check `rows.len() <= max_predictions` before prediction; pin one selected
+`RlsServing32`/`Rls64` state for the group; collect checked outputs privately and
+return them only after full success. Empty succeeds empty; zero admits only empty.
+Calculation failure returns the first failing index and no partial output vector.
+Returning a calculated vector is not external publication. External publication is
+caller-owned and distinguishes full acknowledgement, definitely no write,
+acknowledged-prefix/definitely-unwritten suffix, acknowledged-prefix/potentially-
+written suffix and unclassified failure. All three acknowledgement-bearing
+outcomes advance the acknowledged prefix; uncertain output requires reconciliation
+or declared idempotency. No learning replay or newer-model recalculation is
+permitted.
+
+### B freshness
+
+Every B workflow must explicitly select `FrozenSelected { serving_identity }` or
+`LatestEligible`; omission is an error. `FrozenSelected` pins a snapshot and does
+not claim latest state. `LatestEligible` requires `served_through ==
+learning_watermark` for the eligible pre-prediction prefix; same-time `L(t)` labels
+are excluded. Labels released later in the same phase are not required until a
+later cutoff. Conversion may be deferred until just before the prediction phase,
+but it cannot be skipped; one conversion of the latest committed state suffices
+when no prediction observed an intermediate snapshot. `serving_identity` is opaque
+and is not compared with a watermark. If conversion fails, the f64 progress remains
+committed, the old snapshot remains intact, `served_through` is unchanged, and a
+fresh-requiring prediction is blocked. Retrying conversion must not repeat the
+update.
+
+Streaming and grouped prediction are caller-owned compositions of the selected
+single prediction; no public RLS group-prediction API is added. The existing
+`process_stream` behavior continues after failures and is not the strict
+fail-stop learner.
 
 This is a semantics description only. No evaluation framework is added.
 

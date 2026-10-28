@@ -50,6 +50,10 @@
 //! `(w, P)` only on success. The foundation `process_batch` remains the
 //! **unbounded** reference fold.
 //!
+//! The bounded fold does not record or interleave predictions. A prequential
+//! workflow must call `update` between predictions. Prediction calculation is
+//! separate from caller-owned external publication.
+//!
 //! # Precision profiles
 //!
 //! - **A — native `f64`:** [`Rls64`], [`RlsState64`] and [`RlsSample64`] learn

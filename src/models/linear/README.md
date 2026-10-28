@@ -32,7 +32,11 @@ model is immutable; learned weights are per-execution state. The caller supplies
 the intercept feature and any preprocessing. See the
 [canonical SGD README](sgd/README.md) for APIs, examples and evidence.
 
-## Implemented versus planned (OLS)
+## Execution modes and profiles
+
+OLS is a historical dataset fit/refit plus fixed single/stream/group prediction. RLS and SGD are ordered single-step learners; RLS also exposes a public bounded ordered-learning call, while SGD's bounded group is the documented caller protocol. Fixed grouped prediction for RLS/SGD is a caller collector over one selected identity. B reuses A's f64 learner/fit and requires checked f32 conversion; it is not a separate learner. The caller owns event order, pending labels, admission caps, serving replacement, retained outputs and progress identities. A processed count is not learning, serving or publication progress. No generic micro-batch executor, scheduler or version registry is implied.
+
+## Legacy OLS baseline
 
 The original supplied-parameter prediction component was relocated unchanged
 from `src/models/classic/linear_regression.rs` to `ols/predict.rs`. The accepted

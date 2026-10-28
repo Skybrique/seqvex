@@ -282,8 +282,9 @@ fn admission_and_candidate_verification_precede_explicit_install() {
     let candidate = fit(&features, &targets, &indices, &FitConfig::default()).expect("fit");
 
     let old_active = model(&[2.0], 1.0);
-    let active_row = Vector::from_slice(&[3.0]);
+    let active_row = Vector::from_slice(&[1.0]);
     let old_active_prediction = old_active.predict_checked(&active_row).unwrap();
+    assert_bits_eq(old_active_prediction, 3.0);
     let mut active = Some(old_active);
 
     candidate
@@ -313,5 +314,5 @@ fn admission_and_candidate_verification_precede_explicit_install() {
     );
     active = Some(candidate_predictor);
     let installed = active.as_ref().expect("explicitly installed candidate");
-    assert_bits_eq(installed.predict_checked(&active_row).unwrap(), 7.0);
+    assert_bits_eq(installed.predict_checked(&active_row).unwrap(), 1.0);
 }

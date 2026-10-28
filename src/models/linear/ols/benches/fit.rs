@@ -4,6 +4,12 @@
 //! This is evidence, not an optimization or a performance guarantee, and it is
 //! Seqvex-only (no cross-library comparison).
 //!
+//! Dispatch follows `cfg!(debug_assertions)`: builds with debug assertions run
+//! the bounded correctness smoke, while an ordinary release
+//! `cargo bench --bench ols_fit` runs the preserved measurement matrix. The
+//! smoke is not performance evidence. Builds without debug assertions run the
+//! release matrix regardless of how they are invoked.
+//!
 //! Run with:
 //! `cargo +1.85.1 bench --locked --bench ols_fit`
 //!
@@ -28,6 +34,10 @@ mod common;
 
 const FEATURE_SEED: u64 = 0x0051_0ee1_0000_0001;
 const RESIDUAL_SCALE: f32 = 1.0e-3;
+const DEBUG_SMOKE_N: usize = 64;
+const DEBUG_SMOKE_D: usize = 4;
+const ANALYTICAL_COEFFICIENT_TOLERANCE: f32 = 1.0e-6;
+const ANALYTICAL_PREDICTION_TOLERANCE: f32 = 1.0e-5;
 
 fn transaction_meta() -> TrainingMeta {
     TrainingMeta {
@@ -121,7 +131,225 @@ fn fit_once(features: &[Vector], targets: &[f32], train: &[usize]) -> FitResult 
     fit(features, targets, train, &FitConfig::default()).expect("fit succeeds")
 }
 
+fn assert_abs(actual: f32, expected: f32, tolerance: f32, label: &str) {
+    assert!(
+        (actual - expected).abs() <= tolerance,
+        "{label}: expected {expected}, got {actual} (tolerance {tolerance})"
+    );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ModelObservation {
+    weights: Vec<u32>,
+    bias: u32,
+    model_id: [u8; 32],
+    predictions: Vec<u32>,
+}
+
+fn observe_model(model: &TrainedModel, probes: &[Vector]) -> ModelObservation {
+    let predictor = model.predictor();
+    ModelObservation {
+        weights: predictor
+            .weights()
+            .as_slice()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect(),
+        bias: predictor.bias().to_bits(),
+        model_id: *model.model_id(),
+        predictions: probes
+            .iter()
+            .map(|probe| {
+                predictor
+                    .predict_checked(probe)
+                    .expect("debug smoke checked prediction succeeds")
+                    .to_bits()
+            })
+            .collect(),
+    }
+}
+
+fn debug_smoke() {
+    println!("ols_fit: debug smoke only (debug_assertions=true); full release matrix skipped");
+    println!("{}", common::env_summary());
+    println!("ols_fit: correctness checks only; not benchmark or performance evidence");
+
+    let analytical_features = vec![
+        Vector::from_slice(&[0.0]),
+        Vector::from_slice(&[1.0]),
+        Vector::from_slice(&[2.0]),
+    ];
+    let analytical_targets = [1.0f32, 3.0, 5.0];
+    let analytical = fit(
+        &analytical_features,
+        &analytical_targets,
+        &[0, 1, 2],
+        &FitConfig::default(),
+    )
+    .expect("analytical fit succeeds");
+    let diagnostics = analytical.diagnostics();
+    assert_eq!(diagnostics.rank, 2, "analytical rank");
+    assert_eq!(diagnostics.required_rank, 2, "analytical required rank");
+    assert!(diagnostics.rank_threshold.is_finite());
+    assert!(diagnostics.rss_f64_reference.is_finite());
+    assert!(diagnostics.rss_f32_predictor.is_finite());
+    assert!(analytical.weights().as_slice()[0].is_finite());
+    assert!(analytical.intercept().is_finite());
+    // The exact analytic fixture uses exactly represented inputs. The 1e-6
+    // weight and intercept absolute-error envelopes contribute at most 3e-6
+    // and 1e-6 respectively at x = 3, for a combined 4e-6. The 1e-5 prediction
+    // tolerance also allows f32 arithmetic rounding for this fixture. This is
+    // fixture-specific, not a general solver error guarantee.
+    assert_abs(
+        analytical.weights().as_slice()[0],
+        2.0,
+        ANALYTICAL_COEFFICIENT_TOLERANCE,
+        "analytical coefficient",
+    );
+    assert_abs(
+        analytical.intercept(),
+        1.0,
+        ANALYTICAL_COEFFICIENT_TOLERANCE,
+        "analytical intercept",
+    );
+    let analytical_model = analytical.into_predictor();
+    let analytical_prediction = analytical_model
+        .predict_checked(&Vector::from_slice(&[3.0]))
+        .expect("analytical checked prediction succeeds");
+    assert_abs(
+        analytical_prediction,
+        7.0,
+        ANALYTICAL_PREDICTION_TOLERANCE,
+        "analytical prediction",
+    );
+
+    let weights = common::fixed_weights(DEBUG_SMOKE_D);
+    let features = build_features(DEBUG_SMOKE_N, DEBUG_SMOKE_D);
+    let targets = build_targets(&features, &weights);
+    let train: Vec<usize> = (0..DEBUG_SMOKE_N).collect();
+    let workflow = fit_once(&features, &targets, &train);
+    let diagnostics = workflow.diagnostics();
+    assert_eq!(diagnostics.rank, 5, "workflow rank");
+    assert_eq!(diagnostics.required_rank, 5, "workflow required rank");
+    assert!(diagnostics.rank_threshold.is_finite());
+    assert!(diagnostics.rss_f64_reference.is_finite());
+    assert!(diagnostics.rss_f32_predictor.is_finite());
+    assert!(workflow.weights().as_slice().iter().all(|v| v.is_finite()));
+    assert!(workflow.intercept().is_finite());
+    let meta = transaction_meta();
+    let active = workflow
+        .into_trained(&meta)
+        .expect("workflow into_trained succeeds");
+
+    let probes: Vec<Vector> = features.iter().take(4).cloned().collect();
+    let probe_observations: Vec<Observation<Vector>> =
+        probes.iter().cloned().map(Observation::new).collect();
+    let single_bits: Vec<u32> = probes
+        .iter()
+        .map(|probe| {
+            active
+                .predictor()
+                .predict_checked(probe)
+                .expect("checked single succeeds")
+                .to_bits()
+        })
+        .collect();
+    let checked = CheckedLinearRegression::new(active.predictor());
+    let mut executor = StreamingExecutor::new(&checked, 0.0f32);
+    let stream_bits: Vec<u32> = probes
+        .iter()
+        .map(|probe| {
+            let observation = Observation::new(probe.clone());
+            (*executor
+                .process_one(&observation)
+                .expect("checked stream succeeds"))
+            .to_bits()
+        })
+        .collect();
+    let group_bits: Vec<u32> = active
+        .predictor()
+        .predict_batch_checked(&probe_observations)
+        .expect("checked group succeeds")
+        .iter()
+        .map(|value| value.to_bits())
+        .collect();
+    assert_eq!(stream_bits, single_bits, "stream vs single");
+    assert_eq!(group_bits, single_bits, "group vs single");
+
+    let mut artifact = Vec::new();
+    active
+        .export_to(&mut artifact, limits(), None)
+        .expect("debug export succeeds");
+    let expectation = ArtifactExpectation {
+        feature_count: Expect::Required(DEBUG_SMOKE_D as u32),
+        intercept: Expect::Required(true),
+        schema_id: Expect::Required(meta.schema_id),
+        transform_link: Expect::Absent,
+        cutoff: Expect::Absent,
+    };
+    let mut reader: &[u8] = &artifact;
+    let loaded = TrainedModel::import_from(&mut reader, &expectation, limits())
+        .expect("debug import succeeds");
+    let active_observation = observe_model(&active, &probes);
+    let loaded_observation = observe_model(&loaded.model, &probes);
+    assert_eq!(
+        loaded_observation.weights, active_observation.weights,
+        "artifact weight bits"
+    );
+    assert_eq!(
+        loaded_observation.bias, active_observation.bias,
+        "artifact bias bits"
+    );
+    assert_eq!(
+        loaded_observation.model_id, active_observation.model_id,
+        "artifact identity"
+    );
+    assert_eq!(
+        loaded_observation.predictions, active_observation.predictions,
+        "artifact checked prediction bits"
+    );
+    drop(loaded);
+
+    let before = observe_model(&active, &probes);
+    let candidate_targets: Vec<f32> = targets.iter().map(|value| 2.0 * value + 1.0).collect();
+    let candidate = fit_once(&features, &candidate_targets, &train)
+        .into_trained(&meta)
+        .expect("debug candidate succeeds");
+    let during = observe_model(&active, &probes);
+    assert_eq!(during, before, "active model while candidate lives");
+    let candidate_observation = observe_model(&candidate, &probes);
+    assert_ne!(
+        candidate_observation.weights, before.weights,
+        "candidate weights differ"
+    );
+    assert_ne!(
+        candidate_observation.bias, before.bias,
+        "candidate bias differs"
+    );
+    assert_ne!(
+        candidate_observation.model_id, before.model_id,
+        "candidate identity differs"
+    );
+    assert_ne!(
+        candidate_observation.predictions, before.predictions,
+        "candidate checked predictions differ"
+    );
+    drop(candidate);
+    let after = observe_model(&active, &probes);
+    assert_eq!(after, before, "active model after candidate drop");
+
+    println!("ols_fit: debug smoke passed");
+}
+
 fn main() {
+    if cfg!(debug_assertions) {
+        debug_smoke();
+        return;
+    }
+    run_release_matrix();
+}
+
+fn run_release_matrix() {
     println!("OLS resource/performance evidence (synthetic workloads; Seqvex only)");
     println!("{}", common::env_summary());
     println!("warm-ups: 2 samples; measured samples: 10 samples (fit) / 20 (serving)");

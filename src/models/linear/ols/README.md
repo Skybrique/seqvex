@@ -241,6 +241,8 @@ The zero-denominator case requires the declared rank policy.
 
 Requested workspace, allocator traffic, retained bytes and peak bytes are distinct. These are instrumented local synthetic measurements, not production tail-latency guarantees or a speed comparison with Linfa. Numerical rank and scaling are observed outcomes. The earlier workload proposals below are preserved; they do not imply every proposed dimension, conditioning case or distribution was measured.
 
+The default debug/all-target execution of `ols_fit` is a bounded deterministic correctness smoke. It checks a known analytical fit within stated tolerances, checked serving, artifact handoff and active weights/bias/identity/predictions through candidate construction and drop; it is not a performance baseline. The release path retains the full six-cell matrix, repetitions, measurement boundaries and output fields. It is eligible for performance/resource evidence only with passing correctness guards, justified workloads, recorded revision/toolchain/machine, controlled repeat methodology and explicit limitations. Compilation alone does not establish release runtime equivalence; report executed and pending release validation separately. Legacy `fit` cells are not A/B/C profile evidence; A/B/C measurement remains a separate #46 task.
+
 **Proposed initial workload selection, subject to approved resource budgets:**
 
 | Operation | Proposed scaling variables | Evidence needed | Owner |

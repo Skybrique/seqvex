@@ -170,6 +170,8 @@ ordered workflows retain their shuffle prohibition. These checkpoints establish
 the declared baseline, not blanket production suitability or a performance
 advantage over other libraries.
 
+The `ols_fit` debug path is a bounded correctness smoke, not performance evidence. It does not establish production latency, allocation-cost share, a bottleneck or a profile comparison. The preserved release path is eligible for evidence under the required correctness, workload, run-condition and provenance requirements; a release build alone is not sufficient. Compilation is not runtime-equivalence evidence: distinguish executed release checks from deferred validation and preserve each historical result's revision/run attribution.
+
 **Historical prediction-component measurements (predating the fitter):**
 reference and streaming prediction are allocation-free (`0.000` allocations and
 `0` bytes per observation) and consume only immutable weights through `&self` —

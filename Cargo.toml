@@ -108,6 +108,11 @@ path = "src/models/linear/ols/benches/fit.rs"
 harness = false
 
 [[bench]]
+name = "ols_profiles"
+path = "src/models/linear/ols/benches/profiles.rs"
+harness = false
+
+[[bench]]
 name = "linear_regression"
 path = "src/models/linear/ols/benches/execution.rs"
 harness = false

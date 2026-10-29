@@ -243,6 +243,20 @@ Requested workspace, allocator traffic, retained bytes and peak bytes are distin
 
 The default debug/all-target execution of `ols_fit` is a bounded deterministic correctness smoke. It checks a known analytical fit within stated tolerances, checked serving, artifact handoff and active weights/bias/identity/predictions through candidate construction and drop; it is not a performance baseline. The release path retains the full six-cell matrix, repetitions, measurement boundaries and output fields. It is eligible for performance/resource evidence only with passing correctness guards, justified workloads, recorded revision/toolchain/machine, controlled repeat methodology and explicit limitations. Compilation alone does not establish release runtime equivalence; report executed and pending release validation separately. Legacy `fit` cells are not A/B/C profile evidence; A/B/C measurement remains a separate #46 task.
 
+### Profile-specific measurement (`ols_profiles`)
+
+The separate OLS-local `ols_profiles` benchmark measures native-f64 A fitting, strict-f32 C fitting, explicit checked A-to-f32 B conversion, A/B/C checked serving, and matched legacy `fit` rows labelled `legacy_hybrid`. The existing `ols_fit` benchmark, its debug smoke and its historical results are unchanged. A uses native f64 arithmetic on exactly widened f32-quantized fixture values, not a full f64-range workload. B conversion is measured without A fitting. Each declared operation includes its public validation and result destruction; fixture/model preparation, printing and analysis remain outside measurement windows.
+
+The matrix has **41 timing rows**. Fits use `(N,d) = (1024,8), (16384,8), (1024,128)` for A, C and legacy; B conversion and A/B/C serving use the two `N=1024` fixtures; checked single and stream use 4,096 observations per window, and checked groups use `B = 1, 32, 128` over 4,096 observations. Each row has two full warm-up windows and twenty measured windows. The three release captures completed as separate sequential process invocations; there is no benchmark-local three-run loop.
+
+Three keyed fixture-digest records are emitted per release process outside measurement windows. The canonical encoding hashes dimensions, selection/probe boundaries, ordered f32 values and exact f64 widening with little-endian scalar-bit fields. Serving and conversion rows identify their `(N,d)` fixture key.
+
+Allocation traffic, logical requested workspace, allocator-visible live/peak memory and retained result/model bytes are reported separately. The untimed memory probes retain one result through the snapshot and drop it afterward; timed fit rows consume and drop their result inside the operation before the window closes. Window-normalized summaries are not individual-request tails.
+
+**Release capture status:** Three authorized, separate sequential invocations of `cargo +1.85.1 bench --locked --bench ols_profiles` completed successfully. Each produced 41 unique timing rows, with two full warm-up and twenty measured windows per row. Independent source review and runtime-evidence review passed; final Maintainer acceptance and publication remain pending. Captures used one Linux x86_64 WSL2 environment (12th Gen Intel Core i7-12700H), Rust/Cargo 1.85.1 and the default optimized bench profile; custom `RUSTFLAGS`, target and bench opt-level overrides were unset. Power/thermal state, background load and contention were not controlled and remain unknown. See the [public #46 evidence/review record](https://github.com/Skybrique/seqvex/issues/46#issuecomment-6489651780).
+
+These synthetic, fixed-order, counting-instrumented captures establish workload completion and preserve the measurement contract. They do not establish a speedup, statistical or accuracy equivalence, request-level tails, or production readiness. They do not complete #46, #43 or #23. See [Precision profiles A/B/C](#16-precision-profiles-abc).
+
 **Proposed initial workload selection, subject to approved resource budgets:**
 
 | Operation | Proposed scaling variables | Evidence needed | Owner |
@@ -364,7 +378,7 @@ When a mismatch is found: identify the exact contract/evidence gap; revise the a
 
 ## 16. Precision profiles A/B/C
 
-The additive typed profiles preserve the accepted legacy `fit`/`FitResult`/`LinearRegression` path, artifact v1, and `check_acceptance` behavior. They are present at current main; the LF-EXEC-D3 execution package adds caller-owned refit/acceptance/cutover and replacement evidence. This is not a new artifact or persistence format.
+The additive typed profiles preserve the accepted legacy `fit`/`FitResult`/`LinearRegression` path, artifact v1, and `check_acceptance` behavior. They are present at current main; the LF-EXEC-D3 execution package adds caller-owned refit/acceptance/cutover and replacement evidence. This is not a new artifact or persistence format. For the separate profile-specific measurement target, see [Profile-specific measurement](#profile-specific-measurement-ols_profiles).
 
 | Profile | Fit entry point | Learned result | Serving |
 |---|---|---|---|

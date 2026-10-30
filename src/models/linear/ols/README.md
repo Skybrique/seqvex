@@ -35,13 +35,46 @@ OLS learns a linear predictor from a declared training dataset. For a new featur
 
 “Complete OLS” here includes the necessary fitting, prediction, failure, validation and documentation components. It does not include a generic trainer, model registry, market-data service or trading engine. Sparse, weighted and multi-output fitting are excluded unless explicitly added to scope. **([#23](https://github.com/Skybrique/seqvex/issues/23))**
 
-## 2. Fitting and prediction user flow
+## 2. A/B/C CSV walkthrough
+
+The registered `fit_profiles` example is the beginner entry point for the intended A/B/C precision interface:
+
+```sh
+cargo +stable run --locked --example fit_profiles
+cargo +stable run --locked --example fit_profiles -- path/to/two-column.csv
+```
+
+With no path it parses the authored fixture `src/models/linear/ols/examples/data/displacement_time_offset.csv`; with one path it accepts the same narrow schema. The fixture is generated teaching data, not a measurement or physical-law claim. `DisplacementMeters` is the sole feature in metres and `TimeOffsetSeconds` is the target in seconds. The learned feature weight has units seconds/metre; the intercept is stored separately and has units seconds. The example uses identity preprocessing because this small, moderate-range fixture does not require learned scaling.
+
+The parser requires exactly these ordered headers, exactly two fields per row, finite numbers and 6–256 data rows, with a 64 KiB input limit. It does not silently drop, impute, clip, sort, or reorder rows. A/B numeric tokens are parsed directly to f64; C tokens are parsed directly to f32. B's serving inputs are then independently narrowed from f64 to f32 with finite/underflow checks; parameter conversion does not convert inputs. A nonzero decimal mantissa that rounds to zero at a selected input precision is rejected by this example. Exponent digits do not make a zero mantissa nonzero: `0e10` is positive zero and `-0e-10` remains negative zero. Representable subnormals are accepted. Parser errors report a zero-based **logical data row** after the header, excluding blank separator lines; this record number can differ from the physical file line number. These are example-local rules; they do not change the library's typed-input contract.
+
+The first five rows are the declared training selection `[0,1,2,3,4]`; the remaining rows `[5,6,7]` are held out. This deterministic split is a small static extrapolation exercise, not chronological or IID validation. No evaluation target is read to create the new unlabelled prediction at `DisplacementMeters=2.5`.
+
+The example performs the actual calls:
+
+```rust,ignore
+let a_fit = fit_f64(&features64, &targets64, &train, &FitConfig64::default())?;
+let b_model = a_fit.to_serving_f32(UnderflowPolicy::Reject)?;
+let a_model = a_fit.into_predictor();
+let c_fit = fit_f32(&features32, &targets32, &train, &FitConfig32::default())?;
+let c_model = c_fit.into_predictor();
+```
+
+B is an independently owned f32 serving conversion of that same A fit, not a second fit. B conversion checks the rounded parameter bits and preserves the f64 source. A and C are moved from their inspected fit results into the predictors subsequently served. Each predictor accepts **one input feature** and contains **one learned feature weight**, with the intercept stored separately. The intercept-augmented fitting matrix has **two columns**; successful A/C fit rank and required rank are **2/2**. This distinction matters: do not add an artificial constant feature to prediction input.
+
+For the canonical authored fixture, the decimal-real reference is weight `2`, intercept `1`, training RSS `7/8`, held-out predictions `11.2, 13.2, 15.2`, held-out RSS `3/8`, MAE `1/3`, and RMSE `sqrt(1/8)`. A, B and C each predict approximately `6` for the unlabelled input `2.5`. The training-only constant-target baseline is `26/5` seconds, with held-out RSS `1603/8`, MAE `8`, and RMSE `sqrt(1603/24)`. The example has profile-specific, fixture-specific tolerances and asserts C's native-f32 training RSS separately. It also prints learned coefficients, diagnostics, workspace accounting, checked serving metrics, source hash, and the explicit frozen version labels.
+
+Canonical expected values and tolerances apply only when the input bytes are exactly the shipped fixture. A different schema-compatible file gets typed validation and descriptive metrics, not the fixture's coefficient or accuracy assertions. The normal canonical run demonstrates checked invalid-serving-input rejection, rank-deficient and finite-but-rejected candidates, and that a rejected shifted-target candidate does not replace the selected frozen version. Malformed CSV/header/field/underflow rejection is exercised by the example-local tests, not by the normal run. Group size is checked by the example before grouped prediction; library grouped APIs remain caller-bounded.
+
+This typed walkthrough is in-memory. It does not demonstrate A/B/C save/reload: artifact v1 construction remains on the legacy result path, stores f32 serving parameters and caller-supplied opaque linkage, and is not a resumable fitting checkpoint. See the separate compatibility example below.
+
+### Legacy compatibility workflow: original mixed-precision `fit`
 
 The existing constructor accepts parameters and does not learn them. The implemented `fit` API learns parameters from selected labelled rows. Preset-coefficient demonstrations alone do not satisfy the mandatory [training-to-inference contract](../../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory).
 
 An accepted OLS demonstration must ingest labelled training data, execute the reviewed fitting procedure, validate the learned coefficients/diagnostics, and calculate predictions from that fit. The registered `fit_salary` example now performs fit → diagnostics → checked single/stream/group prediction → held-out RMSE against a training-mean baseline → artifact round-trip → refit handover → failed-candidate preservation. **([#43](https://github.com/Skybrique/seqvex/issues/43), supporting #44–#45)**
 
-The canonical entry point is `seqvex::models::linear::ols::fit`:
+The original compatibility entry point is `seqvex::models::linear::ols::fit`:
 
 ```rust
 fit(features: &[Vector], targets: &[f32], train: &[usize], config: &FitConfig)
@@ -62,13 +95,13 @@ candidate.check_acceptance(&features, &targets, &acceptance_indices)?;
 
 After admission, the caller may convert/build the artifact and verify a candidate executor, then explicitly install the candidate. Admission does not mutate or publish an active model. The existing `fit_salary` refit example demonstrates candidate executor verification while retaining the active model; installation remains an application-owned action. Bare `predict` retains its existing non-finite-output behavior; output rejection remains opt-in through checked prediction paths.
 
-Run the example with a caller-supplied CSV path (positional, not `--input`):
+The separate legacy Salary example requires a caller-supplied CSV path (positional, not `--input`):
 
 ```sh
 cargo +1.85.1 run --locked --example fit_salary -- examples/Salary_dataset.csv
 ```
 
-**Salary evaluation boundary:** the example holds out zero-based CSV positions where `position % 5 == 4`; it does not shuffle or use an RNG. The 30-row sample yields 24 training and 6 held-out rows. This interleaved partition is an end-to-end demonstration, not chronological evaluation or production-readiness evidence. CSV row position and years of experience do not establish observation time. An empty held-out partition is rejected before fitting/indexing/RMSE. The synthetic benchmark's fixed-seed LCG is separate from this example and from the fitter.
+**Salary evaluation/data boundary:** when provided, the example holds out zero-based CSV positions where `position % 5 == 4`; it does not shuffle or use an RNG. The inspected 30-row local sample yields 24 training and 6 held-out rows. It is not part of the authored A/B/C fixture, and this repository does not establish its provenance, redistribution permission, currency, salary period, or temporal meaning. The interleaved partition is an end-to-end legacy demonstration, not chronological evaluation or production-readiness evidence. CSV row position and years of experience do not establish observation time. An empty held-out partition is rejected before fitting/indexing/RMSE. The synthetic benchmark's fixed-seed LCG is separate from this example and from the fitter.
 
 `weights()` and `bias()` expose the supplied parameters; they do not establish a durable artifact format. Both historical imports, `seqvex::models::classic::{LinearRegression, RegressionError}` and `seqvex::models::classic::linear_regression::{LinearRegression, RegressionError}`, remain compatibility re-exports of the canonical types. User-facing examples and rustdoc belong to [#43](https://github.com/Skybrique/seqvex/issues/43).
 
@@ -359,7 +392,7 @@ Run the applicable critical architecture review before choices affecting ownersh
 | `src/models/linear/ols/tests/ols_temporal.rs` | Caller-constructed temporal selection tests; Cargo target `ols_temporal` | #45 |
 | `src/models/linear/ols/tests/profiles.rs` | Native-f64, checked serving and strict-f32 evidence; Cargo target `ols_profiles` | #43; numerical support #44 |
 | `src/models/linear/ols/examples/fit_salary.rs` | CSV fit/evaluation/artifact/refit demonstration; Cargo example `fit_salary` | #43 |
-| `src/models/linear/ols/examples/fit_profiles.rs` | Typed in-memory A/B/C training-only fit and held-out MAE/R² demonstration; Cargo example `fit_profiles` | #43; numerical support #44 |
+| `src/models/linear/ols/examples/fit_profiles.rs` | Authored CSV parsing, direct-precision A/B/C training, checked frozen serving and held-out evaluation; Cargo example `fit_profiles` | #43; numerical support #44 |
 | `src/models/linear/ols/benches/fit.rs` | Fitting/checked serving/artifact/refit resource evidence; Cargo bench `ols_fit`, `harness = false` | #46 |
 | `src/models/linear/ols/tests/public_contract.rs` | Public-contract integration tests; Cargo target `linear_regression` | #43; numerical support #44 |
 | `src/models/linear/ols/benches/execution.rs` | Prediction benchmark; Cargo target `linear_regression`, `harness = false` | #43 for wiring; #46 for methodology/evidence |
@@ -396,7 +429,7 @@ Run the typed in-memory example with:
 cargo run --locked --example fit_profiles
 ```
 
-`PROFILE_QUALITY_FIXTURE` fits rows `[0,1,2,3,4]` only, predicts held-out rows `[5,6,7]`, and reports finite f64-evaluated MAE/R² for each profile. That evaluation is example-only and is not production C arithmetic; it is not an accuracy threshold, generalization claim or replacement for the independent numerical tests.
+`fit_profiles` uses the authored eight-row CSV and fits rows `[0,1,2,3,4]`, predicting the held-out rows `[5,6,7]`. The fixture deliberately creates a noisy small problem, so it checks independent known answers rather than only an exact synthetic line. It reports metrics over all three actual frozen serving objects; B and C predictions are widened to f64 for common evaluation, which does not change their learning or serving arithmetic. The declared split extrapolates and is not temporal/IID validation, a generalization claim, or production accuracy evidence. B has no separate fit or native training RSS; the canonical C native training RSS is checked independently.
 
 ## References
 

@@ -280,14 +280,21 @@ fn f64_solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
 }
 
 /// The deployed serving arithmetic, re-implemented independently: sequential
-/// `f32` left fold of `w_i * x_i` from `0.0`, then the bias added in `f32`.
+/// `f32` left fold of `w_i * x_i` from the baseline `-0.0`, then the bias added
+/// in `f32`.
 /// This mirrors `Vector::dot(features) + bias` without using the library.
 fn deployed_predict_f32(x: &[f32], w: &[f32], bias: f32) -> f32 {
-    let mut acc = 0.0f32;
+    let mut acc = -0.0f32;
     for (xi, wi) in x.iter().zip(w.iter()) {
         acc += *xi * *wi;
     }
     acc + bias
+}
+
+#[test]
+fn t0_deployed_scalar_reference_preserves_negative_zero() {
+    let result = deployed_predict_f32(&[1.0], &[-0.0], -0.0);
+    assert_eq!(result.to_bits(), (-0.0f32).to_bits());
 }
 
 /// `f64` prediction used as the "exact-side" comparison for error envelopes.
@@ -955,9 +962,12 @@ fn t2_objective_bound_with_positive_residual() {
 
 #[test]
 fn t2_objective_bound_nonzero_cross_term() {
-    // Slightly approximate f64 coefficients (b = 1.0, w = 0.7, not the optimum):
-    // r64 = 5/16 > 0 and Σ e64_j·Δ_j ≠ 0, because the residuals are not
-    // orthogonal to the coefficient-conversion change.
+    // Slightly approximate f64 coefficients (b = 1.0, w = 0.7, not the optimum).
+    // In decimal-real arithmetic the residuals are 0, -0.3, 0.4, so r64 = 1/4.
+    // The exact rational value below is for the stored binary-f64 coefficient;
+    // it is close to, but not identical to, that decimal-real quantity. The
+    // cross term remains nonzero because residuals are not orthogonal to the
+    // coefficient-conversion change.
     let x_rows = vec![vec![0.0f32], vec![1.0], vec![2.0]];
     let y = [1.0f64, 2.0, 2.0];
     let w64 = [0.7f64];

@@ -264,7 +264,8 @@ fn micro_batch_propagates_element_failure() {
 // delegate to it.
 // ============================================================================
 
-/// Independent scalar oracle in `f32`, accumulated in weight-index order.
+/// Independent scalar oracle in `f32`, accumulated in weight-index order from
+/// the baseline negative-zero reduction identity.
 ///
 /// Deliberately a plain index loop, not `Vector::dot`: it is a different code
 /// path and a different formulation, so agreement catches wiring/omission
@@ -273,11 +274,25 @@ fn micro_batch_propagates_element_failure() {
 // iterator rewrite of the production path.
 #[allow(clippy::needless_range_loop)]
 fn scalar_predict_f32(weights: &[f32], bias: f32, features: &[f32]) -> f32 {
-    let mut accumulator = 0.0_f32;
+    let mut accumulator = -0.0_f32;
     for index in 0..weights.len() {
         accumulator += weights[index] * features[index];
     }
     accumulator + bias
+}
+
+#[test]
+fn scalar_oracle_matches_public_negative_zero_prediction_bits() {
+    let weights = [-0.0_f32];
+    let features = [1.0_f32];
+    let bias = -0.0_f32;
+    let expected = scalar_predict_f32(&weights, bias, &features);
+    let actual = model(&weights, bias)
+        .predict(&Vector::from_slice(&features))
+        .unwrap();
+
+    assert_eq!(expected.to_bits(), (-0.0_f32).to_bits());
+    assert_bits_eq(actual, expected);
 }
 
 /// Independent `f64` oracle used as a numerical diagnostic, not as the

@@ -1,8 +1,9 @@
 //! Linear regression prediction: `ŷ = w · x + b`.
 //!
-//! This is the reference slice for classic ML. It implements **prediction only**.
-//! Online parameter updating is a separate, ordered state-update concern and is
-//! deliberately not part of this model; see `docs/ML_VERTICAL_SLICES.md`.
+//! This module contains immutable f32 [`LinearRegression`] and native-f64
+//! [`LinearRegression64`] predictors. OLS fitting lives separately in `fit.rs`;
+//! a prediction call never learns from the observation. In particular, streaming
+//! delivery does not make batch OLS an incremental estimator.
 //!
 //! # Ownership
 //!
@@ -29,24 +30,28 @@
 //!
 //! # Numerics
 //!
-//! Features and weights use the existing `f32` substrate ([`Vector::dot`]) so
-//! prediction consumes the same [`Observation<Vector>`] the rest of the
-//! framework uses. No `f64` conversion or new numerical primitive is added
-//! without a measured requirement.
+//! The legacy, B-serving, and C-serving predictor uses the existing `f32`
+//! substrate ([`Vector::dot`]) and [`Observation<Vector>`]. Native profile A
+//! uses [`Vector64`] and ordered f64 arithmetic. The checked variants validate
+//! that the output is finite; they do not establish accuracy, conditioning, or
+//! underflow safety. Bare prediction retains its established output behavior.
 //!
 //! ## Operating envelope and caller responsibility
 //!
 //! Construction rejects non-finite weights and bias
 //! ([`RegressionError::NonFiniteParameter`]). Prediction validates the feature
 //! dimension first, then feature finiteness ([`RegressionError::NonFiniteInput`]).
-//! Prediction does **not** validate its output.
+//! Bare `predict` does **not** validate its output; `predict_checked` and the
+//! checked grouped/wrapper paths reject non-finite outputs without changing
+//! finite-result arithmetic.
 //!
 //! Because the substrate is `f32`, finite operands can still overflow during
 //! multiplication or summation and produce `±inf`; a subsequent `inf + (-inf)`
 //! can produce `NaN`. Finite parameters and finite inputs therefore do **not**
 //! guarantee a finite prediction. The caller is responsible for keeping the
 //! products and sums representable, for example by scaling features and
-//! coefficients.
+//! coefficients. Group methods process the caller's supplied slice; any
+//! resource/count bound is caller-owned.
 //!
 //! This is expected IEEE-754 `f32` behaviour, not a defect, and no numeric
 //! cutoff is imposed or implied: Seqvex does not invent a magnitude threshold

@@ -1,9 +1,15 @@
-//! Ordinary least-squares **fitting**: batch dense least squares in `f64`,
-//! followed by checked conversion into the existing `f32` predictor.
+//! Ordinary least-squares **fitting** provides three explicit precision paths
+//! alongside the original compatibility fitter. [`fit_f64`] is native f64
+//! learning for profile A; [`FitResult64::to_serving_f32`] converts that same
+//! fit into separately owned checked f32 serving for B; [`fit_f32`] performs
+//! learning and training diagnostics natively in f32 for C. The original
+//! [`fit`] accepts f32 values, widens them for f64 solving, then retains checked
+//! f32 parameters and legacy diagnostics.
 //!
-//! This is the first working fitting workflow for OLS. It is a single batch
-//! least-squares solve — no epochs, learning rates, online updates or generic
-//! training framework.
+//! Each call is a dense, selected-row dataset batch fit. A new candidate is a
+//! separate refit; OLS does not incrementally update a previous result. There
+//! are no epochs, learning rates, automatic scheduling, or generic training
+//! framework.
 //!
 //! # Solver
 //!
@@ -978,9 +984,9 @@ pub fn fit(
     //
     // The two `Vector::from_slice` copies below (the transient diagnostics
     // predictor and the retained result coefficients) are **infallible**
-    // allocations: the shared `Vector` API has no move constructor, so they are
-    // budgeted (`diagnostics_bytes` + `retained_bytes`) but are not
-    // allocation-failure recoverable. Universal OOM recovery is not claimed.
+    // allocations. They are budgeted (`diagnostics_bytes` + `retained_bytes`)
+    // but are not allocation-failure recoverable. Universal OOM recovery is
+    // not claimed.
     let mut rss64 = 0.0f64;
     let mut rss32 = 0.0f64;
     let predictor = LinearRegression::new(Vector::from_slice(&weights32), bias32)

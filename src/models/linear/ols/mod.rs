@@ -1,14 +1,16 @@
 //! Ordinary least-squares (OLS) regression.
 //!
-//! Supplied-parameter prediction ([`LinearRegression`]) and the batch `fit`
-//! workflow are implemented. Fitted results can be turned into an immutable
-//! [`TrainedModel`] carrying [`ArtifactMetadata`], and exported/imported as the
-//! binary v1 [`artifact`] format.
+//! The intended user-facing precision profiles are A (`fit_f64` and native-f64
+//! serving), B (the same A fit converted to independently owned checked f32
+//! serving), and C (`fit_f32` and native-f32 serving). OLS learning is an
+//! explicit selected-row batch fit/refit, not an incremental update. Checked
+//! single, grouped, and streaming prediction are separate delivery paths.
 //!
-//! The deferred cross-precision numerical-certification project and the broader
-//! fitting lifecycle remain follow-up work under
-//! [#23](https://github.com/Skybrique/seqvex/issues/23). See `README.md` in this
-//! directory for the algorithm contract.
+//! The original mixed-precision [`fit`] path remains for compatibility. Its
+//! [`FitResult`] alone exposes the legacy admission check and construction path
+//! into [`TrainedModel`] and binary v1 [`artifact`] persistence. Typed A/B/C
+//! results do not currently have that artifact construction path. See the local
+//! `README.md` for the workflow, precision boundaries, and limitations.
 
 pub mod artifact;
 mod fit;

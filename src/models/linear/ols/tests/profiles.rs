@@ -171,6 +171,95 @@ fn a_validation_precedence_and_selected_only_reads() {
 }
 
 #[test]
+fn a_direct_validation_failures_are_isolated() {
+    let valid_features = [row64(&[0.0]), row64(&[1.0]), row64(&[2.0])];
+    let valid_targets = [1.0, 3.0, 5.0];
+
+    assert_eq!(
+        fit_f64(
+            &valid_features[..2],
+            &valid_targets[..1],
+            &[0],
+            &FitConfig64::default(),
+        ),
+        Err(FitError64::RowTargetMismatch {
+            features: 2,
+            targets: 1,
+        })
+    );
+    assert_eq!(
+        fit_f64(
+            &valid_features,
+            &valid_targets,
+            &[],
+            &FitConfig64::default(),
+        ),
+        Err(FitError64::TooFewRows)
+    );
+    assert_eq!(
+        fit_f64(
+            &valid_features[..2],
+            &valid_targets[..2],
+            &[2],
+            &FitConfig64::default(),
+        ),
+        Err(FitError64::IndexOutOfRange { index: 2, rows: 2 })
+    );
+    assert_eq!(
+        fit_f64(
+            &[row64(&[0.0]), row64(&[1.0, 2.0])],
+            &[1.0, 3.0],
+            &[0, 1],
+            &FitConfig64::default(),
+        ),
+        Err(FitError64::RaggedFeatures {
+            row: 1,
+            expected: 1,
+            actual: 2,
+        })
+    );
+    assert_eq!(
+        fit_f64(
+            &valid_features[..2],
+            &valid_targets[..2],
+            &[0, 0],
+            &FitConfig64::default(),
+        ),
+        Err(FitError64::DuplicateIndex { index: 0 })
+    );
+    assert_eq!(
+        fit_f64(
+            &valid_features[..2],
+            &valid_targets[..2],
+            &[0, 1],
+            &FitConfig64 {
+                rank_threshold: -1.0,
+                ..FitConfig64::default()
+            },
+        ),
+        Err(FitError64::InvalidRankThreshold { value: -1.0 })
+    );
+    assert_eq!(
+        fit_f64(
+            &[row64(&[0.0]), row64(&[f64::NAN])],
+            &[1.0, 3.0],
+            &[0, 1],
+            &FitConfig64::default(),
+        ),
+        Err(FitError64::NonFiniteTrainingValue { row: 1, column: 0 })
+    );
+
+    assert_eq!(
+        fit_f64(&[row64(&[0.0])], &[1.0], &[0], &FitConfig64::default(),),
+        Err(FitError64::RankDeficient {
+            rank: 1,
+            required: 2,
+        }),
+        "one row cannot satisfy the two intercept-augmented fitting columns"
+    );
+}
+
+#[test]
 fn a_rank_controls_straddle_threshold_and_scaled_full_rank() {
     let below = fit_f64(
         &[row64(&[0.0]), row64(&[1.0e-17])],
@@ -434,6 +523,10 @@ fn c_recovers_f32_models_and_matches_ordered_rss() {
     );
     assert!((noisy.weights().as_slice()[0] - 0.5).abs() <= 1.0e-5);
     assert!((noisy.intercept() - 7.0 / 6.0).abs() <= 1.0e-5);
+    assert!(
+        (f64::from(noisy.diagnostics().rss_f32) - 1.0 / 6.0).abs() <= 1.0e-6,
+        "C noisy native training RSS must match the independent 1/6 reference"
+    );
 }
 
 #[test]
@@ -533,6 +626,95 @@ fn c_native_f32_rank_and_inference() {
 }
 
 #[test]
+fn c_direct_validation_failures_are_isolated() {
+    let valid_features = [row32(&[0.0]), row32(&[1.0]), row32(&[2.0])];
+    let valid_targets = [1.0, 3.0, 5.0];
+
+    assert_eq!(
+        fit_f32(
+            &valid_features[..2],
+            &valid_targets[..1],
+            &[0],
+            &FitConfig32::default(),
+        ),
+        Err(FitError32::RowTargetMismatch {
+            features: 2,
+            targets: 1,
+        })
+    );
+    assert_eq!(
+        fit_f32(
+            &valid_features,
+            &valid_targets,
+            &[],
+            &FitConfig32::default(),
+        ),
+        Err(FitError32::TooFewRows)
+    );
+    assert_eq!(
+        fit_f32(
+            &valid_features[..2],
+            &valid_targets[..2],
+            &[2],
+            &FitConfig32::default(),
+        ),
+        Err(FitError32::IndexOutOfRange { index: 2, rows: 2 })
+    );
+    assert_eq!(
+        fit_f32(
+            &[row32(&[0.0]), row32(&[1.0, 2.0])],
+            &[1.0, 3.0],
+            &[0, 1],
+            &FitConfig32::default(),
+        ),
+        Err(FitError32::RaggedFeatures {
+            row: 1,
+            expected: 1,
+            actual: 2,
+        })
+    );
+    assert_eq!(
+        fit_f32(
+            &valid_features[..2],
+            &valid_targets[..2],
+            &[0, 0],
+            &FitConfig32::default(),
+        ),
+        Err(FitError32::DuplicateIndex { index: 0 })
+    );
+    assert_eq!(
+        fit_f32(
+            &valid_features[..2],
+            &valid_targets[..2],
+            &[0, 1],
+            &FitConfig32 {
+                rank_threshold: -1.0,
+                ..FitConfig32::default()
+            },
+        ),
+        Err(FitError32::InvalidRankThreshold { value: -1.0 })
+    );
+    assert_eq!(
+        fit_f32(
+            &[row32(&[0.0]), row32(&[f32::NAN])],
+            &[1.0, 3.0],
+            &[0, 1],
+            &FitConfig32::default(),
+        ),
+        Err(FitError32::NonFiniteTrainingValue { row: 1, column: 0 })
+    );
+
+    assert_eq!(
+        fit_f32(&[row32(&[0.0])], &[1.0], &[0], &FitConfig32::default(),),
+        Err(FitError32::RankDeficient {
+            rank: 1,
+            required: 2,
+        }),
+        "one row cannot satisfy the two intercept-augmented fitting columns"
+    );
+}
+
+#[test]
 fn profiles_coexist_without_shared_mutation() {
     let a_features = [row64(&[0.0]), row64(&[1.0]), row64(&[2.0])];
     let a_targets = [1.0, 3.0, 5.0];
@@ -579,5 +761,259 @@ fn profiles_coexist_without_shared_mutation() {
     assert_eq!(
         c_model.predict_checked(&c_features[2]).unwrap().to_bits(),
         c_before.to_bits()
+    );
+}
+
+#[test]
+fn a_and_c_ignore_unselected_nonfinite_values_and_use_one_feature() {
+    let features64 = [row64(&[0.0]), row64(&[1.0]), row64(&[f64::NAN])];
+    let targets64 = [1.0, 3.0, f64::NAN];
+    let a = fit_a(&features64, &targets64, &[0, 1], &FitConfig64::default());
+    let mut changed_features64 = features64.clone();
+    changed_features64[2] = row64(&[f64::INFINITY]);
+    let changed_targets64 = [1.0, 3.0, f64::NEG_INFINITY];
+    let a_changed = fit_a(
+        &changed_features64,
+        &changed_targets64,
+        &[0, 1],
+        &FitConfig64::default(),
+    );
+    assert_eq!(a, a_changed);
+    assert_eq!(a.weights().len(), 1);
+    assert_eq!(a.diagnostics().features, 1);
+    assert_eq!(a.diagnostics().rank, 2);
+    assert_eq!(a.diagnostics().required_rank, 2);
+
+    let selected_change = fit_a(
+        &[row64(&[0.0]), row64(&[1.0]), row64(&[f64::NAN])],
+        &[1.0, 4.0, f64::NAN],
+        &[0, 1],
+        &FitConfig64::default(),
+    );
+    assert_ne!(a.weights(), selected_change.weights());
+
+    let features32 = [row32(&[0.0]), row32(&[1.0]), row32(&[f32::NAN])];
+    let targets32 = [1.0, 3.0, f32::NAN];
+    let c = fit_c(&features32, &targets32, &[0, 1], &FitConfig32::default());
+    let changed_features32 = [row32(&[0.0]), row32(&[1.0]), row32(&[f32::INFINITY])];
+    let changed_targets32 = [1.0, 3.0, f32::NEG_INFINITY];
+    let c_changed = fit_c(
+        &changed_features32,
+        &changed_targets32,
+        &[0, 1],
+        &FitConfig32::default(),
+    );
+    assert_eq!(c, c_changed);
+    assert_eq!(c.weights().len(), 1);
+    assert_eq!(c.diagnostics().features, 1);
+    assert_eq!(c.diagnostics().rank, 2);
+    assert_eq!(c.diagnostics().required_rank, 2);
+
+    let selected_change = fit_c(
+        &[row32(&[0.0]), row32(&[1.0]), row32(&[f32::NAN])],
+        &[1.0, 4.0, f32::NAN],
+        &[0, 1],
+        &FitConfig32::default(),
+    );
+    assert_ne!(c.weights(), selected_change.weights());
+}
+
+#[test]
+fn a_and_c_enforce_requested_workspace_boundary() {
+    let features64 = [row64(&[0.0]), row64(&[1.0]), row64(&[2.0])];
+    let targets64 = [1.0, 3.0, 5.0];
+    let baseline_a = fit_a(&features64, &targets64, &[0, 1, 2], &FitConfig64::default());
+    let requested_a = baseline_a.diagnostics().requested_workspace_bytes;
+    let exact_a = fit_f64(
+        &features64,
+        &targets64,
+        &[0, 1, 2],
+        &FitConfig64 {
+            max_workspace_bytes: requested_a,
+            ..FitConfig64::default()
+        },
+    )
+    .expect("A fits at its requested workspace boundary");
+    assert_eq!(exact_a.diagnostics().requested_workspace_bytes, requested_a);
+    assert_eq!(
+        fit_f64(
+            &features64,
+            &targets64,
+            &[0, 1, 2],
+            &FitConfig64 {
+                max_workspace_bytes: requested_a - 1,
+                ..FitConfig64::default()
+            },
+        ),
+        Err(FitError64::Capacity {
+            requested: requested_a,
+            limit: requested_a - 1,
+        })
+    );
+
+    let features32 = [row32(&[0.0]), row32(&[1.0]), row32(&[2.0])];
+    let targets32 = [1.0, 3.0, 5.0];
+    let baseline_c = fit_c(&features32, &targets32, &[0, 1, 2], &FitConfig32::default());
+    let requested_c = baseline_c.diagnostics().requested_workspace_bytes;
+    let exact_c = fit_f32(
+        &features32,
+        &targets32,
+        &[0, 1, 2],
+        &FitConfig32 {
+            max_workspace_bytes: requested_c,
+            ..FitConfig32::default()
+        },
+    )
+    .expect("C fits at its requested workspace boundary");
+    assert_eq!(exact_c.diagnostics().requested_workspace_bytes, requested_c);
+    assert_eq!(
+        fit_f32(
+            &features32,
+            &targets32,
+            &[0, 1, 2],
+            &FitConfig32 {
+                max_workspace_bytes: requested_c - 1,
+                ..FitConfig32::default()
+            },
+        ),
+        Err(FitError32::Capacity {
+            requested: requested_c,
+            limit: requested_c - 1,
+        })
+    );
+}
+
+#[test]
+fn native_profiles_preserve_index_before_rank_configuration_precedence() {
+    let features64 = [row64(&[0.0]), row64(&[1.0])];
+    let targets64 = [0.0, 1.0];
+    let config64 = FitConfig64 {
+        rank_threshold: f64::NAN,
+        max_workspace_bytes: 0,
+        ..FitConfig64::default()
+    };
+    assert_eq!(
+        fit_f64(&features64, &targets64, &[2], &config64),
+        Err(FitError64::IndexOutOfRange { index: 2, rows: 2 })
+    );
+
+    let features32 = [row32(&[0.0]), row32(&[1.0])];
+    let targets32 = [0.0, 1.0];
+    let config32 = FitConfig32 {
+        rank_threshold: f32::NAN,
+        max_workspace_bytes: 0,
+        ..FitConfig32::default()
+    };
+    assert_eq!(
+        fit_f32(&features32, &targets32, &[2], &config32),
+        Err(FitError32::IndexOutOfRange { index: 2, rows: 2 })
+    );
+}
+
+#[test]
+fn c_rank_threshold_has_controls_on_each_side() {
+    let below = fit_f32(
+        &[row32(&[0.0]), row32(&[1.0e-8])],
+        &[0.0, 1.0e-8],
+        &[0, 1],
+        &FitConfig32::default(),
+    );
+    assert!(matches!(below, Err(FitError32::RankDeficient { .. })));
+
+    let above = fit_f32(
+        &[row32(&[0.0]), row32(&[1.0e-5])],
+        &[0.0, 1.0e-5],
+        &[0, 1],
+        &FitConfig32::default(),
+    )
+    .expect("C above-threshold fixture is full rank");
+    assert_eq!(above.diagnostics().features, 1);
+    assert_eq!(above.diagnostics().rank, 2);
+    assert_eq!(above.diagnostics().required_rank, 2);
+    assert!(above.diagnostics().rank_threshold.is_finite());
+}
+
+#[test]
+fn b_uses_independent_rounding_reference_and_survives_source_drop_and_refit() {
+    let features = [row64(&[0.0]), row64(&[1.0]), row64(&[2.0])];
+    let targets = [1.0, 3.0, 5.0];
+    let a = fit_a(&features, &targets, &[0, 1, 2], &FitConfig64::default());
+    let weights_before: Vec<u64> = a
+        .weights()
+        .as_slice()
+        .iter()
+        .map(|value| value.to_bits())
+        .collect();
+    let bias_before = a.intercept().to_bits();
+    let diagnostics_before = a.diagnostics().clone();
+    let rounded_weights: Vec<f32> = a
+        .weights()
+        .as_slice()
+        .iter()
+        .map(|&value| value as f32)
+        .collect();
+    let rounded_bias = a.intercept() as f32;
+    let b = a
+        .to_serving_f32(UnderflowPolicy::Reject)
+        .expect("B conversion");
+    assert_eq!(b.weights().len(), rounded_weights.len());
+    for (index, (&actual, &expected)) in b
+        .weights()
+        .as_slice()
+        .iter()
+        .zip(&rounded_weights)
+        .enumerate()
+    {
+        assert_eq!(actual.to_bits(), expected.to_bits(), "B weight {index}");
+    }
+    assert_eq!(b.bias().to_bits(), rounded_bias.to_bits());
+    assert_eq!(
+        a.weights()
+            .as_slice()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>(),
+        weights_before
+    );
+    assert_eq!(a.intercept().to_bits(), bias_before);
+    assert_eq!(a.diagnostics(), &diagnostics_before);
+
+    let reference =
+        seqvex::models::linear::ols::LinearRegression::new(row32(&rounded_weights), rounded_bias)
+            .unwrap();
+    for value in [0.0f32, 1.0, 2.5, 7.1] {
+        let row = row32(&[value]);
+        let expected = {
+            let mut sum = -0.0f32;
+            for (&weight, &feature) in reference.weights().as_slice().iter().zip(row.as_slice()) {
+                sum += weight * feature;
+            }
+            sum + reference.bias()
+        };
+        assert_eq!(
+            b.predict_checked(&row).unwrap().to_bits(),
+            expected.to_bits()
+        );
+    }
+
+    let selected_before = b.predict_checked(&row32(&[1.0])).unwrap();
+    let shifted_targets = [101.0, 103.0, 105.0];
+    let _shifted = fit_f64(
+        &features,
+        &shifted_targets,
+        &[0, 1, 2],
+        &FitConfig64::default(),
+    )
+    .expect("separate shifted refit");
+    assert_eq!(
+        b.predict_checked(&row32(&[1.0])).unwrap().to_bits(),
+        selected_before.to_bits()
+    );
+
+    let source_predictor = a.into_predictor();
+    drop(source_predictor);
+    assert_eq!(
+        b.predict_checked(&row32(&[1.0])).unwrap().to_bits(),
+        selected_before.to_bits()
     );
 }

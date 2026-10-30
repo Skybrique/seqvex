@@ -9,6 +9,12 @@
 //! The artifact format is little-endian binary v1. See the module constants and
 //! [`TrainedModel::export_to`] for the exact field order. Import validates a
 //! complete candidate or returns an error; it never replaces an active model.
+//! Public fitted-model construction currently belongs to the legacy `FitResult`
+//! path; typed A/B/C results do not have a v1 construction or persistence path.
+//! An import reader must contain exactly one complete artifact through EOF:
+//! import consumes it, rejects trailing bytes, and provides no reader-position
+//! or retry guarantee. The byte limit bounds accepted artifact size, not total
+//! memory use.
 //!
 //! The library provides **no** filesystem atomicity or durability.
 
@@ -762,8 +768,11 @@ fn check_expectations(
     Ok(())
 }
 
-/// Reads at most `max_bytes` (+1 to detect an over-limit stream) with a bounded
-/// buffer; no allocation is driven by an unchecked length.
+/// Retains at most `max_bytes + 1` bytes while detecting an over-limit stream.
+/// Each `Read` may consume a full 4096-byte chunk before the limit is checked,
+/// so the reader can advance beyond the first over-limit byte. Import provides
+/// no reader-position or retry guarantee; no allocation is driven by an
+/// unchecked encoded length.
 fn read_bounded<R: Read>(reader: &mut R, max_bytes: usize) -> Result<Vec<u8>, ArtifactError> {
     let ceiling = max_bytes.saturating_add(1);
     let mut bytes: Vec<u8> = Vec::new();

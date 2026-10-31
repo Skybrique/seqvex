@@ -768,6 +768,16 @@ The reference path is retained; optimization and profiling are deferred. This
 run does not establish a CPU profile, a bottleneck identification, or production
 readiness.
 
+## Dependency applicability and component comparisons (measured experiment)
+
+The reviewed dependency-applicability design and implementation plan retain `faer =0.24.4` in its existing configuration, all existing public interfaces, historical benchmark targets and the ten-file implementation scope. The applicability checks are not a solver-performance comparison or general numerical certification. The `paste` maintenance advisory and parallel-kernel applicability remain recorded limitations.
+
+The completed six-process experiment used the uncommitted candidate at branch `issue-27-dependency-applicability-comparisons`, HEAD `48ddb835df4ad2a3e13d5dfc62022daeaf0009c5`, tree `b6b97f2962c896db5b6207e994e9f55e4c92d700`, with captured benchmark sources `ingestion.rs` `976f2622…` and `storage.rs` `d2f96ecc…`, under the design `a47db7b2353b875a536783a347bb51d23adef8493ab2cc3ab30fd4652fde914d`. Three sequential ingestion processes and three sequential SGD-storage processes each completed their full matrices with Rust/Cargo 1.85.1, one pinned logical CPU and a 2 GiB virtual-memory limit.
+
+Reusable `StringRecord` is the first bounded production ingestion proposal to consider: it improved the measured 256-record parsing and complete-ingestion cases and reduced allocation traffic using the existing csv dependency. CSV + Serde also improved those cases but has no clear advantage over `StringRecord` that would justify adoption solely for performance. The inspected `ByteRecord` implementation and `tinyvec` are not adopted for these measured consumers. No complete-workflow latency improvement or universal storage winner was established. Direct SGD construction and other alternatives helped some cells but regressed elsewhere, including dimension 128; allocation reduction alone does not establish faster execution, and the regression cause remains unestablished. No four-mode ingestion API or production optimization is implemented. Experimental development dependencies were added for the comparison; no production dependency adoption occurred. The 256-record size is a fixture, not an automatic loader threshold.
+
+Public summaries: [#46](https://github.com/Skybrique/seqvex/issues/46#issuecomment-6527198399), [#55](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6527217177), [#43](https://github.com/Skybrique/seqvex/issues/43#issuecomment-6527236426). Raw logs and derived review tables remain local and are not publicly attached. Documentation-only successor hashes are distinct from the captured candidate and are recorded in the mutable comparison handoff.
+
 ## Execution package reconciliation (LF-EXEC-D3)
 
 The profile code is present at current main. The recorded run identities,

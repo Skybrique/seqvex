@@ -393,6 +393,8 @@ Run the applicable critical architecture review before choices affecting ownersh
 | `src/models/linear/ols/tests/profiles.rs` | Native-f64, checked serving and strict-f32 evidence; Cargo target `ols_profiles` | #43; numerical support #44 |
 | `src/models/linear/ols/examples/fit_salary.rs` | CSV fit/evaluation/artifact/refit demonstration; Cargo example `fit_salary` | #43 |
 | `src/models/linear/ols/examples/fit_profiles.rs` | Authored CSV parsing, direct-precision A/B/C training, checked frozen serving and held-out evaluation; Cargo example `fit_profiles` | #43; numerical support #44 |
+| `src/models/linear/ols/examples/faer_applicability.rs` | Untimed high-level faer #265 diagnostic; Cargo example `faer_applicability` | #46 |
+| `src/models/linear/ols/benches/ingestion.rs` | Four-candidate CSV ingestion comparison; Cargo bench `ols_ingestion`, `harness = false` | #27; #46 |
 | `src/models/linear/ols/benches/fit.rs` | Fitting/checked serving/artifact/refit resource evidence; Cargo bench `ols_fit`, `harness = false` | #46 |
 | `src/models/linear/ols/tests/public_contract.rs` | Public-contract integration tests; Cargo target `linear_regression` | #43; numerical support #44 |
 | `src/models/linear/ols/benches/execution.rs` | Prediction benchmark; Cargo target `linear_regression`, `harness = false` | #43 for wiring; #46 for methodology/evidence |
@@ -430,6 +432,33 @@ cargo run --locked --example fit_profiles
 ```
 
 `fit_profiles` uses the authored eight-row CSV and fits rows `[0,1,2,3,4]`, predicting the held-out rows `[5,6,7]`. The fixture deliberately creates a noisy small problem, so it checks independent known answers rather than only an exact synthetic line. It reports metrics over all three actual frozen serving objects; B and C predictions are widened to f64 for common evaluation, which does not change their learning or serving arithmetic. The declared split extrapolates and is not temporal/IID validation, a generalization claim, or production accuracy evidence. B has no separate fit or native training RSS; the canonical C native training RSS is checked independently.
+
+## 17. Dependency applicability and ingestion comparison (measured experiment)
+
+The reviewed technical design retains `faer =0.24.4` with `default-features = false` and `features = ["std", "linalg"]`, explicit `Par::Seq`, the current rank thresholds and the existing public fitting/serving APIs. The `ols_profiles` controls exercise the public A/C paths on the reviewed #265-related fixtures without treating the high-level unpivoted API as evidence of safety. `faer_applicability` is a separate, untimed high-level diagnostic; its nonzero exit classification is an upstream observation, not a normal regression assertion. The current diagnostic returned finite all-zero output on stable and Rust 1.85.1; that is an upstream-path observation, not a public A/C safety certificate or solver-performance comparison. The `paste` maintenance advisory and unresolved #273 parallel-kernel applicability remain limitations; no suppression, override or solver replacement is made.
+
+### Bounded CSV comparison
+
+The uncommitted `ols_ingestion` package compares current record iteration, reusable `StringRecord`, UTF-8-equivalent reusable `ByteRecord` and custom-validated CSV + Serde. It was captured from branch `issue-27-dependency-applicability-comparisons`, HEAD `48ddb835df4ad2a3e13d5dfc62022daeaf0009c5`, tree `b6b97f2962c896db5b6207e994e9f55e4c92d700`; the benchmark source is not part of that HEAD. `ingestion.rs` SHA-256 is `976f2622d9e0d220e384a1059b1ae13f3e9f1bfe438b7e7e8f675594bcebf0de`; the design is `a47db7b2353b875a536783a347bb51d23adef8493ab2cc3ab30fd4652fde914d`.
+
+Each of the three sequential 1.85.1 captures completed 45 unique timing rows, 20 measured windows per row and 27 registered memory probes. The table below shows complete ingestion of the 256-record fixture; each cell is capture 1 / capture 2 / capture 3 median nanoseconds per record. It includes source acquisition, parsing, validation, the owned model inputs and teardown, not disk I/O.
+
+These three ingestion captures used one Linux x86_64 WSL2 environment (12th Gen Intel Core i7-12700H), a single pinned logical CPU and a 2 GiB virtual-memory limit. Power/thermal state and background contention were uncontrolled. These are this experiment's conditions, not the historical benchmark environment; historical tables retain their original conditions.
+
+| Complete ingestion, 256 records | C1 / C2 / C3 ns/record |
+|---|---:|
+| Current record iteration | 304.4 / 292.4 / 329.9 |
+| Reusable `StringRecord` | 236.9 / 222.0 / 231.4 |
+| UTF-8-equivalent `ByteRecord` | 297.0 / 303.8 / 313.7 |
+| CSV + custom-validated Serde | 232.2 / 234.4 / 234.1 |
+
+All candidates must produce the same owned f64/f32 values, feature and row order, precision and declared failures. Reusable `StringRecord` is the first bounded production proposal to consider because it improves the measured 256-record parsing and complete-ingestion cases and reduces allocation requests/bytes using the existing csv dependency. CSV + Serde also improves those cases, but no clear advantage over reusable `StringRecord` justifies adoption solely for performance. The inspected `ByteRecord` implementation is not adopted: it shows no material 256-record latency benefit and increases requested-byte traffic in several cells. These conclusions apply only to the measured implementations and workloads.
+
+The materiality rule is: for each metric, the absolute median difference must exceed both twice the larger interquartile range and 5% of the larger median, with the same direction in all three captures. IQR is the middle-half spread (75th minus 25th percentile); allocation requests combine allocation and reallocation calls, and requested bytes are not retained RAM. It is a practical noise/materiality screen, not a statistical significance or equivalence test. No complete A/C/A-to-B workflow latency difference passed that screen. `StringRecord` and Serde reduced complete-workflow traffic by about 224 combined allocation/reallocation requests and 8.27 KiB of requested bytes per workflow; requested traffic is not retained RAM, and this is not an end-to-end speedup claim.
+
+The 256-record size is a bounded fixture, not an automatic loader-switch threshold. No four-mode public ingestion API, new default loader or production optimization is implemented or authorized. Raw original logs and derived comparison tables are retained locally and are not publicly attached; the public summaries are [#46](https://github.com/Skybrique/seqvex/issues/46#issuecomment-6527198399) and [#43](https://github.com/Skybrique/seqvex/issues/43#issuecomment-6527236426). The benchmark source and this documentation-only successor are distinct identities.
+
+Run the debug guards with `cargo test --locked --bench ols_ingestion --all-features`; release compilation is `cargo bench --locked --no-run`. A compiled benchmark is not measurement evidence.
 
 ## References
 

@@ -29,6 +29,8 @@ num-bigint = "0.4"
 num-rational = "0.4"
 num-traits = "0.2"
 csv = "1.4"
+serde = { version = "=1.0.229", default-features = false, features = ["std", "derive"] }
+tinyvec = { version = "=1.13.3", default-features = false, features = ["alloc"] }
 
 [[test]]
 name = "linear_regression"
@@ -79,6 +81,10 @@ name = "fit_profiles"
 path = "src/models/linear/ols/examples/fit_profiles.rs"
 
 [[example]]
+name = "faer_applicability"
+path = "src/models/linear/ols/examples/faer_applicability.rs"
+
+[[example]]
 name = "rls_learn"
 path = "src/models/linear/rls/examples/rls_learn.rs"
 
@@ -125,6 +131,16 @@ harness = false
 [[bench]]
 name = "sgd"
 path = "src/models/linear/sgd/benches/sgd.rs"
+harness = false
+
+[[bench]]
+name = "ols_ingestion"
+path = "src/models/linear/ols/benches/ingestion.rs"
+harness = false
+
+[[bench]]
+name = "sgd_storage"
+path = "src/models/linear/sgd/benches/storage.rs"
 harness = false
 
 [[bench]]

@@ -18,23 +18,23 @@ use seqvex::models::linear::ols::{
 };
 use sha2::{Digest, Sha256};
 
-const CANONICAL_CSV: &[u8] = include_bytes!("data/displacement_time_offset.csv");
-const MAX_INPUT_BYTES: usize = 64 * 1024;
-const MAX_DATA_ROWS: usize = 256;
-const MIN_DATA_ROWS: usize = 6;
-const TRAIN_ROWS: usize = 5;
+pub(crate) const CANONICAL_CSV: &[u8] = include_bytes!("data/displacement_time_offset.csv");
+pub(crate) const MAX_INPUT_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_DATA_ROWS: usize = 256;
+pub(crate) const MIN_DATA_ROWS: usize = 6;
+pub(crate) const TRAIN_ROWS: usize = 5;
 const MAX_GROUP_SIZE: usize = 32;
-const FEATURE_HEADER: &str = "DisplacementMeters";
-const TARGET_HEADER: &str = "TimeOffsetSeconds";
+pub(crate) const FEATURE_HEADER: &str = "DisplacementMeters";
+pub(crate) const TARGET_HEADER: &str = "TimeOffsetSeconds";
 
-struct Dataset {
-    bytes: Vec<u8>,
-    source: String,
-    canonical: bool,
-    features64: Vec<Vector64>,
-    targets64: Vec<f64>,
-    features32: Vec<Vector>,
-    targets32: Vec<f32>,
+pub(crate) struct Dataset {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) source: String,
+    pub(crate) canonical: bool,
+    pub(crate) features64: Vec<Vector64>,
+    pub(crate) targets64: Vec<f64>,
+    pub(crate) features32: Vec<Vector>,
+    pub(crate) targets32: Vec<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -333,7 +333,7 @@ fn read_input(args: &[std::ffi::OsString]) -> Result<(Vec<u8>, String), String> 
     }
 }
 
-fn parse_dataset(bytes: Vec<u8>, source: String) -> Result<Dataset, String> {
+pub(crate) fn parse_dataset(bytes: Vec<u8>, source: String) -> Result<Dataset, String> {
     if bytes.len() > MAX_INPUT_BYTES {
         return Err(format!(
             "input is {} bytes; example limit is {MAX_INPUT_BYTES}",
@@ -403,7 +403,7 @@ fn parse_dataset(bytes: Vec<u8>, source: String) -> Result<Dataset, String> {
     })
 }
 
-fn mantissa_has_nonzero_digit(token: &str) -> bool {
+pub(crate) fn mantissa_has_nonzero_digit(token: &str) -> bool {
     token
         .split(['e', 'E'])
         .next()
@@ -412,7 +412,7 @@ fn mantissa_has_nonzero_digit(token: &str) -> bool {
         .any(|byte| (b'1'..=b'9').contains(&byte))
 }
 
-fn parse_f64(token: &str, row: usize, column: &str) -> Result<f64, String> {
+pub(crate) fn parse_f64(token: &str, row: usize, column: &str) -> Result<f64, String> {
     let token = token.trim();
     let value = token.parse::<f64>().map_err(|error| {
         format!("data row {row}, {column}, f64: invalid number `{token}`: {error}")
@@ -430,7 +430,7 @@ fn parse_f64(token: &str, row: usize, column: &str) -> Result<f64, String> {
     Ok(value)
 }
 
-fn parse_f32(token: &str, row: usize, column: &str) -> Result<f32, String> {
+pub(crate) fn parse_f32(token: &str, row: usize, column: &str) -> Result<f32, String> {
     let token = token.trim();
     let value = token.parse::<f32>().map_err(|error| {
         format!("data row {row}, {column}, f32: invalid number `{token}`: {error}")

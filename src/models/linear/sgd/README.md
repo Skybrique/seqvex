@@ -724,11 +724,39 @@ nowcasting evidence only.
 | `examples/sgd_profiles.rs` | Deterministic A/B/C `SGD-QUALITY800` example |
 | `examples/sgd_regression.rs` | Real-data CSV example `sgd_regression` |
 | `benches/sgd.rs` | Benchmark target `sgd` (performance/resource baseline, #55) |
+| `benches/storage.rs` | Experimental temporary/storage comparison; Cargo bench `sgd_storage`, `harness = false` |
 | `../README.md` | Linear-family membership |
 | `../../../../docs/ML_VERTICAL_SLICES.md` | Slice matrix and evidence entry |
 
 The Architect technical design and Planner implementation plan are separate,
 issue-linked review records and are not duplicated here.
+
+## Experimental temporary/storage comparison
+
+`src/models/linear/sgd/benches/storage.rs` is a private, benchmark-only comparison of the unchanged update, direct detached candidate construction, applicable fixed arrays, caller-owned reuse and `tinyvec =1.13.3` with `alloc` only. The current results are the fresh November 1, 2026 capture set from published source `caf106c671f1af03ec87bd737c327ac8e24c8482`, tree `9c2bf2bff9c2e67efc610d63f12196be69e2b496`; `storage.rs` SHA-256 is `d2f96ecc0fa4a62a2d3bb011eca220ab5c623d399c421bdcd9d6d5e8519c665a`; the design is `a47db7b2353b875a536783a347bb51d23adef8493ab2cc3ab30fd4652fde914d`. Earlier October 30 capture summaries and reviews remain historical; their original logs and derived tables were not recovered. The fresh captures are new measurements, not recovered originals.
+
+Each of the three sequential Rust/Cargo 1.85.1 captures completed 156 unique timing rows, 20 measured windows per row and 64 registered memory probes, using the default optimized bench profile. These fresh captures used one Linux x86_64 WSL2 environment (12th Gen Intel Core i7-12700H), a single pinned logical CPU and a 2 GiB virtual-memory limit; power/thermal state and background contention were uncontrolled. These are this fresh capture set's conditions, not the historical SGD benchmark environment; historical tables retain their original conditions. Each figure below is capture 1 / capture 2 / capture 3 median nanoseconds per update for a 256-update sequence. It includes the amortized final prediction from the learned state; it is not isolated update latency.
+
+| Precision / dimension / 256 updates | Baseline | Direct construction | Reuse | `tinyvec` capacity 8 |
+|---|---:|---:|---:|---:|
+| f32 / 8 | 80.7 / 76.8 / 75.6 | 47.4 / 45.8 / 48.2 | 50.4 / 50.1 / 50.2 | 59.9 / 60.1 / 61.5 |
+| f32 / 9 | 76.0 / 79.4 / 79.3 | 46.9 / 48.1 / 44.4 | 54.5 / 50.1 / 47.5 | 101.2 / 97.7 / 90.6 |
+| f32 / 32 | 100.1 / 96.6 / 99.7 | 85.2 / 83.1 / 87.2 | 85.3 / 84.2 / 88.5 | 238.4 / 216.9 / 241.6 |
+| f32 / 128 | 246.0 / 220.5 / 235.5 | 283.4 / 274.3 / 277.6 | 273.9 / 282.4 / 279.4 | 602.0 / 584.0 / 589.4 |
+| f64 / 8 | 76.3 / 70.6 / 73.2 | 46.3 / 46.4 / 46.2 | 50.9 / 48.6 / 52.2 | 64.7 / 58.3 / 63.6 |
+| f64 / 9 | 82.7 / 75.4 / 79.0 | 48.9 / 47.3 / 47.3 | 52.2 / 51.1 / 52.2 | 108.0 / 99.8 / 101.5 |
+| f64 / 32 | 107.0 / 98.3 / 96.7 | 94.4 / 90.0 / 92.1 | 103.9 / 95.5 / 101.6 | 252.9 / 241.7 / 246.2 |
+| f64 / 128 | 251.6 / 238.0 / 251.0 | 289.8 / 253.9 / 281.7 | 297.8 / 286.7 / 281.4 | 629.7 / 596.0 / 635.8 |
+
+Under the predeclared screen (difference greater than twice the larger IQR and 5% of the larger median, with consistent direction across captures), 74 storage latency improvements and 15 regressions were flagged. This is not a statistical significance test. Direct construction, arrays and reuse have useful small-dimension results; larger-dimension latency is mixed or regressive. Tinyvec regresses at dimensions 9, 32 and 128. f32 direct/reuse regress at dimension 128. f64 direct/reuse medians are higher there, but their comparisons are inconclusive under the screen; they are not classified as material regressions. The larger-dimension cause remains unestablished.
+
+Allocation traffic is not a latency guarantee. At f32 dimension 8, baseline is about 2.004 combined allocation/reallocation requests and 64.1 requested bytes per update, versus 1.004 / 32.1 for direct, reuse and `tinyvec`. At dimension 128, direct uses 1.004 / 514.0 versus baseline 2.004 / 1,026.0 and is slower; `tinyvec` uses 5.004 / 1,474.0. f64 has matching request counts and doubled byte traffic. Reusable scratch is retained memory and must not disappear from total-owned-memory interpretation.
+
+`tinyvec` avoids a separate temporary allocation within capacity but spills above it, with substantial latency/traffic penalties at dimensions 9, 32 and 128. Simpler direct/array options often outperform it within capacity. Do not adopt `tinyvec` for this measured consumer; arrays remain bounded cases, not a general Vector replacement. No unconditional direct/reuse replacement or dimension-based automatic dispatch is selected. The inspected alternatives are not a universal winner.
+
+Fresh evidence has manifest SHA-256 `10fd5d3c6976ab05d5233b69233ab587d97accfff48bc1b6711040fb336983c6` and a 1,443,332-byte archive at `80b0ab14a0b9f6e58b67746448c5f7e0374b2433f527f5dc67c427af79c53a51`. Primary Linux and Windows-side copies were verified file-by-file; the off-machine archive was independently downloaded, fingerprint-checked and extracted, with all 17 manifest-listed files and the manifest verified. Raw logs are not publicly attached. Public findings are the fresh [#55](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6560385104) record and the shared [#46](https://github.com/Skybrique/seqvex/issues/46#issuecomment-6560378144) provenance record. The known same-byte CSV provenance gap and RLS coupled-state reuse remain unresolved and outside this synthetic experiment. Remaining SGD/RLS audits must precede any production-optimization proposal. Full 1.85.1 all-target Clippy retains the separate pre-existing `sgd/tests/sgd.rs:618` finding; affected targets passed in the supplied review.
+
+Debug guards run with `cargo test --locked --bench sgd_storage --all-features`; release compilation is `cargo bench --locked --no-run`.
 
 ## References
 

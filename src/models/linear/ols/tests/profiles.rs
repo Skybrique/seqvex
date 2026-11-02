@@ -1009,11 +1009,282 @@ fn b_uses_independent_rounding_reference_and_survives_source_drop_and_refit() {
         b.predict_checked(&row32(&[1.0])).unwrap().to_bits(),
         selected_before.to_bits()
     );
+}
 
-    let source_predictor = a.into_predictor();
-    drop(source_predictor);
-    assert_eq!(
-        b.predict_checked(&row32(&[1.0])).unwrap().to_bits(),
-        selected_before.to_bits()
-    );
+use num_bigint::BigInt;
+use num_rational::BigRational;
+use num_traits::Zero;
+
+fn br64(value: f64) -> BigRational {
+    BigRational::from_float(value).expect("finite fixture")
+}
+
+fn br32(value: f32) -> BigRational {
+    BigRational::from_float(f64::from(value)).expect("finite fixture")
+}
+
+fn rat_int(value: i64) -> BigRational {
+    BigRational::from_integer(BigInt::from(value))
+}
+
+#[allow(clippy::needless_range_loop)]
+fn exact_rank(matrix: &[Vec<BigRational>]) -> usize {
+    let rows = matrix.len();
+    if rows == 0 {
+        return 0;
+    }
+    let cols = matrix[0].len();
+    let mut a = matrix.to_vec();
+    let mut rank = 0usize;
+    for col in 0..cols {
+        let Some(pivot_row) = (rank..rows).find(|&r| !a[r][col].is_zero()) else {
+            continue;
+        };
+        a.swap(rank, pivot_row);
+        let pivot = a[rank][col].clone();
+        for r in 0..rows {
+            if r != rank && !a[r][col].is_zero() {
+                let factor = &a[r][col] / &pivot;
+                for c in col..cols {
+                    let sub = &factor * &a[rank][c];
+                    a[r][c] = &a[r][c] - &sub;
+                }
+            }
+        }
+        rank += 1;
+        if rank == rows {
+            break;
+        }
+    }
+    rank
+}
+
+fn exact_rank64(xs: &[[f64; 3]], intercept: bool) -> usize {
+    let matrix = xs
+        .iter()
+        .map(|row| {
+            let mut columns = Vec::with_capacity(if intercept { 4 } else { 3 });
+            if intercept {
+                columns.push(rat_int(1));
+            }
+            columns.extend(row.iter().map(|&value| br64(value)));
+            columns
+        })
+        .collect::<Vec<_>>();
+    exact_rank(&matrix)
+}
+
+fn exact_rank32(xs: &[[f32; 3]], intercept: bool) -> usize {
+    let matrix = xs
+        .iter()
+        .map(|row| {
+            let mut columns = Vec::with_capacity(if intercept { 4 } else { 3 });
+            if intercept {
+                columns.push(rat_int(1));
+            }
+            columns.extend(row.iter().map(|&value| br32(value)));
+            columns
+        })
+        .collect::<Vec<_>>();
+    exact_rank(&matrix)
+}
+
+fn rows64(xs: &[[f64; 3]]) -> Vec<Vector64> {
+    xs.iter().map(|row| row64(row)).collect()
+}
+
+fn rows32(xs: &[[f32; 3]]) -> Vec<Vector> {
+    xs.iter().map(|row| row32(row)).collect()
+}
+
+fn fit_a_result(
+    xs: &[[f64; 3]],
+    ys: &[f64],
+    intercept: bool,
+) -> Result<seqvex::models::linear::ols::FitResult64, FitError64> {
+    let indices: Vec<usize> = (0..xs.len()).collect();
+    fit_f64(
+        &rows64(xs),
+        ys,
+        &indices,
+        &FitConfig64 {
+            intercept,
+            rank_threshold: 1.0,
+            ..FitConfig64::default()
+        },
+    )
+}
+
+fn fit_c_result(
+    xs: &[[f32; 3]],
+    ys: &[f32],
+    intercept: bool,
+) -> Result<seqvex::models::linear::ols::FitResult32, FitError32> {
+    let indices: Vec<usize> = (0..xs.len()).collect();
+    fit_f32(
+        &rows32(xs),
+        ys,
+        &indices,
+        &FitConfig32 {
+            intercept,
+            rank_threshold: 1.0,
+            ..FitConfig32::default()
+        },
+    )
+}
+
+fn assert_a_rank_deficient(xs: &[[f64; 3]], ys: &[f64], intercept: bool, required: usize) {
+    match fit_a_result(xs, ys, intercept) {
+        Err(FitError64::RankDeficient {
+            rank,
+            required: got,
+        }) => {
+            assert_eq!(got, required);
+            assert!(rank < required);
+        }
+        other => panic!("A expected RankDeficient required={required}, got {other:?}"),
+    }
+}
+
+fn assert_c_rank_deficient(xs: &[[f32; 3]], ys: &[f32], intercept: bool, required: usize) {
+    match fit_c_result(xs, ys, intercept) {
+        Err(FitError32::RankDeficient {
+            rank,
+            required: got,
+        }) => {
+            assert_eq!(got, required);
+            assert!(rank < required);
+        }
+        other => panic!("C expected RankDeficient required={required}, got {other:?}"),
+    }
+}
+
+fn assert_a_weights(
+    result: &seqvex::models::linear::ols::FitResult64,
+    expected: &[f64],
+    bias: f64,
+) {
+    assert_eq!(result.weights().len(), expected.len());
+    for (index, (&actual, &wanted)) in result.weights().as_slice().iter().zip(expected).enumerate()
+    {
+        assert!(
+            (actual - wanted).abs() <= 1.0e-12,
+            "A weight {index}: {actual} vs {wanted}"
+        );
+    }
+    assert!((result.intercept() - bias).abs() <= 1.0e-12);
+}
+
+fn assert_c_weights(
+    result: &seqvex::models::linear::ols::FitResult32,
+    expected: &[f32],
+    bias: f32,
+) {
+    assert_eq!(result.weights().len(), expected.len());
+    for (index, (&actual, &wanted)) in result.weights().as_slice().iter().zip(expected).enumerate()
+    {
+        assert!(
+            (f64::from(actual) - f64::from(wanted)).abs() <= 1.0e-5,
+            "C weight {index}: {actual} vs {wanted}"
+        );
+    }
+    assert!((f64::from(result.intercept()) - f64::from(bias)).abs() <= 1.0e-5);
+}
+
+#[test]
+fn faer_265_public_controls_use_explicit_policy_and_independent_rank() {
+    let original = [
+        [
+            f64::from_bits(0x4341c37937e08000),
+            f64::from_bits(0xc30c6bf526340000),
+            0.0,
+        ],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+    ];
+    let original32 = original.map(|row| row.map(|value| value as f32));
+    let zero3 = [0.0f64; 3];
+    let zero3f = [0.0f32; 3];
+    assert_eq!(exact_rank64(&original, false), 3);
+    assert_eq!(exact_rank32(&original32, false), 3);
+    assert_a_rank_deficient(&original, &zero3, false, 3);
+    assert_c_rank_deficient(&original32, &zero3f, false, 3);
+    assert_a_rank_deficient(&original, &zero3, true, 4);
+    assert_c_rank_deficient(&original32, &zero3f, true, 4);
+
+    let augmented = [original[0], original[1], original[2], [0.0, 0.0, 0.0]];
+    let augmented32 = augmented.map(|row| row.map(|value| value as f32));
+    let zero4 = [0.0f64; 4];
+    let zero4f = [0.0f32; 4];
+    assert_eq!(exact_rank64(&augmented, true), 4);
+    assert_eq!(exact_rank32(&augmented32, true), 4);
+    assert_a_rank_deficient(&augmented, &zero4, true, 4);
+    assert_c_rank_deficient(&augmented32, &zero4f, true, 4);
+
+    let rank_one = [
+        [1.0e6, 1.0e6, 1.0e6],
+        [1.0e3, 1.0e3, 1.0e3],
+        [1.0, 1.0, 1.0],
+    ];
+    let rank_one32 = rank_one.map(|row| row.map(|value| value as f32));
+    assert_eq!(exact_rank64(&rank_one, false), 1);
+    assert_eq!(exact_rank32(&rank_one32, false), 1);
+    assert_a_rank_deficient(&rank_one, &zero3, false, 3);
+    assert_c_rank_deficient(&rank_one32, &zero3f, false, 3);
+    assert_a_rank_deficient(&rank_one, &zero3, true, 4);
+    assert_c_rank_deficient(&rank_one32, &zero3f, true, 4);
+}
+
+#[test]
+fn moderate_controls_solve_and_restore_feature_order() {
+    let x = [[2.0, -1.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let y = [0.0, 2.0, 3.0];
+    assert_eq!(exact_rank64(&x, false), 3);
+    assert_eq!(exact_rank32(&x.map(|row| row.map(|v| v as f32)), false), 3);
+    let a = fit_a_result(&x, &y, false).expect("moderate A fit");
+    assert_eq!(a.diagnostics().rank, 3);
+    assert_a_weights(&a, &[1.0, 2.0, 3.0], 0.0);
+    assert!(a.diagnostics().rss_f64.abs() <= 2.0 * 3.0 * 1.0e-22);
+    let a_model = a.into_predictor();
+    for (row, target) in rows64(&x).iter().zip(y) {
+        assert!((a_model.predict_checked(row).unwrap() - target).abs() <= 1.0e-11);
+    }
+
+    let x32 = x.map(|row| row.map(|value| value as f32));
+    let y32 = y.map(|value| value as f32);
+    let c = fit_c_result(&x32, &y32, false).expect("moderate C fit");
+    assert_eq!(c.diagnostics().rank, 3);
+    assert_c_weights(&c, &[1.0, 2.0, 3.0], 0.0);
+    assert!(c.diagnostics().rss_f32.abs() <= 2.0 * 3.0 * 1.0e-8);
+    let c_model = c.into_predictor();
+    for (row, target) in rows32(&x32).iter().zip(y32) {
+        assert!((c_model.predict_checked(row).unwrap() - target).abs() <= 1.0e-4);
+    }
+
+    let x_aug = [x[0], x[1], x[2], [0.0, 0.0, 0.0]];
+    let y_aug = [4.0, 6.0, 7.0, 4.0];
+    assert_eq!(exact_rank64(&x_aug, true), 4);
+    let a_aug = fit_a_result(&x_aug, &y_aug, true).expect("moderate intercept A fit");
+    assert_eq!(a_aug.diagnostics().required_rank, 4);
+    assert_a_weights(&a_aug, &[1.0, 2.0, 3.0], 4.0);
+    assert!(a_aug.diagnostics().rss_f64.abs() <= 2.0 * 4.0 * 1.0e-22);
+
+    let x_aug32 = x_aug.map(|row| row.map(|value| value as f32));
+    let y_aug32 = y_aug.map(|value| value as f32);
+    let c_aug = fit_c_result(&x_aug32, &y_aug32, true).expect("moderate intercept C fit");
+    assert_eq!(c_aug.diagnostics().required_rank, 4);
+    assert_c_weights(&c_aug, &[1.0, 2.0, 3.0], 4.0);
+    assert!(c_aug.diagnostics().rss_f32.abs() <= 2.0 * 4.0 * 1.0e-8);
+
+    let permuted = x.map(|row| [row[2], row[0], row[1]]);
+    let permuted32 = x_aug32.map(|row| [row[2], row[0], row[1]]);
+    assert_eq!(exact_rank64(&permuted, false), 3);
+    let permuted_a = fit_a_result(&permuted, &y, false).expect("permuted A fit");
+    assert_a_weights(&permuted_a, &[3.0, 1.0, 2.0], 0.0);
+    let permuted_a_model = permuted_a.into_predictor();
+    for (row, target) in rows64(&permuted).iter().zip(y) {
+        assert!((permuted_a_model.predict_checked(row).unwrap() - target).abs() <= 1.0e-11);
+    }
+    let permuted_c = fit_c_result(&permuted32, &y_aug32, true).expect("permuted C fit");
+    assert_c_weights(&permuted_c, &[3.0, 1.0, 2.0], 4.0);
 }

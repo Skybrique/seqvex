@@ -3,8 +3,8 @@
 //! Debug execution runs equivalence guards only. Release execution runs the
 //! pre-registered rows; see the implementation-plan row registry.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::hint::black_box;
-use std::time::Instant;
 
 use csv::{ByteRecord, ReaderBuilder, StringRecord};
 use seqvex::models::linear::ols::{FitConfig32, FitConfig64, UnderflowPolicy, fit_f32, fit_f64};
@@ -13,6 +13,12 @@ use sha2::{Digest, Sha256};
 #[allow(dead_code)]
 #[path = "../../../../../benches/common/mod.rs"]
 mod common;
+
+use common::comparison::{
+    RowEvidence, TimingMetadata, baseline_first, capture_from_env,
+    memory_probe as shared_memory_probe, run_raw_row, timed_inputs, verify_registration_set,
+    verify_row_evidence_with_metadata, verify_timing_metadata,
+};
 
 #[allow(dead_code, unused_imports)]
 #[path = "../examples/fit_profiles.rs"]
@@ -54,31 +60,217 @@ struct Fixture {
     frozen_sha256: &'static str,
 }
 
-fn capture_index() -> usize {
-    let capture = std::env::var("SEQVEX_CAPTURE")
-        .ok()
-        .map(|value| {
-            value
-                .parse::<usize>()
-                .expect("SEQVEX_CAPTURE must be 1, 2, or 3")
-        })
-        .unwrap_or(1);
-    assert!(
-        (1..=3).contains(&capture),
-        "SEQVEX_CAPTURE must be 1, 2, or 3"
-    );
-    capture
+fn ordered_candidates() -> Vec<Candidate> {
+    baseline_first(capture_from_env(), &Candidate::ALL)
 }
 
-fn ordered_candidates() -> Vec<Candidate> {
-    let mut rest: Vec<Candidate> = Candidate::ALL[1..].to_vec();
-    if capture_index() == 2 {
-        rest.reverse();
+const FIXTURE_NAMES: [&str; 3] = ["csv-can-8", "csv-rep-32", "csv-rep-256"];
+const CANDIDATE_NAMES: [&str; 4] = ["baseline", "string", "bytes", "serde"];
+const WORKFLOW_NAMES: [&str; 3] = ["a", "c", "ab"];
+const MODEL_IDS: [&str; 6] = [
+    "model/afit/csv-can-8",
+    "model/cfit/csv-can-8",
+    "model/bconvert/csv-can-8",
+    "model/aserve/csv-can-8",
+    "model/bserve/csv-can-8",
+    "model/cserve/csv-can-8",
+];
+fn parse_id(candidate: Candidate, fixture: &str) -> String {
+    format!("ingest/parse/{}/{fixture}", candidate.name())
+}
+
+fn complete_id(candidate: Candidate, fixture: &str) -> String {
+    format!("ingest/complete/{}/{fixture}", candidate.name())
+}
+
+fn materialize_id(fixture: &str) -> String {
+    format!("ingest/materialize/baseline/{fixture}")
+}
+
+fn workflow_id(candidate: Candidate, workflow: &str) -> String {
+    format!("workflow/{workflow}/{}/csv-can-8", candidate.name())
+}
+
+const EXPECTED_INGEST_METADATA: [(&str, u32, u64); 3] = [
+    ("csv-can-8", 64, 512),
+    ("csv-rep-32", 16, 512),
+    ("csv-rep-256", 4, 1024),
+];
+const EXPECTED_MODEL_METADATA: [(&str, u32, u64); 6] = [
+    ("model/afit/csv-can-8", 16, 16),
+    ("model/cfit/csv-can-8", 16, 16),
+    ("model/bconvert/csv-can-8", 16, 16),
+    ("model/aserve/csv-can-8", 16, 48),
+    ("model/bserve/csv-can-8", 16, 48),
+    ("model/cserve/csv-can-8", 16, 48),
+];
+
+fn fixture_rows(fixture: &str) -> usize {
+    match fixture {
+        "csv-can-8" => 8,
+        "csv-rep-32" => 32,
+        "csv-rep-256" => 256,
+        _ => panic!("unknown fixture {fixture}"),
     }
-    let mut ordered = Vec::with_capacity(Candidate::ALL.len());
-    ordered.push(Candidate::Baseline);
-    ordered.extend(rest);
-    ordered
+}
+
+fn fixture_calls(rows: usize) -> u32 {
+    match rows {
+        8 => 64,
+        32 => 16,
+        256 => 4,
+        _ => panic!("unknown fixture row count {rows}"),
+    }
+}
+
+fn insert_timing(
+    catalog: &mut BTreeMap<String, TimingMetadata>,
+    id: String,
+    metadata: TimingMetadata,
+) {
+    assert!(
+        catalog.insert(id.clone(), metadata).is_none(),
+        "duplicate OLS timing registration {id}"
+    );
+}
+
+fn timing_catalog() -> BTreeMap<String, TimingMetadata> {
+    let mut catalog = BTreeMap::new();
+    for candidate in Candidate::ALL {
+        for fixture in FIXTURE_NAMES {
+            let rows = fixture_rows(fixture);
+            let calls = fixture_calls(rows);
+            let units = u64::from(calls) * rows as u64;
+            let metadata = TimingMetadata { calls, units };
+            insert_timing(&mut catalog, parse_id(candidate, fixture), metadata);
+            insert_timing(&mut catalog, complete_id(candidate, fixture), metadata);
+        }
+    }
+    for fixture in FIXTURE_NAMES {
+        let rows = fixture_rows(fixture);
+        let calls = fixture_calls(rows);
+        let units = u64::from(calls) * rows as u64;
+        insert_timing(
+            &mut catalog,
+            materialize_id(fixture),
+            TimingMetadata { calls, units },
+        );
+    }
+    for id in MODEL_IDS {
+        let units = if id.ends_with("serve/csv-can-8") {
+            48
+        } else {
+            16
+        };
+        insert_timing(
+            &mut catalog,
+            id.to_owned(),
+            TimingMetadata { calls: 16, units },
+        );
+    }
+    for candidate in Candidate::ALL {
+        for workflow in WORKFLOW_NAMES {
+            insert_timing(
+                &mut catalog,
+                workflow_id(candidate, workflow),
+                TimingMetadata { calls: 8, units: 1 },
+            );
+        }
+    }
+    catalog
+}
+
+fn probe_catalog() -> BTreeSet<String> {
+    let mut catalog = BTreeSet::new();
+    for candidate in Candidate::ALL {
+        for fixture in FIXTURE_NAMES {
+            assert!(catalog.insert(complete_id(candidate, fixture)));
+        }
+    }
+    for fixture in FIXTURE_NAMES {
+        assert!(catalog.insert(materialize_id(fixture)));
+    }
+    for candidate in Candidate::ALL {
+        for workflow in WORKFLOW_NAMES {
+            assert!(catalog.insert(workflow_id(candidate, workflow)));
+        }
+    }
+    catalog
+}
+
+fn expected_timing_metadata() -> BTreeMap<String, TimingMetadata> {
+    let mut expected = BTreeMap::new();
+    let mut insert = |id: String, calls: u32, units: u64| {
+        assert!(
+            expected
+                .insert(id.clone(), TimingMetadata { calls, units })
+                .is_none(),
+            "duplicate expected OLS timing registration {id}"
+        );
+    };
+    for candidate in CANDIDATE_NAMES {
+        for (fixture, calls, units) in EXPECTED_INGEST_METADATA {
+            insert(format!("ingest/parse/{candidate}/{fixture}"), calls, units);
+            insert(
+                format!("ingest/complete/{candidate}/{fixture}"),
+                calls,
+                units,
+            );
+        }
+    }
+    for (fixture, calls, units) in EXPECTED_INGEST_METADATA {
+        insert(
+            format!("ingest/materialize/baseline/{fixture}"),
+            calls,
+            units,
+        );
+    }
+    for (id, calls, units) in EXPECTED_MODEL_METADATA {
+        insert(id.to_owned(), calls, units);
+    }
+    for candidate in CANDIDATE_NAMES {
+        for workflow in WORKFLOW_NAMES {
+            insert(format!("workflow/{workflow}/{candidate}/csv-can-8"), 8, 1);
+        }
+    }
+    assert_eq!(expected.len(), 45);
+    expected
+}
+
+fn expected_probe_ids() -> Vec<String> {
+    let mut ids = Vec::with_capacity(27);
+    for candidate in CANDIDATE_NAMES {
+        for fixture in FIXTURE_NAMES {
+            ids.push(format!("ingest/complete/{candidate}/{fixture}"));
+        }
+    }
+    for fixture in FIXTURE_NAMES {
+        ids.push(format!("ingest/materialize/baseline/{fixture}"));
+    }
+    for candidate in CANDIDATE_NAMES {
+        for workflow in WORKFLOW_NAMES {
+            ids.push(format!("workflow/{workflow}/{candidate}/csv-can-8"));
+        }
+    }
+    ids
+}
+
+fn verify_registrations() {
+    let expected_timing = expected_timing_metadata();
+    let timing = timing_catalog();
+    verify_timing_metadata(&expected_timing, &timing, "OLS timing registrations");
+
+    let expected_probes = expected_probe_ids();
+    let probes = probe_catalog();
+    let actual_probes: Vec<&str> = probes.iter().map(String::as_str).collect();
+    let expected_probe_refs: Vec<&str> = expected_probes.iter().map(String::as_str).collect();
+    assert_eq!(expected_probes.len(), 27);
+    verify_registration_set(
+        &expected_probe_refs,
+        &actual_probes,
+        "OLS probe registrations",
+    );
+    println!("registration PASS: OLS 45 timing rows, 27 memory probes");
 }
 
 fn repeat_fixture(rows: usize) -> Vec<u8> {
@@ -540,136 +732,100 @@ fn black_box_dataset(data: &baseline::Dataset) {
     black_box(&data.targets32);
 }
 
-fn run_row(id: &str, calls: u32, units_per_call: u64, mut body: impl FnMut()) {
-    for _ in 0..2 {
-        for _ in 0..calls {
-            body();
-        }
-    }
-    let mut raw = Vec::with_capacity(20);
-    for window in 0..20 {
-        let before = common::allocation_totals();
-        let start = Instant::now();
-        for _ in 0..calls {
-            body();
-        }
-        let elapsed_ns = start.elapsed().as_nanos();
-        let after = common::allocation_totals();
-        raw.push((window, elapsed_ns, after.0 - before.0, after.1 - before.1));
-    }
-    for (window, elapsed_ns, requests, requested_bytes) in &raw {
-        println!(
-            "{id} window={window} elapsed_ns={elapsed_ns} requests={requests} requested_bytes={requested_bytes} units={units_per_call}"
-        );
-    }
-    let mut elapsed: Vec<f64> = raw
-        .iter()
-        .map(|(_, elapsed, _, _)| *elapsed as f64 / units_per_call as f64)
-        .collect();
-    let mut requests: Vec<f64> = raw
-        .iter()
-        .map(|(_, _, requests, _)| *requests as f64 / units_per_call as f64)
-        .collect();
-    let mut bytes: Vec<f64> = raw
-        .iter()
-        .map(|(_, _, _, bytes)| *bytes as f64 / units_per_call as f64)
-        .collect();
-    elapsed.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    requests.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    bytes.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median = |v: &[f64]| v[v.len() / 2];
-    let iqr = |v: &[f64]| v[v.len() * 3 / 4] - v[v.len() / 4];
+fn run_row(timing: &BTreeMap<String, TimingMetadata>, id: &str, body: impl FnMut()) -> RowEvidence {
+    let registration = timing
+        .get(id)
+        .unwrap_or_else(|| panic!("unregistered OLS timing row {id}"));
+    run_raw_row(id, registration.calls, registration.units, "unit", body)
+}
+
+fn memory_probe<T>(id: &str, body: impl FnOnce() -> T) {
+    let evidence = shared_memory_probe(body);
     println!(
-        "{id} median={:.1}ns/unit iqr={:.1} requests/unit={:.3} bytes/unit={:.1}",
-        median(&elapsed),
-        iqr(&elapsed),
-        median(&requests),
-        median(&bytes)
+        "{id}/mem before={} live={} peak={} after={}",
+        evidence.before, evidence.live, evidence.peak, evidence.after
     );
 }
 
-fn memory_probe<T>(id: &str, mut body: impl FnMut() -> T) {
-    let before = common::live_bytes();
-    common::reset_peak();
-    let value = body();
-    let live = common::live_bytes();
-    let peak = common::peak_bytes();
-    black_box(&value);
-    drop(value);
-    let after = common::live_bytes();
-    println!("{id}/mem before={before} live={live} peak={peak} after={after}");
-}
-
-fn run_ingestion_rows() {
+fn run_ingestion_rows(
+    timing: &BTreeMap<String, TimingMetadata>,
+    probes: &BTreeSet<String>,
+    evidence: &mut Vec<RowEvidence>,
+    probe_ids: &mut Vec<String>,
+) {
     let fixtures = fixtures();
     for candidate in ordered_candidates() {
         for fixture in &fixtures {
-            let calls = match fixture.rows {
-                8 => 64,
-                32 => 16,
-                _ => 4,
-            };
-            let units = u64::from(calls) * fixture.rows as u64;
-            run_row(
-                &format!("ingest/parse/{}/{}", candidate.name(), fixture.name),
-                calls,
-                units,
-                || {
-                    let input = black_box(fixture.bytes.as_slice());
-                    black_box(parse_rows(candidate, input).unwrap());
-                },
-            );
-            run_row(
-                &format!("ingest/complete/{}/{}", candidate.name(), fixture.name),
-                calls,
-                units,
-                || {
-                    let input = black_box(fixture.bytes.as_slice());
-                    let data = parse_candidate(candidate, input).unwrap();
+            let id = parse_id(candidate, fixture.name);
+            evidence.push(run_row(timing, &id, || {
+                drop(black_box(timed_inputs(
+                    (candidate, fixture.bytes.as_slice()),
+                    |(candidate, input)| parse_rows(candidate, input).unwrap(),
+                )));
+            }));
+            let id = complete_id(candidate, fixture.name);
+            evidence.push(run_row(timing, &id, || {
+                timed_inputs(
+                    (candidate, fixture.bytes.as_slice()),
+                    |(candidate, input)| {
+                        let data = parse_candidate(candidate, input).unwrap();
+                        black_box_dataset(&data);
+                    },
+                );
+            }));
+        }
+    }
+    for fixture in &fixtures {
+        let rows = parse_rows_baseline(&fixture.bytes).unwrap();
+        let id = materialize_id(fixture.name);
+        evidence.push(run_row(timing, &id, || {
+            timed_inputs(
+                (rows.as_slice(), fixture.bytes.as_slice()),
+                |(rows, bytes)| {
+                    let data = materialize(rows, bytes.to_vec(), source_for(bytes));
                     black_box_dataset(&data);
                 },
             );
-        }
-    }
-    for fixture in &fixtures {
-        let calls = match fixture.rows {
-            8 => 64,
-            32 => 16,
-            _ => 4,
-        };
-        let units = u64::from(calls) * fixture.rows as u64;
-        let rows = parse_rows_baseline(&fixture.bytes).unwrap();
-        run_row(
-            &format!("ingest/materialize/baseline/{}", fixture.name),
-            calls,
-            units,
-            || {
-                black_box(rows.as_slice());
-                let data = materialize(&rows, fixture.bytes.clone(), source_for(&fixture.bytes));
-                black_box_dataset(&data);
-            },
-        );
+        }));
     }
     for candidate in ordered_candidates() {
         for fixture in &fixtures {
-            memory_probe(
-                &format!("ingest/complete/{}/{}", candidate.name(), fixture.name),
-                || parse_candidate(candidate, &fixture.bytes).unwrap(),
-            );
+            let id = complete_id(candidate, fixture.name);
+            assert!(probes.contains(&id), "unregistered OLS probe {id}");
+            memory_probe(&id, || parse_candidate(candidate, &fixture.bytes).unwrap());
+            probe_ids.push(id);
         }
     }
     for fixture in &fixtures {
         let rows = parse_rows_baseline(&fixture.bytes).unwrap();
-        memory_probe(
-            &format!("ingest/materialize/baseline/{}", fixture.name),
-            || materialize(&rows, fixture.bytes.clone(), source_for(&fixture.bytes)),
-        );
+        let id = materialize_id(fixture.name);
+        assert!(probes.contains(&id), "unregistered OLS probe {id}");
+        memory_probe(&id, || {
+            materialize(&rows, fixture.bytes.clone(), source_for(&fixture.bytes))
+        });
+        probe_ids.push(id);
     }
     for candidate in ordered_candidates() {
-        for workflow in ["a", "c", "ab"] {
+        for workflow in WORKFLOW_NAMES {
+            let id = workflow_id(candidate, workflow);
+            assert!(probes.contains(&id), "unregistered OLS probe {id}");
             workflow_memory_probe(candidate, workflow);
+            probe_ids.push(id);
         }
     }
+}
+
+fn verify_actual_evidence(evidence: &[RowEvidence], probe_ids: &[String]) {
+    let expected_timing = expected_timing_metadata();
+    verify_row_evidence_with_metadata(&expected_timing, evidence, 20, "OLS actual timing rows");
+    let expected_probes = expected_probe_ids();
+    let expected_probe_refs: Vec<&str> = expected_probes.iter().map(String::as_str).collect();
+    let actual_probe_refs: Vec<&str> = probe_ids.iter().map(String::as_str).collect();
+    verify_registration_set(
+        &expected_probe_refs,
+        &actual_probe_refs,
+        "OLS actual probe execution",
+    );
 }
 
 fn narrow_rows(
@@ -692,87 +848,71 @@ fn narrow_rows(
         .collect()
 }
 
-fn run_model_rows() {
+fn run_model_rows(timing: &BTreeMap<String, TimingMetadata>, evidence: &mut Vec<RowEvidence>) {
     let data = parse_candidate(Candidate::Baseline, baseline::CANONICAL_CSV).unwrap();
     let train: Vec<usize> = (0..baseline::TRAIN_ROWS).collect();
     let held: Vec<usize> = (baseline::TRAIN_ROWS..data.features64.len()).collect();
-    let a_fit = fit_f64(
-        &data.features64,
-        &data.targets64,
-        &train,
-        &FitConfig64::default(),
-    )
-    .unwrap();
+    let fit_config64 = FitConfig64::default();
+    let fit_config32 = FitConfig32::default();
+    let a_fit = fit_f64(&data.features64, &data.targets64, &train, &fit_config64).unwrap();
     let b_model = a_fit.to_serving_f32(UnderflowPolicy::Reject).unwrap();
-    let a_model = fit_f64(
-        &data.features64,
-        &data.targets64,
-        &train,
-        &FitConfig64::default(),
-    )
-    .unwrap()
-    .into_predictor();
-    let c_model = fit_f32(
-        &data.features32,
-        &data.targets32,
-        &train,
-        &FitConfig32::default(),
-    )
-    .unwrap()
-    .into_predictor();
+    let a_model = fit_f64(&data.features64, &data.targets64, &train, &fit_config64)
+        .unwrap()
+        .into_predictor();
+    let c_model = fit_f32(&data.features32, &data.targets32, &train, &fit_config32)
+        .unwrap()
+        .into_predictor();
     let b_inputs = narrow_rows(&data.features64);
 
-    run_row("model/afit/csv-can-8", 16, 16, || {
-        black_box(&data);
-        black_box(&train);
-        black_box(
-            fit_f64(
-                &data.features64,
-                &data.targets64,
-                &train,
-                &FitConfig64::default(),
-            )
-            .unwrap(),
-        );
-    });
-    run_row("model/cfit/csv-can-8", 16, 16, || {
-        black_box(&data);
-        black_box(&train);
-        black_box(
-            fit_f32(
-                &data.features32,
-                &data.targets32,
-                &train,
-                &FitConfig32::default(),
-            )
-            .unwrap(),
-        );
-    });
-    run_row("model/bconvert/csv-can-8", 16, 16, || {
-        black_box(&a_fit);
-        black_box(a_fit.to_serving_f32(UnderflowPolicy::Reject).unwrap());
-    });
-    run_row("model/aserve/csv-can-8", 16, 48, || {
-        black_box(&data);
-        black_box(&held);
-        for &index in &held {
-            black_box(a_model.predict_checked(&data.features64[index]).unwrap());
-        }
-    });
-    run_row("model/bserve/csv-can-8", 16, 48, || {
-        black_box(&b_inputs);
-        black_box(&held);
-        for &index in &held {
-            black_box(b_model.predict_checked(&b_inputs[index]).unwrap());
-        }
-    });
-    run_row("model/cserve/csv-can-8", 16, 48, || {
-        black_box(&data);
-        black_box(&held);
-        for &index in &held {
-            black_box(c_model.predict_checked(&data.features32[index]).unwrap());
-        }
-    });
+    let id = "model/afit/csv-can-8";
+    evidence.push(run_row(timing, id, || {
+        drop(black_box(timed_inputs(
+            (&data, &train, &fit_config64),
+            |(data, train, config)| {
+                fit_f64(&data.features64, &data.targets64, train, config).unwrap()
+            },
+        )));
+    }));
+    let id = "model/cfit/csv-can-8";
+    evidence.push(run_row(timing, id, || {
+        drop(black_box(timed_inputs(
+            (&data, &train, &fit_config32),
+            |(data, train, config)| {
+                fit_f32(&data.features32, &data.targets32, train, config).unwrap()
+            },
+        )));
+    }));
+    let id = "model/bconvert/csv-can-8";
+    evidence.push(run_row(timing, id, || {
+        drop(black_box(timed_inputs(
+            (&a_fit, UnderflowPolicy::Reject),
+            |(a_fit, policy)| a_fit.to_serving_f32(policy).unwrap(),
+        )));
+    }));
+    let id = "model/aserve/csv-can-8";
+    evidence.push(run_row(timing, id, || {
+        timed_inputs((&a_model, &data, &held), |(model, data, held)| {
+            for &index in held {
+                black_box(model.predict_checked(&data.features64[index]).unwrap());
+            }
+        });
+    }));
+    let id = "model/bserve/csv-can-8";
+    evidence.push(run_row(timing, id, || {
+        timed_inputs((&b_model, &b_inputs, &held), |(model, inputs, held)| {
+            for &index in held {
+                black_box(model.predict_checked(&inputs[index]).unwrap());
+            }
+        });
+    }));
+    let id = "model/cserve/csv-can-8";
+    evidence.push(run_row(timing, id, || {
+        timed_inputs((&c_model, &data, &held), |(model, data, held)| {
+            for &index in held {
+                black_box(model.predict_checked(&data.features32[index]).unwrap());
+            }
+        });
+    }));
 }
 
 struct WorkflowRetained {
@@ -782,9 +922,7 @@ struct WorkflowRetained {
 }
 
 fn workflow_once(candidate: Candidate, workflow: &str, bytes: &[u8]) -> WorkflowRetained {
-    black_box(candidate);
-    let input = black_box(bytes);
-    let data = parse_candidate(candidate, input).unwrap();
+    let data = parse_candidate(candidate, bytes).unwrap();
     let train: Vec<usize> = (0..baseline::TRAIN_ROWS).collect();
     match workflow {
         "a" => {
@@ -903,17 +1041,16 @@ fn workflow_memory_probe(candidate: Candidate, workflow: &str) {
     );
 }
 
-fn run_workflow_rows() {
+fn run_workflow_rows(timing: &BTreeMap<String, TimingMetadata>, evidence: &mut Vec<RowEvidence>) {
     for candidate in ordered_candidates() {
-        for workflow in ["a", "c", "ab"] {
-            run_row(
-                &format!("workflow/{workflow}/{}/csv-can-8", candidate.name()),
-                8,
-                1,
-                || {
-                    black_box(workflow_once(candidate, workflow, baseline::CANONICAL_CSV));
-                },
-            );
+        for workflow in WORKFLOW_NAMES {
+            let id = workflow_id(candidate, workflow);
+            evidence.push(run_row(timing, &id, || {
+                drop(black_box(timed_inputs(
+                    (candidate, workflow, baseline::CANONICAL_CSV),
+                    |(candidate, workflow, bytes)| workflow_once(candidate, workflow, bytes),
+                )));
+            }));
         }
     }
 }
@@ -921,16 +1058,28 @@ fn run_workflow_rows() {
 fn main() {
     println!(
         "CSV ingestion comparison (benchmark-only); capture={}",
-        capture_index()
+        capture_from_env().number()
     );
     println!("registered: 45 timing rows, 27 memory probes");
     println!("{}", common::env_summary());
-    guard_fixtures();
     if cfg!(debug_assertions) {
+        if common::comparison::run_failure_case_if_requested() {
+            return;
+        }
+        verify_registrations();
+        common::comparison::comparison_self_check();
+        guard_fixtures();
         println!("debug: ingestion guards complete; release rows skipped");
         return;
     }
-    run_ingestion_rows();
-    run_model_rows();
-    run_workflow_rows();
+    verify_registrations();
+    guard_fixtures();
+    let timing = timing_catalog();
+    let probes = probe_catalog();
+    let mut evidence = Vec::with_capacity(45);
+    let mut probe_ids = Vec::with_capacity(27);
+    run_ingestion_rows(&timing, &probes, &mut evidence, &mut probe_ids);
+    run_model_rows(&timing, &mut evidence);
+    run_workflow_rows(&timing, &mut evidence);
+    verify_actual_evidence(&evidence, &probe_ids);
 }

@@ -1,8 +1,8 @@
 //! Experimental SGD temporary/storage controls for the reviewed design plan.
 //! Private to this benchmark; production learners are unchanged.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::hint::black_box;
-use std::time::Instant;
 
 use seqvex::foundation::numerical::{Vector, Vector64};
 use seqvex::foundation::observation::Observation;
@@ -16,6 +16,12 @@ use tinyvec::TinyVec;
 #[allow(dead_code)]
 #[path = "../../../../../benches/common/mod.rs"]
 mod common;
+
+use common::comparison::{
+    RowEvidence, TimingMetadata, baseline_first, capture_from_env,
+    memory_probe as shared_memory_probe, run_raw_row, timed_inputs, verify_registration_set,
+    verify_row_evidence_with_metadata, verify_timing_metadata,
+};
 
 const FIXTURE_LEN: usize = 2048;
 const WARM_START: usize = 512;
@@ -59,31 +65,230 @@ impl Candidate {
     }
 }
 
-fn capture_index() -> usize {
-    let capture = std::env::var("SEQVEX_CAPTURE")
-        .ok()
-        .map(|value| {
-            value
-                .parse::<usize>()
-                .expect("SEQVEX_CAPTURE must be 1, 2, or 3")
-        })
-        .unwrap_or(1);
-    assert!(
-        (1..=3).contains(&capture),
-        "SEQVEX_CAPTURE must be 1, 2, or 3"
-    );
-    capture
+fn ordered_candidates() -> Vec<Candidate> {
+    baseline_first(capture_from_env(), &Candidate::ALL)
 }
 
-fn ordered_candidates() -> Vec<Candidate> {
-    let mut rest: Vec<Candidate> = Candidate::ALL[1..].to_vec();
-    if capture_index() == 2 {
-        rest.reverse();
+const PRECISIONS: [&str; 2] = ["f32", "f64"];
+const CANDIDATE_NAMES: [&str; 5] = ["baseline", "direct", "array", "reuse", "tinyvec"];
+
+fn detached_id(precision: &str, candidate: Candidate, d: usize) -> String {
+    format!("storage/detached/{precision}/{}/dim={d}", candidate.name())
+}
+
+fn sequence_id(sequence: usize, precision: &str, candidate: Candidate, d: usize) -> String {
+    format!(
+        "storage/seq{sequence}/{precision}/{}/dim={d}",
+        candidate.name()
+    )
+}
+
+const EXPECTED_DETACHED_CALLS: u32 = 4096;
+const EXPECTED_DETACHED_UNITS: u64 = 4096;
+const EXPECTED_SEQUENCE_METADATA: [(usize, u32, u64); 2] = [(32, 32, 1024), (256, 8, 2048)];
+
+fn insert_timing(
+    catalog: &mut BTreeMap<String, TimingMetadata>,
+    id: String,
+    metadata: TimingMetadata,
+) {
+    assert!(
+        catalog.insert(id.clone(), metadata).is_none(),
+        "duplicate SGD timing registration {id}"
+    );
+}
+
+fn timing_catalog() -> BTreeMap<String, TimingMetadata> {
+    let mut catalog = BTreeMap::new();
+    for precision in PRECISIONS {
+        for d in DIMS {
+            if DETACHED_DIMS.contains(&d) {
+                for candidate in Candidate::ALL {
+                    if candidate.applicable(d) {
+                        insert_timing(
+                            &mut catalog,
+                            detached_id(precision, candidate, d),
+                            TimingMetadata {
+                                // Actual-side detached contract; intentionally independent
+                                // of the expected declarations below.
+                                calls: 4096,
+                                units: 4096,
+                            },
+                        );
+                    }
+                }
+            }
+            for sequence in [32, 256] {
+                let calls = if sequence == 32 { 32 } else { 8 };
+                let units = u64::from(calls) * sequence as u64;
+                for candidate in Candidate::ALL {
+                    if candidate.applicable(d) {
+                        insert_timing(
+                            &mut catalog,
+                            sequence_id(sequence, precision, candidate, d),
+                            TimingMetadata { calls, units },
+                        );
+                    }
+                }
+            }
+        }
     }
-    let mut ordered = Vec::with_capacity(Candidate::ALL.len());
-    ordered.push(Candidate::Baseline);
-    ordered.extend(rest);
-    ordered
+    catalog
+}
+
+fn probe_catalog() -> BTreeSet<String> {
+    let mut catalog = BTreeSet::new();
+    for precision in PRECISIONS {
+        for d in DIMS {
+            for candidate in Candidate::ALL {
+                if candidate.applicable(d) {
+                    assert!(catalog.insert(sequence_id(256, precision, candidate, d)));
+                }
+            }
+        }
+    }
+    catalog
+}
+
+fn expected_timing_metadata() -> BTreeMap<String, TimingMetadata> {
+    let mut expected = BTreeMap::new();
+    let mut insert = |id: String, calls: u32, units: u64| {
+        assert!(
+            expected
+                .insert(id.clone(), TimingMetadata { calls, units })
+                .is_none(),
+            "duplicate expected SGD timing registration {id}"
+        );
+    };
+    for precision in PRECISIONS {
+        for d in DIMS {
+            if DETACHED_DIMS.contains(&d) {
+                for candidate in CANDIDATE_NAMES {
+                    if candidate != "array" || d <= 8 {
+                        insert(
+                            format!("storage/detached/{precision}/{candidate}/dim={d}"),
+                            EXPECTED_DETACHED_CALLS,
+                            EXPECTED_DETACHED_UNITS,
+                        );
+                    }
+                }
+            }
+            for (sequence, calls, units) in EXPECTED_SEQUENCE_METADATA {
+                for candidate in CANDIDATE_NAMES {
+                    if candidate != "array" || d <= 8 {
+                        insert(
+                            format!("storage/seq{sequence}/{precision}/{candidate}/dim={d}"),
+                            calls,
+                            units,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(expected.len(), 156);
+    expected
+}
+
+fn expected_probe_ids() -> Vec<String> {
+    let mut ids = Vec::with_capacity(64);
+    for precision in PRECISIONS {
+        for d in DIMS {
+            for candidate in CANDIDATE_NAMES {
+                if candidate != "array" || d <= 8 {
+                    ids.push(format!("storage/seq256/{precision}/{candidate}/dim={d}"));
+                }
+            }
+        }
+    }
+    ids
+}
+
+fn expect_metadata_panic(expected: &str, body: impl FnOnce()) {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+    std::panic::set_hook(previous_hook);
+    let message = result.expect_err("expected metadata panic");
+    let message = message
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| {
+            message
+                .downcast_ref::<&str>()
+                .map(|value| (*value).to_owned())
+        })
+        .unwrap_or_default();
+    assert!(
+        message.contains(expected),
+        "expected metadata diagnostic {expected:?}, got {message:?}"
+    );
+}
+
+fn verify_detached_metadata_adversarial() {
+    let expected = expected_timing_metadata();
+    let actual = timing_catalog();
+    let detached: Vec<String> = actual
+        .keys()
+        .filter(|id| id.starts_with("storage/detached/"))
+        .cloned()
+        .collect();
+    assert_eq!(detached.len(), 28, "detached registration coverage");
+    for id in detached {
+        let expected_meta = expected
+            .get(&id)
+            .unwrap_or_else(|| panic!("missing detached expectation {id}"));
+        assert_eq!(expected_meta.calls, 4096, "detached calls contract {id}");
+        assert_eq!(expected_meta.units, 4096, "detached units contract {id}");
+        assert_eq!(
+            actual.get(&id),
+            Some(expected_meta),
+            "detached actual/expected metadata mismatch {id}"
+        );
+
+        let mut wrong_calls = actual.clone();
+        wrong_calls
+            .get_mut(&id)
+            .expect("detached calls entry")
+            .calls = 4097;
+        expect_metadata_panic("calls expected=4096 observed=4097", || {
+            verify_timing_metadata(&expected, &wrong_calls, "detached calls adversarial");
+        });
+
+        let mut wrong_units = actual.clone();
+        wrong_units
+            .get_mut(&id)
+            .expect("detached units entry")
+            .units = 4097;
+        expect_metadata_panic("units expected=4096 observed=4097", || {
+            verify_timing_metadata(&expected, &wrong_units, "detached units adversarial");
+        });
+    }
+    println!(
+        "detached metadata adversarial PASS: 28 registrations, calls/units mutations rejected"
+    );
+}
+
+fn verify_registrations() {
+    let expected_timing = expected_timing_metadata();
+    let timing = timing_catalog();
+    verify_timing_metadata(&expected_timing, &timing, "SGD timing registrations");
+    let expected_probes = expected_probe_ids();
+    let probes = probe_catalog();
+    let actual_probes: Vec<&str> = probes.iter().map(String::as_str).collect();
+    let expected_refs: Vec<&str> = expected_probes.iter().map(String::as_str).collect();
+    assert_eq!(expected_probes.len(), 64);
+    verify_registration_set(&expected_refs, &actual_probes, "SGD probe registrations");
+    println!("registration PASS: SGD 156 timing rows, 64 memory probes");
+}
+
+fn verify_actual_evidence(evidence: &[RowEvidence], probe_ids: &[String]) {
+    let expected_timing = expected_timing_metadata();
+    verify_row_evidence_with_metadata(&expected_timing, evidence, 20, "SGD actual timing rows");
+    let expected_probes = expected_probe_ids();
+    let expected_refs: Vec<&str> = expected_probes.iter().map(String::as_str).collect();
+    let actual_probes: Vec<&str> = probe_ids.iter().map(String::as_str).collect();
+    verify_registration_set(&expected_refs, &actual_probes, "SGD actual probe execution");
 }
 
 fn scaled_features32(d: usize, n: usize) -> Vec<Vec<f32>> {
@@ -644,67 +849,27 @@ fn manifest64(d: usize, observations: &[Observation<SgdSample64>], warm: &SgdSta
     hasher.finalize().into()
 }
 
-fn run_row(id: &str, calls: u32, units_per_call: u64, mut body: impl FnMut()) {
-    for _ in 0..2 {
-        for _ in 0..calls {
-            body();
-        }
-    }
-    let mut raw = Vec::with_capacity(20);
-    for window in 0..20 {
-        let before = common::allocation_totals();
-        let start = Instant::now();
-        for _ in 0..calls {
-            body();
-        }
-        let elapsed_ns = start.elapsed().as_nanos();
-        let after = common::allocation_totals();
-        raw.push((window, elapsed_ns, after.0 - before.0, after.1 - before.1));
-    }
-    for (window, elapsed_ns, requests, requested_bytes) in &raw {
-        println!(
-            "{id} window={window} elapsed_ns={elapsed_ns} requests={requests} requested_bytes={requested_bytes} units={units_per_call}"
-        );
-    }
-    let mut elapsed: Vec<f64> = raw
-        .iter()
-        .map(|(_, elapsed, _, _)| *elapsed as f64 / units_per_call as f64)
-        .collect();
-    let mut requests: Vec<f64> = raw
-        .iter()
-        .map(|(_, _, requests, _)| *requests as f64 / units_per_call as f64)
-        .collect();
-    let mut bytes: Vec<f64> = raw
-        .iter()
-        .map(|(_, _, _, bytes)| *bytes as f64 / units_per_call as f64)
-        .collect();
-    elapsed.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    requests.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    bytes.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median = |v: &[f64]| v[v.len() / 2];
-    let iqr = |v: &[f64]| v[v.len() * 3 / 4] - v[v.len() / 4];
+fn run_row(timing: &BTreeMap<String, TimingMetadata>, id: &str, body: impl FnMut()) -> RowEvidence {
+    let registration = timing
+        .get(id)
+        .unwrap_or_else(|| panic!("unregistered SGD timing row {id}"));
+    run_raw_row(id, registration.calls, registration.units, "update", body)
+}
+
+fn memory_probe<T>(id: &str, body: impl FnOnce() -> T) {
+    let evidence = shared_memory_probe(body);
     println!(
-        "{id} median={:.1}ns/update iqr={:.1} requests/update={:.3} bytes/update={:.1}",
-        median(&elapsed),
-        iqr(&elapsed),
-        median(&requests),
-        median(&bytes)
+        "{id}/mem before={} live={} peak={} after={}",
+        evidence.before, evidence.live, evidence.peak, evidence.after
     );
 }
 
-fn memory_probe<T>(id: &str, mut body: impl FnMut() -> T) {
-    let before = common::live_bytes();
-    common::reset_peak();
-    let value = body();
-    let live = common::live_bytes();
-    let peak = common::peak_bytes();
-    black_box(&value);
-    drop(value);
-    let after = common::live_bytes();
-    println!("{id}/mem before={before} live={live} peak={peak} after={after}");
-}
-
-fn run_storage_rows() {
+fn run_storage_rows(
+    timing: &BTreeMap<String, TimingMetadata>,
+    probes: &BTreeSet<String>,
+    evidence: &mut Vec<RowEvidence>,
+    probe_ids: &mut Vec<String>,
+) {
     for d in DIMS {
         let observations = observations32(d);
         let model = Sgd::new(d, ETA32).unwrap();
@@ -719,63 +884,66 @@ fn run_storage_rows() {
             }
             let mut scratch = Vec::new();
             if DETACHED_DIMS.contains(&d) {
+                let id = detached_id("f32", candidate, d);
                 let mut index = 0usize;
-                run_row(
-                    &format!("storage/detached/f32/{}/dim={d}", candidate.name()),
-                    4096,
-                    4096,
-                    || {
-                        black_box(candidate);
-                        black_box(&model);
-                        black_box(&warm);
-                        let sample_index = WARM_START + (index % (FIXTURE_LEN - WARM_START));
-                        index += 1;
-                        let observation = black_box(&observations[sample_index]);
-                        black_box(
-                            update32(candidate, &model, &warm, observation, &mut scratch).unwrap(),
-                        );
-                    },
-                );
+                evidence.push(run_row(timing, &id, || {
+                    let sample_index = WARM_START + (index % (FIXTURE_LEN - WARM_START));
+                    index += 1;
+                    timed_inputs(
+                        (
+                            candidate,
+                            &model,
+                            &warm,
+                            &observations[sample_index],
+                            &mut scratch,
+                        ),
+                        |(candidate, model, warm, observation, scratch)| {
+                            black_box(
+                                update32(candidate, model, warm, observation, scratch).unwrap(),
+                            );
+                        },
+                    );
+                }));
             }
             for sequence in [32usize, 256] {
-                let calls = if sequence == 32 { 32 } else { 8 };
-                let units = u64::from(calls) * sequence as u64;
-                run_row(
-                    &format!("storage/seq{sequence}/f32/{}/dim={d}", candidate.name()),
-                    calls,
-                    units,
-                    || {
-                        black_box(candidate);
-                        black_box(&model);
-                        black_box(&warm);
-                        let observations = black_box(observations.as_slice());
-                        let mut state = warm.clone();
-                        for observation in observations.iter().skip(WARM_START).take(sequence) {
-                            state = update32(candidate, &model, &state, observation, &mut scratch)
+                let id = sequence_id(sequence, "f32", candidate, d);
+                evidence.push(run_row(timing, &id, || {
+                    timed_inputs(
+                        (
+                            candidate,
+                            &model,
+                            &warm,
+                            observations.as_slice(),
+                            &mut scratch,
+                        ),
+                        |(candidate, model, warm, observations, scratch)| {
+                            let mut state = warm.clone();
+                            for observation in observations.iter().skip(WARM_START).take(sequence) {
+                                state = update32(candidate, model, &state, observation, scratch)
+                                    .unwrap();
+                            }
+                            // Complete sequence includes one final prediction, not another update.
+                            let final_index = WARM_START + sequence;
+                            let final_observation = &observations[final_index];
+                            let prediction = model
+                                .predict(&state, &final_observation.value().features)
                                 .unwrap();
-                        }
-                        // Complete sequence operation includes one final prediction, not another update.
-                        let final_index = WARM_START + sequence;
-                        let final_observation = black_box(&observations[final_index]);
-                        let prediction = model
-                            .predict(&state, &final_observation.value().features)
-                            .unwrap();
-                        black_box(prediction);
-                        black_box(&state);
-                    },
-                );
+                            black_box(prediction);
+                            black_box(&state);
+                        },
+                    );
+                }));
             }
-            memory_probe(
-                &format!("storage/seq256/f32/{}/dim={d}", candidate.name()),
-                || {
-                    let mut state = warm.clone();
-                    for observation in observations.iter().skip(WARM_START).take(256) {
-                        state =
-                            update32(candidate, &model, &state, observation, &mut scratch).unwrap();
-                    }
-                    state
-                },
-            );
+            let id = sequence_id(256, "f32", candidate, d);
+            assert!(probes.contains(&id), "unregistered SGD probe {id}");
+            memory_probe(&id, || {
+                let mut state = warm.clone();
+                for observation in observations.iter().skip(WARM_START).take(256) {
+                    state = update32(candidate, &model, &state, observation, &mut scratch).unwrap();
+                }
+                state
+            });
+            probe_ids.push(id);
         }
     }
     for d in DIMS {
@@ -792,63 +960,66 @@ fn run_storage_rows() {
             }
             let mut scratch = Vec::new();
             if DETACHED_DIMS.contains(&d) {
+                let id = detached_id("f64", candidate, d);
                 let mut index = 0usize;
-                run_row(
-                    &format!("storage/detached/f64/{}/dim={d}", candidate.name()),
-                    4096,
-                    4096,
-                    || {
-                        black_box(candidate);
-                        black_box(&model);
-                        black_box(&warm);
-                        let sample_index = WARM_START + (index % (FIXTURE_LEN - WARM_START));
-                        index += 1;
-                        let observation = black_box(&observations[sample_index]);
-                        black_box(
-                            update64(candidate, &model, &warm, observation, &mut scratch).unwrap(),
-                        );
-                    },
-                );
+                evidence.push(run_row(timing, &id, || {
+                    let sample_index = WARM_START + (index % (FIXTURE_LEN - WARM_START));
+                    index += 1;
+                    timed_inputs(
+                        (
+                            candidate,
+                            &model,
+                            &warm,
+                            &observations[sample_index],
+                            &mut scratch,
+                        ),
+                        |(candidate, model, warm, observation, scratch)| {
+                            black_box(
+                                update64(candidate, model, warm, observation, scratch).unwrap(),
+                            );
+                        },
+                    );
+                }));
             }
             for sequence in [32usize, 256] {
-                let calls = if sequence == 32 { 32 } else { 8 };
-                let units = u64::from(calls) * sequence as u64;
-                run_row(
-                    &format!("storage/seq{sequence}/f64/{}/dim={d}", candidate.name()),
-                    calls,
-                    units,
-                    || {
-                        black_box(candidate);
-                        black_box(&model);
-                        black_box(&warm);
-                        let observations = black_box(observations.as_slice());
-                        let mut state = warm.clone();
-                        for observation in observations.iter().skip(WARM_START).take(sequence) {
-                            state = update64(candidate, &model, &state, observation, &mut scratch)
+                let id = sequence_id(sequence, "f64", candidate, d);
+                evidence.push(run_row(timing, &id, || {
+                    timed_inputs(
+                        (
+                            candidate,
+                            &model,
+                            &warm,
+                            observations.as_slice(),
+                            &mut scratch,
+                        ),
+                        |(candidate, model, warm, observations, scratch)| {
+                            let mut state = warm.clone();
+                            for observation in observations.iter().skip(WARM_START).take(sequence) {
+                                state = update64(candidate, model, &state, observation, scratch)
+                                    .unwrap();
+                            }
+                            // Complete sequence includes one final prediction, not another update.
+                            let final_index = WARM_START + sequence;
+                            let final_observation = &observations[final_index];
+                            let prediction = model
+                                .predict(&state, &final_observation.value().features)
                                 .unwrap();
-                        }
-                        // Complete sequence operation includes one final prediction, not another update.
-                        let final_index = WARM_START + sequence;
-                        let final_observation = black_box(&observations[final_index]);
-                        let prediction = model
-                            .predict(&state, &final_observation.value().features)
-                            .unwrap();
-                        black_box(prediction);
-                        black_box(&state);
-                    },
-                );
+                            black_box(prediction);
+                            black_box(&state);
+                        },
+                    );
+                }));
             }
-            memory_probe(
-                &format!("storage/seq256/f64/{}/dim={d}", candidate.name()),
-                || {
-                    let mut state = warm.clone();
-                    for observation in observations.iter().skip(WARM_START).take(256) {
-                        state =
-                            update64(candidate, &model, &state, observation, &mut scratch).unwrap();
-                    }
-                    state
-                },
-            );
+            let id = sequence_id(256, "f64", candidate, d);
+            assert!(probes.contains(&id), "unregistered SGD probe {id}");
+            memory_probe(&id, || {
+                let mut state = warm.clone();
+                for observation in observations.iter().skip(WARM_START).take(256) {
+                    state = update64(candidate, &model, &state, observation, &mut scratch).unwrap();
+                }
+                state
+            });
+            probe_ids.push(id);
         }
     }
 }
@@ -856,14 +1027,27 @@ fn run_storage_rows() {
 fn main() {
     println!(
         "SGD temporary/storage comparison (benchmark-only); capture={}",
-        capture_index()
+        capture_from_env().number()
     );
     println!("registered: 156 timing rows, 64 memory probes");
     println!("{}", common::env_summary());
-    guard_storage();
     if cfg!(debug_assertions) {
+        if common::comparison::run_failure_case_if_requested() {
+            return;
+        }
+        verify_registrations();
+        verify_detached_metadata_adversarial();
+        common::comparison::comparison_self_check();
+        guard_storage();
         println!("debug: storage guards complete; release rows skipped");
         return;
     }
-    run_storage_rows();
+    verify_registrations();
+    guard_storage();
+    let timing = timing_catalog();
+    let probes = probe_catalog();
+    let mut evidence = Vec::with_capacity(156);
+    let mut probe_ids = Vec::with_capacity(64);
+    run_storage_rows(&timing, &probes, &mut evidence, &mut probe_ids);
+    verify_actual_evidence(&evidence, &probe_ids);
 }

@@ -12,7 +12,7 @@
 //!
 //! ```text
 //! cargo run --example rls_trump_approval --all-features -- \
-//!   src/models/linear/rls/examples/data/trump_approval.csv
+//!   examples/data/trump_approval.csv
 //! ```
 //!
 //! The example performs no network access; dataset acquisition is a separate,

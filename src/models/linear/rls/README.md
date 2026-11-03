@@ -814,7 +814,7 @@ target is consumed.
   files or network.
 - [`examples/rls_trump_approval.rs`](examples/rls_trump_approval.rs) —
   real-data validation on a caller-supplied CSV
-  (`cargo run --example rls_trump_approval --all-features -- <csv>`). Its `f64`
+  (`cargo run --example rls_trump_approval --all-features -- examples/data/trump_approval.csv`). Its `f64`
   standardizer is mixed-precision legacy preprocessing, **not strict C**.
 - [`examples/rls_profiles.rs`](examples/rls_profiles.rs) —
   deterministic in-memory `RLS-QUALITY800` for A/B/C
@@ -859,7 +859,7 @@ step. Contract:
 
 Execution is offline. Separately download River's
 [pinned compressed CSV](https://raw.githubusercontent.com/online-ml/river/6af83abba269dbdaf38e9c0eaf61d82c451ad698/river/datasets/trump_approval.csv.gz)
-and decompress it as `trump_approval.csv`.
+and decompress it to `examples/data/trump_approval.csv`.
 
 The evaluated decompressed snapshot contains 1001 data rows and has SHA-256
 `aef188d04b606270e9590013282e2ede3f5f92edae1106d85d3defa483189cb0`.

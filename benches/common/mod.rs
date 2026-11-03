@@ -11,6 +11,8 @@
 //! `harness = false` benches; decision numbers are only ever taken from the
 //! optimized profile.
 
+pub mod comparison;
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;

@@ -443,7 +443,7 @@ promise stability for arbitrary data.
 
 Dataset preparation: download River's
 [pinned compressed CSV](https://raw.githubusercontent.com/online-ml/river/6af83abba269dbdaf38e9c0eaf61d82c451ad698/river/datasets/trump_approval.csv.gz)
-and decompress it as `trump_approval.csv`. The evaluated snapshot has 1001 data
+and decompress it to `examples/data/trump_approval.csv`. The evaluated snapshot has 1001 data
 rows and SHA-256
 `aef188d04b606270e9590013282e2ede3f5f92edae1106d85d3defa483189cb0`; the example
 prints the computed checksum and does not enforce it. The dataset is not bundled.
@@ -452,13 +452,14 @@ Run:
 
 ```sh
 cargo run --locked --example sgd_regression --all-features -- \
-  src/models/linear/rls/examples/data/trump_approval.csv
+  examples/data/trump_approval.csv
 cargo +1.85.1 run --locked --example sgd_regression --all-features -- \
-  src/models/linear/rls/examples/data/trump_approval.csv
+  examples/data/trump_approval.csv
 ```
 
-The example takes the path as an argument and has no runtime dependency on the
-RLS directory; the command simply supplies the supplied dataset's path.
+The example takes the path as an argument and has no runtime dependency on
+another algorithm's directory; the caller supplies the shared example-data
+path `examples/data/trump_approval.csv`.
 
 ### Output interpretation and error guidance
 

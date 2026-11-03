@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! cargo run --example sgd_regression --all-features -- \
-//!   src/models/linear/rls/examples/data/trump_approval.csv
+//!   examples/data/trump_approval.csv
 //! ```
 //!
 //! The example performs no network access; dataset acquisition is a separate

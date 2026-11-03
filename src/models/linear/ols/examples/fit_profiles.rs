@@ -18,7 +18,8 @@ use seqvex::models::linear::ols::{
 };
 use sha2::{Digest, Sha256};
 
-pub(crate) const CANONICAL_CSV: &[u8] = include_bytes!("data/displacement_time_offset.csv");
+pub(crate) const CANONICAL_CSV: &[u8] =
+    include_bytes!("../../../../../examples/data/displacement_time_offset.csv");
 pub(crate) const MAX_INPUT_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_DATA_ROWS: usize = 256;
 pub(crate) const MIN_DATA_ROWS: usize = 6;

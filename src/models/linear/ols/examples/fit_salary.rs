@@ -11,7 +11,7 @@
 //! Run with:
 //!
 //! ```text
-//! cargo +1.85.1 run --example fit_salary -- examples/Salary_dataset.csv
+//! cargo +1.85.1 run --example fit_salary -- examples/data/Salary_dataset.csv
 //! ```
 //!
 //! The sample has no time column. The split below is deterministic but **not**
@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn actual_salary_dataset_workflow_succeeds_when_present() {
-        let path = "examples/Salary_dataset.csv";
+        let path = "examples/data/Salary_dataset.csv";
         if !std::path::Path::new(path).exists() {
             eprintln!("skipping: {path} not present");
             return;

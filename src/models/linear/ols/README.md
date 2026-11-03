@@ -44,7 +44,7 @@ cargo +stable run --locked --example fit_profiles
 cargo +stable run --locked --example fit_profiles -- path/to/two-column.csv
 ```
 
-With no path it parses the authored fixture `src/models/linear/ols/examples/data/displacement_time_offset.csv`; with one path it accepts the same narrow schema. The fixture is generated teaching data, not a measurement or physical-law claim. `DisplacementMeters` is the sole feature in metres and `TimeOffsetSeconds` is the target in seconds. The learned feature weight has units seconds/metre; the intercept is stored separately and has units seconds. The example uses identity preprocessing because this small, moderate-range fixture does not require learned scaling.
+With no path it parses the authored fixture `examples/data/displacement_time_offset.csv`; with one path it accepts the same narrow schema. The fixture is generated teaching data, not a measurement or physical-law claim. `DisplacementMeters` is the sole feature in metres and `TimeOffsetSeconds` is the target in seconds. The learned feature weight has units seconds/metre; the intercept is stored separately and has units seconds. The example uses identity preprocessing because this small, moderate-range fixture does not require learned scaling.
 
 The parser requires exactly these ordered headers, exactly two fields per row, finite numbers and 6–256 data rows, with a 64 KiB input limit. It does not silently drop, impute, clip, sort, or reorder rows. A/B numeric tokens are parsed directly to f64; C tokens are parsed directly to f32. B's serving inputs are then independently narrowed from f64 to f32 with finite/underflow checks; parameter conversion does not convert inputs. A nonzero decimal mantissa that rounds to zero at a selected input precision is rejected by this example. Exponent digits do not make a zero mantissa nonzero: `0e10` is positive zero and `-0e-10` remains negative zero. Representable subnormals are accepted. Parser errors report a zero-based **logical data row** after the header, excluding blank separator lines; this record number can differ from the physical file line number. These are example-local rules; they do not change the library's typed-input contract.
 
@@ -98,7 +98,7 @@ After admission, the caller may convert/build the artifact and verify a candidat
 The separate legacy Salary example requires a caller-supplied CSV path (positional, not `--input`):
 
 ```sh
-cargo +1.85.1 run --locked --example fit_salary -- examples/Salary_dataset.csv
+cargo +1.85.1 run --locked --example fit_salary -- examples/data/Salary_dataset.csv
 ```
 
 **Salary evaluation/data boundary:** when provided, the example holds out zero-based CSV positions where `position % 5 == 4`; it does not shuffle or use an RNG. The inspected 30-row local sample yields 24 training and 6 held-out rows. It is not part of the authored A/B/C fixture, and this repository does not establish its provenance, redistribution permission, currency, salary period, or temporal meaning. The interleaved partition is an end-to-end legacy demonstration, not chronological evaluation or production-readiness evidence. CSV row position and years of experience do not establish observation time. An empty held-out partition is rejected before fitting/indexing/RMSE. The synthetic benchmark's fixed-seed LCG is separate from this example and from the fitter.

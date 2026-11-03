@@ -597,17 +597,17 @@ pub fn run_failure_case_if_requested() -> bool {
                 retention_slot = Some(retained);
                 0u8
             });
-            panic!("expected after-drop baseline mismatch");
+            panic!("COMPARISON_FAILURE_CASE_UNEXPECTED_SUCCESS: {case}");
         }
         "negative-delta" => {
             checked_delta(9, 10, "negative-delta");
-            panic!("expected below baseline");
+            panic!("COMPARISON_FAILURE_CASE_UNEXPECTED_SUCCESS: {case}");
         }
         "builder-panic" => {
             memory_probe(|| {
                 panic!("comparison builder sentinel");
             });
-            panic!("expected comparison builder sentinel");
+            panic!("COMPARISON_FAILURE_CASE_UNEXPECTED_SUCCESS: {case}");
         }
         other => panic!("unknown failure case: {other}"),
     }

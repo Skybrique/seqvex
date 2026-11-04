@@ -529,9 +529,157 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
     use std::path::PathBuf;
 
-    use super::{PREFIX, run_with_path};
+    use seqvex::foundation::observation::Observation;
+    use seqvex::foundation::state::StateModel;
+    use seqvex::models::linear::rls::{Rls, RlsBatchError, RlsSample, RlsState};
+
+    use super::{
+        DELTA, DIMENSION, LAMBDAS, PREFIX, Standardizer, read_dataset, run_with_path, sample,
+    };
+
+    /// Bounded chunk size for the real-prefix equivalence check.
+    const BOUNDED_CHUNK: usize = 50;
+    /// Optional dataset path override for the opt-in real-data test.
+    const DATASET_ENV: &str = "SEQVEX_TRUMP_CSV";
+    /// Default dataset path, relative to the crate root.
+    const DEFAULT_DATASET: &str = "examples/data/trump_approval.csv";
+
+    /// Compares state shape and every weight/covariance entry bitwise.
+    fn compare_state_bits(
+        lambda: f32,
+        committed_rows: usize,
+        repeated: &RlsState,
+        bounded: &RlsState,
+    ) -> Result<(), Box<dyn Error>> {
+        let dim = repeated.w.len();
+        if repeated.p.rows() != dim
+            || repeated.p.cols() != dim
+            || bounded.w.len() != dim
+            || bounded.p.rows() != dim
+            || bounded.p.cols() != dim
+        {
+            return Err(format!(
+                "lambda={lambda}, after {committed_rows} committed rows: state shape mismatch \
+                 (repeated w={} P={}x{}; bounded w={} P={}x{})",
+                dim,
+                repeated.p.rows(),
+                repeated.p.cols(),
+                bounded.w.len(),
+                bounded.p.rows(),
+                bounded.p.cols()
+            )
+            .into());
+        }
+        for j in 0..dim {
+            let a = repeated.w.as_slice()[j];
+            let b = bounded.w.as_slice()[j];
+            if a.to_bits() != b.to_bits() {
+                return Err(format!(
+                    "bounded-learning mismatch: lambda={lambda}, after {committed_rows} committed \
+                     rows, first differing entry w[{j}]: repeated=0x{:08x} bounded=0x{:08x} \
+                     (repeated={a:?} bounded={b:?})",
+                    a.to_bits(),
+                    b.to_bits()
+                )
+                .into());
+            }
+        }
+        for i in 0..dim {
+            for j in 0..dim {
+                let a = repeated.p.get(i, j).expect("in-bounds P entry");
+                let b = bounded.p.get(i, j).expect("in-bounds P entry");
+                if a.to_bits() != b.to_bits() {
+                    return Err(format!(
+                        "bounded-learning mismatch: lambda={lambda}, after {committed_rows} \
+                         committed rows, first differing entry P[{i}][{j}]: repeated=0x{:08x} \
+                         bounded=0x{:08x} (repeated={a:?} bounded={b:?})",
+                        a.to_bits(),
+                        b.to_bits()
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn run_bounded_lambda_learning(
+        lambda: f32,
+        observations: &[Observation<RlsSample>],
+    ) -> Result<(), Box<dyn Error>> {
+        let model = Rls::new(DIMENSION, lambda, DELTA)
+            .map_err(|error| format!("lambda={lambda}: Rls::new failed: {error:?}"))?;
+        let initial = model.initial_state();
+        let mut repeated = initial.clone();
+        let mut bounded = initial;
+        compare_state_bits(lambda, 0, &repeated, &bounded)?;
+
+        for (chunk_index, chunk) in observations.chunks(BOUNDED_CHUNK).enumerate() {
+            for (offset, observation) in chunk.iter().enumerate() {
+                let row = chunk_index * BOUNDED_CHUNK + offset + 1;
+                repeated = model.update(&repeated, observation).map_err(|error| {
+                    format!(
+                        "lambda={lambda}: repeated single-row update failed at training row \
+                         {row}: {error:?}"
+                    )
+                })?;
+            }
+            bounded = model
+                .process_batch_reference(bounded, chunk, BOUNDED_CHUNK)
+                .map_err(|error| match error {
+                    RlsBatchError::Transition {
+                        failed_index,
+                        error,
+                        ..
+                    } => format!(
+                        "lambda={lambda}: bounded transition failed at training row {}, after {} \
+                         committed rows: {error:?}",
+                        chunk_index * BOUNDED_CHUNK + failed_index + 1,
+                        chunk_index * BOUNDED_CHUNK + failed_index
+                    ),
+                    RlsBatchError::BatchTooLarge { max, actual, .. } => format!(
+                        "lambda={lambda}: bounded chunk exceeded max_batch (max={max} \
+                         actual={actual})"
+                    ),
+                })?;
+
+            let committed_rows = (chunk_index + 1) * BOUNDED_CHUNK;
+            compare_state_bits(lambda, committed_rows, &repeated, &bounded)?;
+            eprintln!("lambda={lambda}: rows {committed_rows} match bitwise (w and P)");
+        }
+        Ok(())
+    }
+
+    fn run_bounded_learning_check(path: &str) -> Result<(), Box<dyn Error>> {
+        let rows = read_dataset(path)?;
+        let scaler = Standardizer::from_prefix(&rows)?;
+        let observations: Vec<Observation<RlsSample>> = rows[..PREFIX]
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                scaler
+                    .apply(row, index)
+                    .map(|features| sample(features, row.target))
+            })
+            .collect::<Result<_, _>>()?;
+
+        eprintln!(
+            "bounded-learning check: path={path} prefix={PREFIX} chunk={BOUNDED_CHUNK} \
+             lambdas={LAMBDAS:?}"
+        );
+        for &lambda in &LAMBDAS {
+            run_bounded_lambda_learning(lambda, &observations)?;
+        }
+        eprintln!(
+            "bounded-learning check passed: {} lambdas x {} boundaries",
+            LAMBDAS.len(),
+            PREFIX / BOUNDED_CHUNK
+        );
+        Ok(())
+    }
 
     const HEADER: &str =
         "ordinal_date,five_thirty_eight,gallup,ipsos,morning_consult,rasmussen,you_gov";
@@ -736,5 +884,22 @@ mod tests {
             .expect_err("standardized f32 overflow must fail");
         assert!(error.contains("f32 conversion"), "{error}");
         assert!(error.contains("gallup"), "{error}");
+    }
+
+    #[test]
+    #[ignore = "requires the unpublished trump_approval.csv; set SEQVEX_TRUMP_CSV or provide examples/data/trump_approval.csv"]
+    fn bounded_reference_matches_repeated_updates_on_real_prefix() {
+        let path = std::env::var_os(DATASET_ENV)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_DATASET));
+        if !path.is_file() {
+            panic!(
+                "bounded-learning check requires the real dataset; {} is not a file. Set \
+                 {DATASET_ENV} or place it at {DEFAULT_DATASET}.",
+                path.display()
+            );
+        }
+        run_bounded_learning_check(path.to_str().expect("dataset path must be UTF-8"))
+            .unwrap_or_else(|error| panic!("bounded-learning real-prefix check failed: {error}"));
     }
 }

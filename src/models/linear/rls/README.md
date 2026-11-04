@@ -852,9 +852,16 @@ step. Contract:
 - Any parse, preprocessing, prediction, or update failure stops the run with
   row/date/call-kind context and a non-zero exit. There is no silent recovery,
   skipping, retry, or reset.
-- Automated example tests use synthetic temporary CSVs only and never read the
-  real dataset. Real-data verification requires explicitly running the example
-  against the supplied CSV.
+- Automated example tests use synthetic temporary CSVs by default and do not
+  read the real dataset unless explicitly requested. The example also carries one
+  opt-in `#[ignore]`d real-data test,
+  `tests::bounded_reference_matches_repeated_updates_on_real_prefix`, which reuses
+  the same reader and frozen prefix-only scaler on rows 1–400 and asserts
+  bitwise equality of every weight and covariance entry between repeated
+  `Rls::update` and bounded `Rls::process_batch_reference` (chunks of 50,
+  `lambda = 1.0` and `0.95`) at the equal start and every 50-row boundary through
+  row 400. Real-data verification requires explicitly running the example against
+  the supplied CSV.
 
 Execution is offline. Separately download River's
 [pinned compressed CSV](https://raw.githubusercontent.com/online-ml/river/6af83abba269dbdaf38e9c0eaf61d82c451ad698/river/datasets/trump_approval.csv.gz)
@@ -899,9 +906,15 @@ unchanged.
 - [`examples/rls_profiles.rs`](examples/rls_profiles.rs): embedded
   `RLS-QUALITY800` and caller-protocol tests.
 - [`examples/rls_trump_approval.rs`](examples/rls_trump_approval.rs): embedded
-  example tests using synthetic temporary CSVs only.
+  synthetic example tests, plus one opt-in `#[ignore]`d real-prefix
+  single-row/bounded learning-equivalence test.
 
 Run the embedded tests explicitly with
 `cargo test --locked --example rls_profiles --all-features` and
 `cargo test --locked --example rls_trump_approval --all-features`.
-Automated tests do not require the local real dataset.
+Automated tests do not require the local real dataset. Run the opt-in real-data
+equivalence test with
+`cargo test --locked --example rls_trump_approval -- --ignored bounded_reference_matches_repeated_updates_on_real_prefix`
+after placing the dataset at `examples/data/trump_approval.csv` or setting
+`SEQVEX_TRUMP_CSV` to its path. A missing dataset fails that opt-in test with a
+path-specific diagnostic; the default suite is unaffected.

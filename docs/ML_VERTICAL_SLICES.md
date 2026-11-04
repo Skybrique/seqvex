@@ -212,7 +212,7 @@ revision, compiler toolchain, and machine-contention status are **unverified**
 contention evidence). It recorded all 16 `B ∈ {1, 8, 32, 128}` rows across the
 four tree configurations. The full table, together with the measured,
 harness-derived, and calculated quantities separated, is in
-`src/models/classic/README.md` ("Release batch-size sweep"). The fixture repeats
+`src/models/trees/decision_tree/README.md` ("Release batch-size sweep"). The fixture repeats
 one deterministic observation, so it measures **repeated-input** behavior, not
 input-distribution performance. Under the harness materiality rule
 (`difference > 2·max(IQR)` AND `difference > 5%·max(median)`): micro-batch is
@@ -260,8 +260,8 @@ correctness evidence to remain and a measured decision, per the slice lifecycle.
 
 ### Recursive Least Squares (#26)
 
-Canonical location: `src/models/linear/rls/`; `models::online` remains a
-compatibility re-export.
+Canonical location: `src/models/linear/rls/`; the former `models::online`
+compatibility re-export has been removed.
 
 The first stateful model whose parameters change every observation. `Rls` holds
 only immutable configuration (`D`, `λ`, `δ`) and implements `StateModel` with a

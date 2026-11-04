@@ -103,14 +103,14 @@ cargo +1.85.1 run --locked --example fit_salary -- examples/data/Salary_dataset.
 
 **Salary evaluation/data boundary:** when provided, the example holds out zero-based CSV positions where `position % 5 == 4`; it does not shuffle or use an RNG. The inspected 30-row local sample yields 24 training and 6 held-out rows. It is not part of the authored A/B/C fixture, and this repository does not establish its provenance, redistribution permission, currency, salary period, or temporal meaning. The interleaved partition is an end-to-end legacy demonstration, not chronological evaluation or production-readiness evidence. CSV row position and years of experience do not establish observation time. An empty held-out partition is rejected before fitting/indexing/RMSE. The synthetic benchmark's fixed-seed LCG is separate from this example and from the fitter.
 
-`weights()` and `bias()` expose the supplied parameters; they do not establish a durable artifact format. Both historical imports, `seqvex::models::classic::{LinearRegression, RegressionError}` and `seqvex::models::classic::linear_regression::{LinearRegression, RegressionError}`, remain compatibility re-exports of the canonical types. User-facing examples and rustdoc belong to [#43](https://github.com/Skybrique/seqvex/issues/43).
+`weights()` and `bias()` expose the supplied parameters; they do not establish a durable artifact format. The former classic import paths have been removed; use `seqvex::models::linear::ols::{LinearRegression, RegressionError}`. User-facing examples and rustdoc belong to [#43](https://github.com/Skybrique/seqvex/issues/43).
 
 The model requires nonempty, finite weights and a finite bias. `predict` checks feature dimension before feature finiteness. The bare prediction errors remain `ZeroDimension`, `NonFiniteParameter`, `DimensionMismatch { expected, actual }` and `NonFiniteInput`. Opt-in checked serving additionally reports `NonFiniteOutput { observation: Option<usize> }`; grouped checked serving reports the zero-based position of the first non-finite output. The additive public enum variant requires a new arm in downstream exhaustive matches. The scalar response does not restrict the number of input features. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
 - Define fitting inputs as \(N\) rows of \(d\) features and \(N\) numeric targets, with explicit ownership and shape validation. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 - Preserve the implemented `fit`/`FitResult` path to an immutable predictor; further public API changes require the applicable design review. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 - Supply a working example covering fit → inspect → validate → predict → export/import when needed; document inputs, outputs and errors beside the actual API. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
-- Keep existing imports compatible during any local reorganization, or obtain explicit approval for a compatibility change. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
+- Use the canonical `seqvex::models::linear::ols` imports; the approved namespace migration removed the classic compatibility aliases. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
 ## 3. OLS mathematics and numerical envelope
 
@@ -398,7 +398,6 @@ Run the applicable critical architecture review before choices affecting ownersh
 | `src/models/linear/ols/benches/fit.rs` | Fitting/checked serving/artifact/refit resource evidence; Cargo bench `ols_fit`, `harness = false` | #46 |
 | `src/models/linear/ols/tests/public_contract.rs` | Public-contract integration tests; Cargo target `linear_regression` | #43; numerical support #44 |
 | `src/models/linear/ols/benches/execution.rs` | Prediction benchmark; Cargo target `linear_regression`, `harness = false` | #43 for wiring; #46 for methodology/evidence |
-| `src/models/classic/mod.rs` | Historical compatibility re-exports of the same canonical types | #43 |
 | `benches/common/mod.rs` | Shared measurement support | #46 |
 
 Algorithm-local unit/component tests and examples stay with their algorithm where practical. Cross-component integration belongs at the appropriate family/functional/project level. Nested integration tests, benchmarks and examples require actual Cargo/module wiring; a directory does not establish discovery. Introduce shared family helpers only for demonstrated concrete consumers. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
@@ -459,6 +458,10 @@ The materiality rule is: for each metric, the absolute median difference must ex
 The 256-record size is a bounded fixture, not an automatic loader-switch threshold. No four-mode public ingestion API, new default loader or production optimization is implemented or authorized. The fresh evidence manifest is `10fd5d3c6976ab05d5233b69233ab587d97accfff48bc1b6711040fb336983c6`; the 1,443,332-byte archive is `80b0ab14a0b9f6e58b67746448c5f7e0374b2433f527f5dc67c427af79c53a51`. Primary Linux and Windows-side copies were verified file-by-file; the off-machine archive was independently downloaded, fingerprint-checked and extracted, with all 17 manifest-listed files and the manifest verified. Raw logs are not publicly attached. Public findings are [#46](https://github.com/Skybrique/seqvex/issues/46#issuecomment-6560378144) and the owning [#43](https://github.com/Skybrique/seqvex/issues/43#issuecomment-6527236426) record. The benchmark source and this documentation-only successor are distinct identities.
 
 Run the debug guards with `cargo test --locked --bench ols_ingestion --all-features`; release compilation is `cargo bench --locked --no-run`. A compiled benchmark is not measurement evidence.
+
+## Historical fixed-coefficient prediction evidence (#23)
+
+The pre-migration `classic` README recorded the fixed-coefficient prediction benchmark and control-case rationale. That historical record is preserved at the revision-pinned source [`src/models/classic/README.md`](https://github.com/Skybrique/seqvex/blob/a050a9359e054af17c99fc06e7d1bfb7dc0b6a01/src/models/classic/README.md) (section “Measured evidence (#23)”). Those numbers are historical prediction evidence, not a new fitting benchmark; the canonical OLS implementation and current evidence are described above.
 
 ## References
 

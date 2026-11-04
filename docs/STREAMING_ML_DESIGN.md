@@ -661,10 +661,11 @@ Moving linear_regression.rs does not silently rename the existing predictor to a
 
 > **Current-location note (#26).** The §18.2 table records the inspected starting
 > point at the stated checkpoint and is preserved as a historical proposal.
-> Since then, linear regression moved to `src/models/linear/ols/` and RLS to
-> `src/models/linear/rls/`, with the former classic and online imports retained
-> as compatibility re-exports. The tree, GRU and KNN migration rows remain
-> proposals.
+> Since then, linear regression moved to `src/models/linear/ols/`, RLS to
+> `src/models/linear/rls/`, Decision Tree to `src/models/trees/decision_tree/`,
+> and KNN to `src/models/neighbors/knn/`; GRU remains at
+> `src/models/recurrent/gru.rs`. The former classic and online import paths have
+> been removed. The table's original migration rows remain historical.
 
 CURRENT: inspected tests/gru.rs imports the public Seqvex API and contains its independent scalar reference. It is a Rust integration-test target despite being algorithm-specific. Do not relabel all root algorithm tests as unit tests, or discard independent evidence during a move.
 

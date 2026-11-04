@@ -67,9 +67,9 @@ three documentation artifacts named in the delivery.
 
 > **Current-location note (#26).** The RLS source paths and evaluated revisions
 > in this audit are historical inspection records and are preserved unchanged.
-> RLS now lives at `src/models/linear/rls/` (canonical `models::linear::rls`),
-> with both `models::online::rls` and `models::online` retained as compatibility
-> re-exports. The integration test is registered as Cargo target `rls` at
+> RLS now lives at `src/models/linear/rls/` (canonical `models::linear::rls`);
+> the former `models::online::rls` and `models::online` compatibility
+> re-exports have been removed. The integration test is registered as Cargo target `rls` at
 > `src/models/linear/rls/tests/rls.rs`. This location map does not re-audit the
 > historical revisions or change their findings.
 
@@ -237,7 +237,8 @@ hidden IID assumptions, not to claim universal non-IID suitability.
   distinct from that mathematical identity (`tests/rls.rs`;
   `src/models/online/README.md`).
 - LR and GRU: `[MISSING]` at the evaluated baseline; this delivery adds short
-  applicability subsections in [`../src/models/classic/README.md`](../src/models/classic/README.md)
+  applicability subsections in the revision-pinned historical
+  [`src/models/classic/README.md`](https://github.com/Skybrique/seqvex/blob/a050a9359e054af17c99fc06e7d1bfb7dc0b6a01/src/models/classic/README.md)
   and [`../src/models/recurrent/README.md`](../src/models/recurrent/README.md).
 - DT/KNN: no applicability statement [MISSING] (supplementary scope).
 

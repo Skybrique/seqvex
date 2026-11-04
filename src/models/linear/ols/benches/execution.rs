@@ -15,7 +15,7 @@ use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::Vector;
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::process_one;
-use seqvex::models::classic::LinearRegression;
+use seqvex::models::linear::ols::LinearRegression;
 
 #[allow(dead_code)]
 #[path = "../../../../../benches/common/mod.rs"]

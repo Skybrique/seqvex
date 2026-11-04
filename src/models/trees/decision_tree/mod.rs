@@ -1,6 +1,6 @@
 //! Decision tree prediction: read-only traversal of a trained tree.
 //!
-//! This is the second classic-ML slice. It implements **inference only** on a
+//! This is the Decision Tree model in the trees family. It implements **inference only** on a
 //! tree the caller supplies; training/fitting is deliberately out of scope (see
 //! `docs/ML_VERTICAL_SLICES.md` and `docs/KILO_CONNECTOME_SPRINT_REVISED.md`
 //! §17). The first task variant is regression: each leaf stores a finite `f32`.
@@ -55,7 +55,7 @@
 //! validates the feature dimension first, then feature finiteness
 //! ([`DecisionTreeError::NonFiniteInput`]), and does not re-validate the output.
 //!
-//! [`LinearRegression`]: crate::models::classic::linear_regression::LinearRegression
+//! [`LinearRegression`]: crate::models::linear::ols::LinearRegression
 
 use crate::foundation::numerical::Vector;
 use crate::foundation::observation::Observation;

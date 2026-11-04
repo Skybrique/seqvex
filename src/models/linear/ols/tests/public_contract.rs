@@ -2,7 +2,7 @@ use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::Vector;
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::StateModel;
-use seqvex::models::classic::linear_regression::{LinearRegression, RegressionError};
+use seqvex::models::linear::ols::{LinearRegression, RegressionError};
 
 fn model(weights: &[f32], bias: f32) -> LinearRegression {
     LinearRegression::new(Vector::from_slice(weights), bias).unwrap()

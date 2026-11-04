@@ -13,7 +13,7 @@ use std::hint::black_box;
 use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::Vector;
 use seqvex::foundation::observation::Observation;
-use seqvex::models::classic::knn::{Knn, Reference};
+use seqvex::models::neighbors::knn::{Knn, Reference};
 
 #[allow(dead_code)]
 mod common;

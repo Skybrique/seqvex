@@ -6,10 +6,10 @@
 
 Holds the linear-model family: ordinary least-squares (OLS) regression,
 recursive least squares (RLS), and SGD-trained linear regression (SGD). OLS was
-relocated here from `models::classic` and RLS from `models::online`, both as
-behavior-preserving moves; the classic and online import paths remain as
-compatibility re-exports. SGD is implemented in place as a separate learning
-contract; it does not replace OLS batch fitting or RLS.
+relocated here from the former `classic` namespace and RLS from the former
+`online` namespace; those compatibility import paths have been removed. SGD is
+implemented in place as a separate learning contract; it does not replace OLS
+batch fitting or RLS.
 
 ## Responsibility
 
@@ -39,7 +39,7 @@ OLS is a historical dataset fit/refit plus fixed single/stream/group prediction.
 ## Legacy OLS baseline
 
 The original supplied-parameter prediction component was relocated unchanged
-from `src/models/classic/linear_regression.rs` to `ols/predict.rs`. The accepted
+from the former classic linear-regression module to `ols/predict.rs`. The accepted
 baseline now includes:
 
 - The immutable supplied-parameter predictor `ŷ = w · x + b`, with reference

@@ -11,10 +11,9 @@ member of the linear-model family. The canonical namespace is
 ## Location and compatibility
 
 - Canonical: `seqvex::models::linear::rls` (`src/models/linear/rls/`).
-- Compatibility: `seqvex::models::online::rls` and `seqvex::models::online`
-  re-export the same canonical `Rls`, `RlsState`, `RlsSample`, `RlsError`,
-  `RlsBatchError`, and `RlsStateAdmissionError` types and add no behavior. See
-  the [vertical-slice evidence](../../../../docs/ML_VERTICAL_SLICES.md).
+- The former `seqvex::models::online::rls` and `seqvex::models::online`
+  compatibility re-exports have been removed. Use the canonical path above.
+  See the [vertical-slice evidence](../../../../docs/ML_VERTICAL_SLICES.md).
 
 ## Responsibility
 

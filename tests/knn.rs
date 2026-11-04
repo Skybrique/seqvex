@@ -2,7 +2,7 @@ use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::Vector;
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::StateModel;
-use seqvex::models::classic::knn::{Knn, KnnError, Reference};
+use seqvex::models::neighbors::knn::{Knn, KnnError, Reference};
 
 fn reference(features: &[f32], target: f32) -> Reference {
     Reference::new(Vector::from_slice(features), target)

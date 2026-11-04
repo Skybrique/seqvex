@@ -506,7 +506,7 @@ production-readiness claim.
   passed with 0 tests.
 - **Documentation build:** `cargo doc --locked --no-deps --all-features` produced
   only the known unrelated unresolved-`Matrix` warning at
-  `src/models/classic/decision_tree.rs:14`; no new warning was introduced.
+  `src/models/trees/decision_tree/mod.rs:14`; no new warning was introduced.
 - **Clippy:** `cargo clippy --locked --all-targets --all-features -- -D warnings`
   passed.
 - Check B (frozen `D=4`, `N=64`, advance-before-draw supplied `f32` fixture,

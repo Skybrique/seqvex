@@ -2,7 +2,7 @@ use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::Vector;
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::StateModel;
-use seqvex::models::classic::decision_tree::{DecisionTree, DecisionTreeError, DecisionTreeNode};
+use seqvex::models::trees::decision_tree::{DecisionTree, DecisionTreeError, DecisionTreeNode};
 
 fn split(feature_index: usize, threshold: f32, left: usize, right: usize) -> DecisionTreeNode {
     DecisionTreeNode::Split {

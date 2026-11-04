@@ -1,8 +1,8 @@
 //! K-Nearest Neighbors (KNN) prediction: read-only inference over stored
 //! reference observations and targets.
 //!
-//! This is the third classic-ML slice and the fifth algorithm of the current
-//! set. It exists to probe observation-backed model state, distance computation,
+//! This is the KNN model in the neighbors family. It exists to probe
+//! observation-backed model state, distance computation,
 //! and nearest-neighbor search, not to justify new storage infrastructure.
 //!
 //! # Mathematical contract
@@ -36,8 +36,8 @@
 //!
 //! A query depends only on itself and the immutable references, so prediction is
 //! independent across queries and `State` is the **most recent prediction**,
-//! matching [`LinearRegression`](super::linear_regression::LinearRegression) and
-//! [`DecisionTree`](super::decision_tree::DecisionTree). No temporal state is
+//! matching [`LinearRegression`](crate::models::linear::ols::LinearRegression) and
+//! [`DecisionTree`](crate::models::trees::decision_tree::DecisionTree). No temporal state is
 //! introduced merely because Seqvex is streaming-first.
 //!
 //! # Micro-batch
@@ -45,7 +45,7 @@
 //! Because queries are independent, [`Knn::predict_batch`] is a model-local,
 //! order-preserving capability over a caller-bounded slice, not a generic
 //! micro-batch executor. The first element failure fails the whole call
-//! [`KnnError`] with no partial output, matching the other classic slices.
+//! [`KnnError`] with no partial output, matching the other prediction-only models.
 //!
 //! # Numerics
 //!
@@ -60,8 +60,8 @@
 //! expected IEEE-754 `f32` behaviours, and the caller is responsible for keeping
 //! magnitudes representable.
 //!
-//! [`LinearRegression`]: super::linear_regression::LinearRegression
-//! [`DecisionTree`]: super::decision_tree::DecisionTree
+//! [`LinearRegression`]: crate::models::linear::ols::LinearRegression
+//! [`DecisionTree`]: crate::models::trees::decision_tree::DecisionTree
 
 use crate::foundation::numerical::Vector;
 use crate::foundation::observation::Observation;

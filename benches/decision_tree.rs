@@ -13,7 +13,7 @@ use std::mem::size_of;
 use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::Vector;
 use seqvex::foundation::observation::Observation;
-use seqvex::models::classic::decision_tree::{DecisionTree, DecisionTreeNode};
+use seqvex::models::trees::decision_tree::{DecisionTree, DecisionTreeNode};
 
 #[allow(dead_code)]
 mod common;

@@ -532,20 +532,29 @@ mod tests {
     use std::error::Error;
     use std::path::PathBuf;
 
+    use seqvex::foundation::numerical::Vector;
     use seqvex::foundation::observation::Observation;
     use seqvex::foundation::state::StateModel;
-    use seqvex::models::linear::rls::{Rls, RlsBatchError, RlsSample, RlsState};
+    use seqvex::models::linear::rls::{Rls, RlsBatchError, RlsError, RlsSample, RlsState};
 
     use super::{
-        DELTA, DIMENSION, LAMBDAS, PREFIX, Standardizer, read_dataset, run_with_path, sample,
+        DELTA, DIMENSION, LAMBDAS, PREFIX, Row, Standardizer, read_dataset, run_with_path, sample,
     };
 
     /// Bounded chunk size for the real-prefix equivalence check.
     const BOUNDED_CHUNK: usize = 50;
-    /// Optional dataset path override for the opt-in real-data test.
+    /// Caller prediction-group limit for the frozen-prediction check.
+    const MAX_HELD_OUT_PREDICTIONS: usize = 50;
+    /// Optional dataset path override for the opt-in real-data tests.
     const DATASET_ENV: &str = "SEQVEX_TRUMP_CSV";
     /// Default dataset path, relative to the crate root.
     const DEFAULT_DATASET: &str = "examples/data/trump_approval.csv";
+
+    fn real_dataset_path() -> PathBuf {
+        std::env::var_os(DATASET_ENV)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_DATASET))
+    }
 
     /// Compares state shape and every weight/covariance entry bitwise.
     fn compare_state_bits(
@@ -678,6 +687,334 @@ mod tests {
             LAMBDAS.len(),
             PREFIX / BOUNDED_CHUNK
         );
+        Ok(())
+    }
+
+    #[derive(Debug, Clone)]
+    struct HeldOutRow {
+        csv_row: usize,
+        ordinal_date: i64,
+        features: Vector,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct HeldOutPrediction {
+        csv_row: usize,
+        ordinal_date: i64,
+        value: f32,
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum GroupPredictionError {
+        TooLarge {
+            group_index: usize,
+            max: usize,
+            actual: usize,
+            group_start_csv_row: usize,
+            group_start_date: i64,
+        },
+        Prediction {
+            group_index: usize,
+            relative_index: usize,
+            csv_row: usize,
+            ordinal_date: i64,
+            error: RlsError,
+        },
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum PredictionPath {
+        Single,
+        Grouped,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum PredictionComparisonError {
+        Count {
+            path: PredictionPath,
+            expected: usize,
+            actual: usize,
+            index: usize,
+            expected_identity: Option<(usize, i64)>,
+            actual_identity: Option<(usize, i64)>,
+        },
+        Identity {
+            path: PredictionPath,
+            index: usize,
+            expected: (usize, i64),
+            actual: (usize, i64),
+        },
+        Bits {
+            index: usize,
+            csv_row: usize,
+            ordinal_date: i64,
+            group_index: usize,
+            relative_index: usize,
+            single_bits: u32,
+            grouped_bits: u32,
+        },
+    }
+
+    fn held_out_row(csv_row: usize, ordinal_date: i64) -> HeldOutRow {
+        HeldOutRow {
+            csv_row,
+            ordinal_date,
+            features: Vector::from_slice(&[0.0]),
+        }
+    }
+
+    fn collect_group_checked<F>(
+        rows: &[HeldOutRow],
+        max_predictions: usize,
+        group_index: usize,
+        mut predict: F,
+    ) -> Result<Vec<HeldOutPrediction>, GroupPredictionError>
+    where
+        F: FnMut(&HeldOutRow) -> Result<f32, RlsError>,
+    {
+        if rows.len() > max_predictions {
+            let first = &rows[0];
+            return Err(GroupPredictionError::TooLarge {
+                group_index,
+                max: max_predictions,
+                actual: rows.len(),
+                group_start_csv_row: first.csv_row,
+                group_start_date: first.ordinal_date,
+            });
+        }
+
+        let mut outputs = Vec::with_capacity(rows.len());
+        for (relative_index, row) in rows.iter().enumerate() {
+            match predict(row) {
+                Ok(value) => outputs.push(HeldOutPrediction {
+                    csv_row: row.csv_row,
+                    ordinal_date: row.ordinal_date,
+                    value,
+                }),
+                Err(error) => {
+                    return Err(GroupPredictionError::Prediction {
+                        group_index,
+                        relative_index,
+                        csv_row: row.csv_row,
+                        ordinal_date: row.ordinal_date,
+                        error,
+                    });
+                }
+            }
+        }
+        Ok(outputs)
+    }
+
+    fn verify_path(
+        expected: &[HeldOutRow],
+        actual: &[HeldOutPrediction],
+        path: PredictionPath,
+    ) -> Result<(), PredictionComparisonError> {
+        if actual.len() != expected.len() {
+            let first_divergence =
+                expected
+                    .iter()
+                    .zip(actual.iter())
+                    .position(|(expected, actual)| {
+                        (expected.csv_row, expected.ordinal_date)
+                            != (actual.csv_row, actual.ordinal_date)
+                    });
+            let index = first_divergence.unwrap_or_else(|| expected.len().min(actual.len()));
+            return Err(PredictionComparisonError::Count {
+                path,
+                expected: expected.len(),
+                actual: actual.len(),
+                index,
+                expected_identity: expected
+                    .get(index)
+                    .map(|row| (row.csv_row, row.ordinal_date)),
+                actual_identity: actual
+                    .get(index)
+                    .map(|prediction| (prediction.csv_row, prediction.ordinal_date)),
+            });
+        }
+
+        for (index, (expected, actual)) in expected.iter().zip(actual.iter()).enumerate() {
+            let expected_identity = (expected.csv_row, expected.ordinal_date);
+            let actual_identity = (actual.csv_row, actual.ordinal_date);
+            if expected_identity != actual_identity {
+                return Err(PredictionComparisonError::Identity {
+                    path,
+                    index,
+                    expected: expected_identity,
+                    actual: actual_identity,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_frozen_predictions(
+        expected: &[HeldOutRow],
+        single: &[HeldOutPrediction],
+        grouped: &[HeldOutPrediction],
+    ) -> Result<(), PredictionComparisonError> {
+        verify_path(expected, single, PredictionPath::Single)?;
+        verify_path(expected, grouped, PredictionPath::Grouped)?;
+
+        for (index, (single, grouped)) in single.iter().zip(grouped.iter()).enumerate() {
+            let single_bits = single.value.to_bits();
+            let grouped_bits = grouped.value.to_bits();
+            if single_bits != grouped_bits {
+                return Err(PredictionComparisonError::Bits {
+                    index,
+                    csv_row: single.csv_row,
+                    ordinal_date: single.ordinal_date,
+                    group_index: index / MAX_HELD_OUT_PREDICTIONS,
+                    relative_index: index % MAX_HELD_OUT_PREDICTIONS,
+                    single_bits,
+                    grouped_bits,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn format_comparison_error(lambda: f32, error: PredictionComparisonError) -> String {
+        match error {
+            PredictionComparisonError::Bits {
+                index,
+                csv_row,
+                ordinal_date,
+                group_index,
+                relative_index,
+                single_bits,
+                grouped_bits,
+            } => format!(
+                "lambda={lambda}: frozen-prediction bit mismatch at output index {index}, \
+                 csv row {csv_row} (date {ordinal_date}), group {group_index} relative \
+                 {relative_index}: single=0x{single_bits:08x} ({:?}) grouped=0x{grouped_bits:08x} \
+                 ({:?})",
+                f32::from_bits(single_bits),
+                f32::from_bits(grouped_bits)
+            ),
+            other => format!("lambda={lambda}: frozen-prediction comparison failed: {other:?}"),
+        }
+    }
+
+    fn prepare_held_out(
+        rows: &[Row],
+        scaler: &Standardizer,
+    ) -> Result<Vec<HeldOutRow>, Box<dyn Error>> {
+        rows.iter()
+            .enumerate()
+            .skip(PREFIX)
+            .map(|(csv_row, row)| {
+                scaler.apply(row, csv_row).map(|features| HeldOutRow {
+                    csv_row,
+                    ordinal_date: row.ordinal_date,
+                    features,
+                })
+            })
+            .collect()
+    }
+
+    fn learn_prefix_state(
+        model: &Rls,
+        rows: &[Row],
+        scaler: &Standardizer,
+        lambda: f32,
+    ) -> Result<RlsState, Box<dyn Error>> {
+        let mut state = model.initial_state();
+        for (csv_row, row) in rows[..PREFIX].iter().enumerate() {
+            let features = scaler.apply(row, csv_row)?;
+            let observation = sample(features, row.target);
+            state = model.update(&state, &observation).map_err(|error| {
+                format!(
+                    "lambda={lambda}: prefix learning failed at csv row {csv_row} \
+                     (date {}): {error:?}",
+                    row.ordinal_date
+                )
+            })?;
+        }
+        Ok(state)
+    }
+
+    fn run_frozen_prediction_check(path: &str) -> Result<(), Box<dyn Error>> {
+        let rows = read_dataset(path)?;
+        let scaler = Standardizer::from_prefix(&rows)?;
+        let held_out = prepare_held_out(&rows, &scaler)?;
+        if held_out.is_empty() {
+            return Err("frozen-prediction check: held-out set is empty".into());
+        }
+
+        let group_lengths: Vec<usize> = held_out
+            .chunks(MAX_HELD_OUT_PREDICTIONS)
+            .map(|group| group.len())
+            .collect();
+        if group_lengths.iter().sum::<usize>() != held_out.len()
+            || group_lengths.len() != held_out.len().div_ceil(MAX_HELD_OUT_PREDICTIONS)
+            || group_lengths
+                .iter()
+                .any(|&length| length == 0 || length > MAX_HELD_OUT_PREDICTIONS)
+        {
+            return Err(format!(
+                "frozen-prediction check: group-size invariant failed: held_out={} \
+                 groups={group_lengths:?}",
+                held_out.len()
+            )
+            .into());
+        }
+
+        eprintln!(
+            "frozen-prediction check: path={path} rows={} prefix={PREFIX} held_out={} \
+             groups={} limit={MAX_HELD_OUT_PREDICTIONS} lambdas={LAMBDAS:?}",
+            rows.len(),
+            held_out.len(),
+            group_lengths.len()
+        );
+
+        for &lambda in &LAMBDAS {
+            let model = Rls::new(DIMENSION, lambda, DELTA)
+                .map_err(|error| format!("lambda={lambda}: Rls::new failed: {error:?}"))?;
+            let state = learn_prefix_state(&model, &rows, &scaler, lambda)?;
+
+            let mut single = Vec::with_capacity(held_out.len());
+            for row in &held_out {
+                let value = model
+                    .predict_checked(&state, &row.features)
+                    .map_err(|error| {
+                        format!(
+                            "lambda={lambda}: single prediction failed at csv row {} \
+                             (date {}): {error:?}",
+                            row.csv_row, row.ordinal_date
+                        )
+                    })?;
+                single.push(HeldOutPrediction {
+                    csv_row: row.csv_row,
+                    ordinal_date: row.ordinal_date,
+                    value,
+                });
+            }
+
+            let mut grouped = Vec::with_capacity(held_out.len());
+            for (group_index, group) in held_out.chunks(MAX_HELD_OUT_PREDICTIONS).enumerate() {
+                let records =
+                    collect_group_checked(group, MAX_HELD_OUT_PREDICTIONS, group_index, |row| {
+                        model.predict_checked(&state, &row.features)
+                    })
+                    .map_err(|error| {
+                        format!("lambda={lambda}: grouped prediction failed: {error:?}")
+                    })?;
+                grouped.extend(records);
+            }
+
+            verify_frozen_predictions(&held_out, &single, &grouped)
+                .map_err(|error| format_comparison_error(lambda, error))?;
+
+            eprintln!(
+                "lambda={lambda}: frozen predictions match: rows={} held_out={} groups={}",
+                rows.len(),
+                held_out.len(),
+                group_lengths.len()
+            );
+        }
+        eprintln!("frozen-prediction check passed: {} lambdas", LAMBDAS.len());
         Ok(())
     }
 
@@ -887,11 +1224,201 @@ mod tests {
     }
 
     #[test]
+    fn grouped_callback_bound_and_first_error_are_observable() {
+        let rows = vec![
+            held_out_row(10, 1_000),
+            held_out_row(11, 1_001),
+            held_out_row(12, 1_002),
+            held_out_row(13, 1_003),
+        ];
+
+        let mut calls = Vec::new();
+        let result = collect_group_checked(&rows[..3], 2, 0, |row| {
+            calls.push(row.csv_row);
+            Ok(0.0)
+        });
+        assert!(matches!(
+            result,
+            Err(GroupPredictionError::TooLarge {
+                group_index: 0,
+                max: 2,
+                actual: 3,
+                group_start_csv_row: 10,
+                group_start_date: 1_000,
+            })
+        ));
+        assert!(calls.is_empty());
+
+        let mut calls = Vec::new();
+        let result = collect_group_checked(&rows, 4, 0, |row| {
+            calls.push(row.csv_row);
+            if row.csv_row == 12 {
+                Err(RlsError::NonFiniteInput)
+            } else {
+                Ok(0.0)
+            }
+        });
+        assert_eq!(calls, vec![10, 11, 12]);
+        assert!(matches!(
+            result,
+            Err(GroupPredictionError::Prediction {
+                group_index: 0,
+                relative_index: 2,
+                csv_row: 12,
+                ordinal_date: 1_002,
+                error: RlsError::NonFiniteInput,
+            })
+        ));
+
+        let empty: Vec<HeldOutRow> = Vec::new();
+        let mut calls = Vec::new();
+        let result = collect_group_checked(&empty, 0, 0, |row| {
+            calls.push(row.csv_row);
+            Ok(0.0)
+        });
+        assert!(matches!(result, Ok(ref records) if records.is_empty()));
+        assert!(calls.is_empty());
+
+        let mut calls = Vec::new();
+        let result = collect_group_checked(&rows[..1], 0, 0, |row| {
+            calls.push(row.csv_row);
+            Ok(0.0)
+        });
+        assert!(matches!(
+            result,
+            Err(GroupPredictionError::TooLarge {
+                group_index: 0,
+                max: 0,
+                actual: 1,
+                group_start_csv_row: 10,
+                group_start_date: 1_000,
+            })
+        ));
+        assert!(calls.is_empty());
+
+        let mut calls = Vec::new();
+        let result = collect_group_checked(&empty, 5, 0, |row| {
+            calls.push(row.csv_row);
+            Ok(0.0)
+        });
+        assert!(matches!(result, Ok(ref records) if records.is_empty()));
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn equal_bit_reordering_and_comparison_mismatches_are_detected() {
+        let rows = vec![
+            held_out_row(10, 1_000),
+            held_out_row(11, 1_001),
+            held_out_row(12, 1_002),
+        ];
+
+        let mut calls = Vec::new();
+        let grouped = collect_group_checked(&rows, 3, 0, |row| {
+            calls.push(row.csv_row);
+            Ok(0.0)
+        })
+        .expect("grouped predictions");
+        assert_eq!(calls, vec![10, 11, 12]);
+        assert_eq!(
+            grouped.iter().map(|row| row.csv_row).collect::<Vec<_>>(),
+            vec![10, 11, 12]
+        );
+        assert!(
+            grouped
+                .iter()
+                .all(|row| row.value.to_bits() == 0.0f32.to_bits())
+        );
+
+        let single: Vec<HeldOutPrediction> = rows
+            .iter()
+            .map(|row| HeldOutPrediction {
+                csv_row: row.csv_row,
+                ordinal_date: row.ordinal_date,
+                value: 0.0,
+            })
+            .collect();
+        verify_frozen_predictions(&rows, &single, &grouped).expect("matching predictions");
+
+        let mut reordered = grouped.clone();
+        reordered.swap(0, 1);
+        assert!(matches!(
+            verify_frozen_predictions(&rows, &single, &reordered),
+            Err(PredictionComparisonError::Identity {
+                path: PredictionPath::Grouped,
+                index: 0,
+                expected: (10, 1_000),
+                actual: (11, 1_001),
+            })
+        ));
+
+        let missing = grouped[..2].to_vec();
+        assert!(matches!(
+            verify_frozen_predictions(&rows, &single, &missing),
+            Err(PredictionComparisonError::Count {
+                path: PredictionPath::Grouped,
+                expected: 3,
+                actual: 2,
+                index: 2,
+                expected_identity: Some((12, 1_002)),
+                actual_identity: None,
+            })
+        ));
+
+        let mut extra = grouped.clone();
+        extra.push(HeldOutPrediction {
+            csv_row: 13,
+            ordinal_date: 1_003,
+            value: 0.0,
+        });
+        assert!(matches!(
+            verify_frozen_predictions(&rows, &single, &extra),
+            Err(PredictionComparisonError::Count {
+                path: PredictionPath::Grouped,
+                expected: 3,
+                actual: 4,
+                index: 3,
+                expected_identity: None,
+                actual_identity: Some((13, 1_003)),
+            })
+        ));
+
+        let mut signed_single = single.clone();
+        signed_single[0].value = -0.0;
+        match verify_frozen_predictions(&rows, &signed_single, &grouped) {
+            Err(PredictionComparisonError::Bits {
+                single_bits,
+                grouped_bits,
+                ..
+            }) => {
+                assert_eq!(single_bits, 0x8000_0000);
+                assert_eq!(grouped_bits, 0x0000_0000);
+                assert!(f32::from_bits(single_bits).is_sign_negative());
+                assert!(!f32::from_bits(grouped_bits).is_sign_negative());
+            }
+            other => panic!("expected signed-zero bit mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the unpublished trump_approval.csv; set SEQVEX_TRUMP_CSV or provide examples/data/trump_approval.csv"]
+    fn frozen_prediction_matches_between_single_and_grouped_on_real_holdout() {
+        let path = real_dataset_path();
+        if !path.is_file() {
+            panic!(
+                "frozen-prediction check requires the real dataset; {} is not a file. Set \
+                 {DATASET_ENV} or place it at {DEFAULT_DATASET}.",
+                path.display()
+            );
+        }
+        run_frozen_prediction_check(path.to_str().expect("dataset path must be UTF-8"))
+            .unwrap_or_else(|error| panic!("frozen-prediction check failed: {error}"));
+    }
+
+    #[test]
     #[ignore = "requires the unpublished trump_approval.csv; set SEQVEX_TRUMP_CSV or provide examples/data/trump_approval.csv"]
     fn bounded_reference_matches_repeated_updates_on_real_prefix() {
-        let path = std::env::var_os(DATASET_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_DATASET));
+        let path = real_dataset_path();
         if !path.is_file() {
             panic!(
                 "bounded-learning check requires the real dataset; {} is not a file. Set \

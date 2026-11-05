@@ -853,15 +853,27 @@ step. Contract:
   row/date/call-kind context and a non-zero exit. There is no silent recovery,
   skipping, retry, or reset.
 - Automated example tests use synthetic temporary CSVs by default and do not
-  read the real dataset unless explicitly requested. The example also carries one
-  opt-in `#[ignore]`d real-data test,
-  `tests::bounded_reference_matches_repeated_updates_on_real_prefix`, which reuses
-  the same reader and frozen prefix-only scaler on rows 1–400 and asserts
-  bitwise equality of every weight and covariance entry between repeated
-  `Rls::update` and bounded `Rls::process_batch_reference` (chunks of 50,
-  `lambda = 1.0` and `0.95`) at the equal start and every 50-row boundary through
-  row 400. Real-data verification requires explicitly running the example against
-  the supplied CSV.
+  read the real dataset unless explicitly requested. The example also carries two
+  opt-in `#[ignore]`d real-data tests:
+  - `tests::bounded_reference_matches_repeated_updates_on_real_prefix` reuses the
+    same reader and frozen prefix-only scaler on rows 1–400 and asserts bitwise
+    equality of every weight and covariance entry between repeated `Rls::update`
+    and bounded `Rls::process_batch_reference` (chunks of 50, `lambda = 1.0` and
+    `0.95`) at the equal start and every 50-row boundary through row 400.
+  - `tests::frozen_prediction_matches_between_single_and_grouped_on_real_holdout`
+    reuses the same reader and scaler, prepares the held-out features once, learns
+    one frozen state per lambda, and compares one-at-a-time with caller-bounded
+    grouped checked predictions (limit 50) over the held-out rows in order. It
+    checks each path against the expected CSV row/date sequence and compares every
+    prediction with `to_bits()` for `lambda = 1.0` (no exponential forgetting) and
+    `0.95`.
+
+  These are evidence for the example-local caller composition in the existing
+  mixed-precision `f64` scaler / `f32` RLS workflow. They are not independent
+  numerical verification of the RLS kernel, A/B real-data coverage,
+  `StreamingExecutor` coverage, publication evidence, performance evidence, or
+  live feature/label-timing evidence. Real-data verification requires explicitly
+  running the selected opt-in test against the supplied CSV.
 
 Execution is offline. Separately download River's
 [pinned compressed CSV](https://raw.githubusercontent.com/online-ml/river/6af83abba269dbdaf38e9c0eaf61d82c451ad698/river/datasets/trump_approval.csv.gz)
@@ -871,6 +883,13 @@ The evaluated decompressed snapshot contains 1001 data rows and has SHA-256
 `aef188d04b606270e9590013282e2ede3f5f92edae1106d85d3defa483189cb0`.
 The example checks header names, finiteness, strict chronology, and minimum row
 count; it does not require that checksum or an exact 1001-row input.
+
+The frozen-prediction test derives all counts and group sizes from the supplied
+input. The pinned snapshot’s 1001 data rows, 601 held-out rows, and
+twelve-full-plus-one-short grouping are fixture facts, not acceptance
+requirements. If the supplied CSV does not match the documented snapshot
+hash/provenance, report the run as supplied-CSV evidence with its observed hash
+and counts, not as pinned-snapshot evidence.
 
 ### Recorded run on the supplied snapshot
 
@@ -906,15 +925,18 @@ unchanged.
 - [`examples/rls_profiles.rs`](examples/rls_profiles.rs): embedded
   `RLS-QUALITY800` and caller-protocol tests.
 - [`examples/rls_trump_approval.rs`](examples/rls_trump_approval.rs): embedded
-  synthetic example tests, plus one opt-in `#[ignore]`d real-prefix
-  single-row/bounded learning-equivalence test.
+  synthetic example tests, plus two opt-in `#[ignore]`d real-data tests:
+  real-prefix single-row/bounded learning equivalence and frozen-prediction
+  single-vs-grouped equivalence.
 
 Run the embedded tests explicitly with
 `cargo test --locked --example rls_profiles --all-features` and
 `cargo test --locked --example rls_trump_approval --all-features`.
 Automated tests do not require the local real dataset. Run the opt-in real-data
-equivalence test with
-`cargo test --locked --example rls_trump_approval -- --ignored bounded_reference_matches_repeated_updates_on_real_prefix`
+tests with
+`cargo test --locked --example rls_trump_approval --all-features -- --ignored bounded_reference_matches_repeated_updates_on_real_prefix`
+and
+`cargo test --locked --example rls_trump_approval --all-features -- --ignored frozen_prediction_matches_between_single_and_grouped_on_real_holdout`
 after placing the dataset at `examples/data/trump_approval.csv` or setting
-`SEQVEX_TRUMP_CSV` to its path. A missing dataset fails that opt-in test with a
-path-specific diagnostic; the default suite is unaffected.
+`SEQVEX_TRUMP_CSV` to its path. A missing dataset fails the selected opt-in test
+with a path-specific diagnostic; the default suite is unaffected.

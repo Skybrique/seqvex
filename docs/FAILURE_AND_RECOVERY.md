@@ -446,6 +446,19 @@ The framework should not silently advance the model to an unknown or partially u
 
 Whether `x₂` is retried, discarded, reprocessed, or causes execution to stop is a separate failure-policy decision.
 
+Operations must return recognized failures explicitly through their declared
+error contract. Stateful operations must additionally preserve their declared
+atomicity boundary and committed progress. Recovery, retry, skip, reset and
+resume are caller-owned explicit policies, not framework defaults. Dependent
+work stops by default when a required inner operation fails; explicit
+continuation must not turn failed or partial work into complete success, and a
+retained committed prefix must not be presented or aggregated as complete
+success. Where the operation knows them, the failure reports the failing
+position, cause and committed progress. This is general policy for Seqvex
+operations. Compatibility note: where an existing public API does not yet
+satisfy it, the discrepancy is a recorded gap requiring reviewed correction,
+not an accepted alternative default.
+
 ---
 
 ## 10. Checkpointing
@@ -580,6 +593,11 @@ committed state after failure
 unless an explicit recovery mechanism intentionally restores a different known-valid state.
 
 Failure testing should become part of the integration test suite as the corresponding runtime behavior becomes stable.
+
+Tests and benchmarks that exercise an operation must follow that operation's
+production failure contract. A deliberate component control that omits production
+work must be identified as a component control and must not be presented as
+complete-operation evidence or used to claim a complete-operation result.
 
 ---
 

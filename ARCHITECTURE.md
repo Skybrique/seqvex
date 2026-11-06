@@ -761,6 +761,7 @@ Current principles:
 9. Hardware-specific optimization must be evidence-driven.
 10. Storage, ownership, allocator, scheduler, backend, and device abstractions remain deliberately open until demonstrated requirements justify them.
 11. Automatic execution selection is a future capability with explicit user override; it is not a current implementation commitment.
+12. Operations return recognized failures explicitly through their declared error contract; stateful operations preserve their atomicity boundary and committed progress, dependent work stops by default on a required inner failure, and continuation/recovery remain caller-owned. See `docs/FAILURE_AND_RECOVERY.md`.
 
 ## 24. Deferred decisions
 

@@ -397,6 +397,15 @@ permitted.
 
 ### B freshness
 
+`RlsServing32` stores only converted weights. The caller maintains
+`served_through`, `serving_identity` and the learning watermark
+separately, and selects and enforces the freshness policy.
+`FrozenSelected` and `LatestEligible` are caller-protocol concepts
+illustrated by [`tests/support/linear_execution.rs`](../../../../tests/support/linear_execution.rs)
+and [`examples/linear_execution.rs`](../../../../examples/linear_execution.rs);
+they are not public RLS API types. The rules below describe that caller
+protocol.
+
 Every B workflow must explicitly select `FrozenSelected { serving_identity }` or
 `LatestEligible`; omission is an error. `FrozenSelected` pins a snapshot and does
 not claim latest state. `LatestEligible` requires `served_through ==
@@ -585,10 +594,12 @@ the RLS bounded path.
 
 ## Measured evidence (#26)
 
-Two separate runs are recorded here and are not merged: the historical
-fixed-observation foundation-fold baseline ([historical]) and the release
+Three evidence sets are recorded here and are not merged: the historical
+fixed-observation foundation-fold baseline ([historical]), the release
 batch-size sweep of the RLS-local bounded reference API ([new run], revision
-`b63da4f`). Historical values below are unchanged.
+`b63da4f`), and the accepted update-cost attribution evidence set (two release
+captures; benchmark file blob `e7d3c39ee5d4dfb7cf76e26b39b7d6a5a4c30408`).
+Historical values below are unchanged.
 
 ### Historical baseline ([historical])
 
@@ -645,6 +656,10 @@ Findings, stated without overclaiming:
   as a semantically correct capability rather than a performance claim.
 - Latency scales roughly with `D²` (`232 ns` at `D = 8` to `140 µs` at
   `D = 256`), consistent with the covariance update dominating.
+
+These timings do not prove that covariance arithmetic dominates the complete
+update; the `O(D²)` statement is a complexity interpretation, not a measured
+component decomposition.
 
 The measured `O(D²)` candidate allocation is the RLS-specific evidence. A future
 double-buffered `P` could remove it, but **where the second buffer lives**
@@ -758,6 +773,101 @@ The reference path is retained; optimization and profiling are deferred. This
 run does not establish a CPU profile, a bottleneck identification, a universal
 speedup, or production readiness, and it does not alter the RLS
 production-readiness gates.
+
+### Update-cost attribution evidence set (accepted)
+
+Source identity: the uncommitted benchmark working file
+`src/models/linear/rls/benches/rls.rs` had Git blob hash
+`e7d3c39ee5d4dfb7cf76e26b39b7d6a5a4c30408`. The base commit is
+`a1858bf9eff870b952b163c0228f91aa345ff6ee`; it is the branch point, not the
+identity of the modified working tree. The set contains two release captures.
+Both use `SEQVEX_RLS_UPDATE_ONLY=1`, `SEQVEX_CAPTURE=1`/`2`, with
+`SEQVEX_RLS_VALIDATE_ONLY`, `SEQVEX_EVIDENCE_ONLY` and
+`SEQVEX_LEGACY_DIAGNOSTICS` unset, `λ = 0.999`, `δ = 10^4`, `D ∈ {8, 32}`,
+`W = 1000` warm-up and `H = 10000` measured updates per window, 20 windows per
+`(row, precision, D)`. The captures permuted candidate order. Both reported
+`CATALOG expected=800 observed=800 status=ok` and
+`RETAINED records_emitted=888 records_total=888`.
+
+Ordinary reproduction (release):
+
+```bash
+env -u SEQVEX_RLS_VALIDATE_ONLY -u SEQVEX_EVIDENCE_ONLY -u SEQVEX_LEGACY_DIAGNOSTICS \
+  SEQVEX_RLS_UPDATE_ONLY=1 SEQVEX_CAPTURE=1 cargo bench --bench rls --locked
+env -u SEQVEX_RLS_VALIDATE_ONLY -u SEQVEX_EVIDENCE_ONLY -u SEQVEX_LEGACY_DIAGNOSTICS \
+  SEQVEX_RLS_UPDATE_ONLY=1 SEQVEX_CAPTURE=2 cargo bench --bench rls --locked
+```
+
+For the accepted captures the procedure was: build once with
+`cargo bench --bench rls --no-run --message-format=json --locked`, select the
+single `rls` compiler-artifact executable from Cargo's JSON output, record its
+SHA-256, and execute that exact binary with the same environment.
+
+The earlier capture pair lacked retained raw-window and warm-up records; it is
+retained only as incomplete evidence and is not used for these figures.
+
+Production successful-update baseline (`S-C` f32, `S-A` f64), median `ns/update`
+[IQR] over 20 windows; `allocation-requests/update` counts wrapper
+`alloc`+`realloc` requests and `requested-bytes/update` is requested payload:
+
+| row | D | capture 1 | capture 2 | alloc-req/update | requested bytes/update |
+|---|---:|---:|---:|---:|---:|
+| S-C f32 | 8 | 266.2 [4.9] | 269.7 [11.6] | 5.000 | 384.0 |
+| S-A f64 | 8 | 281.3 [4.2] | 303.3 [3.7] | 5.000 | 768.0 |
+| S-C f32 | 32 | 2239.6 [38.0] | 2322.9 [48.4] | 5.000 | 4608.0 |
+| S-A f64 | 32 | 2735.6 [65.6] | 2551.3 [58.7] | 5.000 | 9216.0 |
+
+The production requested-byte figures equal the source-derived
+`(D² + 4D) × scalar_bytes`; committed requested payload equals
+`(D² + D) × scalar_bytes` (288/4224 bytes f32, 576/8448 f64). These are
+requested-payload counters, not allocator-resident or physical memory, and the
+wrapper request count is not a unique-allocation or allocator-internal count.
+
+Complete candidates measured at the same boundaries:
+
+| row | D | capture 1 | capture 2 | alloc-req/update | requested bytes/update |
+|---|---:|---:|---:|---:|---:|
+| U-Fused f32 | 8 | 220.4 [11.1] | 228.2 [8.7] | 3.000 | 320.0 |
+| U-Sym f32 | 8 | 303.0 [8.1] | 313.5 [4.0] | 6.000 | 640.0 |
+| U-Fused f64 | 8 | 309.8 [4.9] | 333.8 [9.4] | 3.000 | 640.0 |
+| U-Sym f64 | 8 | 401.8 [5.4] | 411.8 [20.7] | 6.000 | 1280.0 |
+| U-Fused f32 | 32 | 2119.0 [27.4] | 2139.1 [29.6] | 3.000 | 4352.0 |
+| U-Sym f32 | 32 | 2015.5 [62.3] | 1979.9 [35.9] | 6.000 | 8704.0 |
+| U-Fused f64 | 32 | 3658.4 [110.5] | 3566.9 [67.4] | 3.000 | 8704.0 |
+| U-Sym f64 | 32 | 3549.2 [55.4] | 3466.6 [58.7] | 6.000 | 17408.0 |
+
+Under the harness materiality rule (`|Δmedian| > 2·max(IQR)` and
+`|Δmedian| > 5%·max(median)`), every cell was clearly measurable in both
+captures with consistent direction. The favorable complete-update results are
+`U-Fused` at f32 `D = 8` and f32 `D = 32`, and `U-Sym` at f32 `D = 32`; these
+support only the scoped investigations at those cells. `U-Fused` at f64
+`D = 8` and `D = 32` and `U-Sym` at f32 `D = 8`, f64 `D = 8` and f64 `D = 32`
+were materially slower and do not support those investigations. Production RLS
+is unchanged; these results support only the scoped investigations described
+above. Component controls are isolated hypotheses, not complete-update evidence;
+their timings are not subtracted from production to attribute arithmetic or
+allocation cost. `U-Sym` retains the documented extra `D²` buffer/copy, which
+biases its complete-update comparison against the symmetric change.
+
+Qualification and limitations: single machine (12th Gen Intel Core i7-12700H,
+20 logical CPUs, WSL2, CPU governor unavailable), release profile, two
+order-permuted captures, window medians over 20 windows. Between-capture median
+drift was up to about 7.8% for production and 7.8% for candidates; no cell
+changed materiality classification or direction. `p95`/`IQR` describe variability
+across the 20 windows, not individual-update tail latency. These are directional,
+single-machine results. They do not establish production readiness or a
+universal speedup, do not prove an allocation-versus-arithmetic causal split,
+and do not complete production profiling or bottleneck attribution; the existing
+optimization gate remains open.
+
+The harness enforces strict per-row failure behaviour: every measured update
+must succeed, count and identity invariants are checked, unexpected failures stop
+the affected row and suppress its successful-update summary, and no reset, skip,
+retry, or old-state substitution is used. Historical and batch-sweep values above
+are unchanged and were recorded under the pre-correction harness; they are
+retained as historical evidence, not re-derived or superseded by these captures,
+and their `O(D²)` statements are complexity observations rather than measured
+component decompositions.
 
 ### Precision-profile quality evidence (`RLS-QUALITY800`)
 

@@ -574,13 +574,15 @@ impl StateModel for Rls64 {
 
 /// An independently owned `f32` serving snapshot of native-`f64` RLS weights.
 ///
-/// The caller must explicitly choose `FrozenSelected` or `LatestEligible`; this
-/// snapshot does not store or enforce that policy. `served_through` is the
-/// number of learning observations represented by the snapshot;
-/// `serving_identity` is opaque and is never
-/// compared with a learning watermark. `LatestEligible` requires equality for the
-/// eligible pre-prediction prefix. Conversion failure leaves the source state
-/// unchanged and installs no snapshot.
+/// This type stores only converted weights. Freshness metadata
+/// (`served_through`, `serving_identity` and the learning watermark)
+/// and the `FrozenSelected`/`LatestEligible` policy belong to the caller;
+/// this type neither stores nor enforces them. See the RLS README's
+/// B freshness section for the caller protocol.
+///
+/// [`Rls64::to_serving_f32`] returns a new snapshot on success and leaves the
+/// source state unchanged. Installing or replacing the active snapshot is a
+/// separate caller action.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RlsServing32 {
     weights: Vector,

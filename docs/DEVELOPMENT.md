@@ -234,6 +234,13 @@ Before implementing a stateful operation, determine:
 
 Rollback is not universal. Do not add rollback machinery merely because failure exists.
 
+Operations must return recognized failures explicitly through their declared
+error contract. Stateful operations must additionally preserve their declared
+atomicity boundary and committed progress. Recovery, retry, skip, reset and
+resume are caller-owned policies; dependent work stops by default on a required
+inner failure unless the caller explicitly selects continuation, and explicit
+continuation must not turn failed or partial work into complete success.
+
 See `docs/FAILURE_AND_RECOVERY.md` for detailed failure policy.
 
 ---
@@ -548,7 +555,9 @@ For foundational components, test:
 - deterministic behavior where promised;
 - numerical edge cases;
 - single-observation semantics;
-- bounded micro-batch semantics where implemented.
+- bounded micro-batch semantics where implemented;
+- production failure contracts for tests and benchmarks, with deliberate
+  component controls identified as component controls.
 
 Ask:
 

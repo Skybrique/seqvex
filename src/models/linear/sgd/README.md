@@ -324,6 +324,15 @@ or recalculates a pending historical output with a newer state.
 
 ## B freshness and temporal modes
 
+`SgdServing32` stores only converted weights. The caller maintains
+`served_through`, `serving_identity` and the learning watermark
+separately, and selects and enforces the freshness policy.
+`FrozenSelected` and `LatestEligible` are caller-protocol concepts
+illustrated by [`tests/support/linear_execution.rs`](../../../../tests/support/linear_execution.rs)
+and [`examples/linear_execution.rs`](../../../../examples/linear_execution.rs);
+they are not public SGD API types. The rules below describe that caller
+protocol.
+
 Every B workflow must explicitly select `FrozenSelected { serving_identity }` or
 `LatestEligible`; omission is an error. `FrozenSelected` pins a snapshot and does
 not claim latest state. `LatestEligible` requires `served_through ==

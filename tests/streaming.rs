@@ -12,7 +12,7 @@ fn streaming_processing_preserves_state() {
         Observation::new(2_i64),
         Observation::new(3_i64),
     ];
-    let state = process_stream(&model, 0_i64, observations, |_| {});
+    let state = process_stream(&model, 0_i64, observations).unwrap();
     assert_eq!(state, 6);
 }
 
@@ -24,7 +24,7 @@ fn sequential_observations_update_state_in_order() {
         Observation::new(20_i64),
         Observation::new(30_i64),
     ];
-    let state = process_stream(&model, 0_i64, observations, |_| {});
+    let state = process_stream(&model, 0_i64, observations).unwrap();
     assert_eq!(state, 60);
 }
 
@@ -52,7 +52,7 @@ fn micro_batch_preserves_defined_sequence_semantics() {
         Observation::new(3_i64),
     ];
 
-    let streamed = process_stream(&model, 0_i64, observations.clone(), |_| {});
+    let streamed = process_stream(&model, 0_i64, observations.clone()).unwrap();
     let batched = process_batch(&model, 0_i64, observations).unwrap();
 
     assert_eq!(streamed, batched);

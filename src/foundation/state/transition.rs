@@ -1,11 +1,8 @@
-//! State transition contract, single-observation execution, and the reference
-//! ordered fold.
+//! State transition contract and single-observation execution.
 //!
-//! The transition mechanism here is deliberately provisional. A candidate next
-//! state is represented as a returned value rather than by mutating the current
-//! state, which makes failure atomicity structural. Whether production updates
-//! are transactional, in-place, copy-on-write, or otherwise remains a deferred
-//! decision (see `docs/FAILURE_AND_RECOVERY.md` §16).
+//! The transition mechanism is deliberately provisional. A candidate next state
+//! is represented as a returned value rather than by mutating the current state,
+//! which makes failure atomicity structural.
 
 /// A stateful computation.
 ///
@@ -35,53 +32,4 @@ pub fn process_one<M: StateModel>(
     observation: &M::Observation,
 ) -> Result<M::State, M::Error> {
     model.update(state, observation)
-}
-
-/// A rejected micro-batch: the failure and the last committed valid state.
-///
-/// Carrying the state back keeps the last committed valid state identifiable
-/// after a failed micro-batch, so processing can continue from it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BatchFailure<S, E> {
-    /// The last state committed before the failing observation.
-    pub state: S,
-    /// The failure that rejected the batch.
-    pub error: E,
-}
-
-/// Reference ordered-fold execution.
-///
-/// This is an **unbounded** sequential fold over `batch`, not a bounded
-/// micro-batch strategy: it consumes whatever the iterator yields and stops at
-/// the first failure. The batch is applied in observation order; stream and
-/// state semantics are preserved. On success the committed state is returned;
-/// on failure the last committed valid state is returned with the failure so it
-/// remains identifiable.
-///
-/// ponytail: this is an ordered sequential fold, not a vectorized
-/// implementation. It is the reference semantic any future vectorized or
-/// hardware-accelerated micro-batch path must preserve. A bounded micro-batch
-/// is introduced per algorithm (`docs/ML_VERTICAL_SLICES.md`).
-pub fn process_batch<M, I>(
-    model: &M,
-    state: M::State,
-    batch: I,
-) -> Result<M::State, BatchFailure<M::State, M::Error>>
-where
-    M: StateModel,
-    I: IntoIterator<Item = M::Observation>,
-{
-    let mut current = state;
-    for observation in batch {
-        match model.update(&current, &observation) {
-            Ok(next) => current = next,
-            Err(error) => {
-                return Err(BatchFailure {
-                    state: current,
-                    error,
-                });
-            }
-        }
-    }
-    Ok(current)
 }

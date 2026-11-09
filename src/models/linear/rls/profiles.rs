@@ -8,6 +8,7 @@
 use crate::foundation::numerical::{DimensionMismatch, Matrix, Matrix64, Vector, Vector64};
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
+use crate::models::linear::serving::{Narrowing, NarrowingError, narrow_f64};
 
 use super::RlsError;
 
@@ -34,7 +35,7 @@ pub enum RlsError64 {
     InvalidDenominator,
     /// The computed candidate `(w', P')` is not finite.
     NonFiniteCandidate,
-    /// A checked prediction produced a non-finite result.
+    /// A prediction produced a non-finite result.
     NonFiniteOutput,
 }
 
@@ -61,7 +62,7 @@ impl std::fmt::Display for RlsError64 {
                 "RLS candidate state is not finite. The candidate update was not committed; the supplied state is unchanged.",
             ),
             Self::NonFiniteOutput => {
-                formatter.write_str("checked RLS prediction produced a non-finite output")
+                formatter.write_str("RLS prediction produced a non-finite output")
             }
         }
     }
@@ -415,17 +416,18 @@ impl Rls64 {
         }
         let mut weights = Vec::with_capacity(self.dimension);
         for (index, &source) in state.w.as_slice().iter().enumerate() {
-            if !source.is_finite() {
-                return Err(RlsServingConversionError::SourceNonFinite { index });
+            match narrow_f64(source) {
+                Err(NarrowingError::SourceNonFinite) => {
+                    return Err(RlsServingConversionError::SourceNonFinite { index });
+                }
+                Err(NarrowingError::Overflow) => {
+                    return Err(RlsServingConversionError::Overflow { index });
+                }
+                Ok(Narrowing::Underflow(_)) => {
+                    return Err(RlsServingConversionError::Underflow { index });
+                }
+                Ok(Narrowing::Value(value)) => weights.push(value),
             }
-            let narrowed = source as f32;
-            if !narrowed.is_finite() {
-                return Err(RlsServingConversionError::Overflow { index });
-            }
-            if narrowed == 0.0 && source != 0.0 {
-                return Err(RlsServingConversionError::Underflow { index });
-            }
-            weights.push(narrowed);
         }
         Ok(RlsServing32 {
             weights: Vector::from_slice(&weights),
@@ -435,28 +437,28 @@ impl Rls64 {
     /// Reference prediction `ŷ = wᵀx` using the committed native-`f64` state.
     ///
     /// Dimensions are validated in the order features, weights, covariance rows,
-    /// covariance columns; feature finiteness is checked afterwards. A bare
-    /// prediction may return a non-finite `Ok` value.
+    /// covariance columns; feature finiteness is checked afterwards, and the
+    /// ordered dot result is rejected if it is not finite.
     pub fn predict(&self, state: &RlsState64, features: &Vector64) -> Result<f64, RlsError64> {
         self.validate(state, features)?;
         if !features.as_slice().iter().all(|value| value.is_finite()) {
             return Err(RlsError64::NonFiniteInput);
         }
-        Ok(state.w.dot(features)?)
+        let value = state.w.dot(features)?;
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(RlsError64::NonFiniteOutput)
+        }
     }
 
-    /// Checked prediction: delegates to [`Rls64::predict`] and rejects a
-    /// non-finite output with [`RlsError64::NonFiniteOutput`].
+    /// Compatibility alias for [`Rls64::predict`].
     pub fn predict_checked(
         &self,
         state: &RlsState64,
         features: &Vector64,
     ) -> Result<f64, RlsError64> {
-        let value = self.predict(state, features)?;
-        if !value.is_finite() {
-            return Err(RlsError64::NonFiniteOutput);
-        }
-        Ok(value)
+        self.predict(state, features)
     }
 
     /// Bounded ordered native-`f64` reference micro-batch.
@@ -601,8 +603,8 @@ impl RlsServing32 {
 
     /// Fixed-model prediction using the stored `f32` weights.
     ///
-    /// The feature length is checked before feature finiteness. A bare
-    /// prediction may return a non-finite `Ok` value.
+    /// The feature length is checked before feature finiteness, and the ordered
+    /// dot result is rejected if it is not finite.
     pub fn predict(&self, features: &Vector) -> Result<f32, RlsError> {
         if features.len() != self.weights.len() {
             return Err(RlsError::DimensionMismatch {
@@ -613,17 +615,17 @@ impl RlsServing32 {
         if !features.as_slice().iter().all(|value| value.is_finite()) {
             return Err(RlsError::NonFiniteInput);
         }
-        Ok(self.weights.dot(features)?)
+        let value = self.weights.dot(features)?;
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(RlsError::NonFiniteOutput)
+        }
     }
 
-    /// Checked fixed-model prediction: delegates to [`RlsServing32::predict`]
-    /// and rejects a non-finite output with [`RlsError::NonFiniteOutput`].
+    /// Compatibility alias for [`RlsServing32::predict`].
     pub fn predict_checked(&self, features: &Vector) -> Result<f32, RlsError> {
-        let value = self.predict(features)?;
-        if !value.is_finite() {
-            return Err(RlsError::NonFiniteOutput);
-        }
-        Ok(value)
+        self.predict(features)
     }
 }
 

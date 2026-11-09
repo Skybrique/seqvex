@@ -794,28 +794,17 @@ fn workspace_budget_matches_independently_enumerated_total() {
 }
 
 #[test]
-fn deployed_overflow_diagnostic_boundary_is_preserved() {
+fn deployed_overflow_diagnostic_is_rejected_by_legacy_fit() {
     // Finite coefficient, but the deployed slope-1.2*MAX row-2 prediction
-    // overflows f32: fitting succeeds, the f32 RSS is infinite, and checked
-    // serving rejects the output. This is a documented boundary, not a new
-    // fitting-accuracy gate.
+    // overflows f32. Legacy fit now rejects the non-finite diagnostic instead of
+    // returning a successful result with an invalid stored RSS.
     let x = features(&[&[1.0], &[2.0]]);
     let y = [f32::MAX, f32::MAX];
     let config = FitConfig {
         intercept: false,
         ..FitConfig::default()
     };
-    let result = fit(&x, &y, &[0, 1], &config).expect("finite coefficient fit succeeds");
-    let diagnostics = result.diagnostics();
-    assert!(diagnostics.rss_f64_reference.is_finite());
-    assert!(diagnostics.rss_f32_predictor.is_infinite());
-    let model = result.into_predictor();
-    let row = Vector::from_slice(&[2.0]);
-    assert!(model.predict(&row).unwrap().is_infinite());
-    assert_eq!(
-        model.predict_checked(&row),
-        Err(RegressionError::NonFiniteOutput { observation: None })
-    );
+    assert_eq!(fit(&x, &y, &[0, 1], &config), Err(FitError::NonFiniteRss));
 }
 
 #[test]
@@ -844,23 +833,14 @@ fn acceptance_reports_independently_accumulated_selected_rss() {
 }
 
 #[test]
-fn acceptance_rejects_the_existing_infinite_deployed_rss_candidate() {
+fn legacy_fit_rejects_infinite_deployed_rss() {
     let x = features(&[&[1.0], &[2.0]]);
     let y = [f32::MAX, f32::MAX];
     let config = FitConfig {
         intercept: false,
         ..FitConfig::default()
     };
-    let candidate = fit(&x, &y, &[0, 1], &config).expect("legacy fit remains successful");
-    assert!(candidate.diagnostics().rss_f64_reference.is_finite());
-    assert!(candidate.diagnostics().rss_f32_predictor.is_infinite());
-
-    assert_eq!(
-        candidate.check_acceptance(&x, &y, &[0]),
-        Err(AcceptanceCheckError::NonFiniteStoredDiagnostic {
-            diagnostic: StoredDiagnostic::RssF32Predictor,
-        })
-    );
+    assert_eq!(fit(&x, &y, &[0, 1], &config), Err(FitError::NonFiniteRss));
 }
 
 #[test]
@@ -988,28 +968,20 @@ fn acceptance_inspects_only_selected_rows_and_uses_declared_precedence() {
     );
 
     let infinite_rss_x = features(&[&[1.0], &[2.0]]);
-    let infinite_rss_y = [f32::MAX, f32::MAX];
     let no_intercept = FitConfig {
         intercept: false,
         ..FitConfig::default()
     };
-    let infinite_rss =
-        fit(&infinite_rss_x, &infinite_rss_y, &[0, 1], &no_intercept).expect("legacy fit succeeds");
+    let candidate =
+        fit(&infinite_rss_x, &[1.0, 2.0], &[0, 1], &no_intercept).expect("fit succeeds");
     let selected_nan = [Vector::from_slice(&[f32::NAN])];
     assert!(matches!(
-        infinite_rss.check_acceptance(&selected_nan, &[0.0], &[0]),
+        candidate.check_acceptance(&selected_nan, &[0.0], &[0]),
         Err(AcceptanceCheckError::NonFiniteSelectedValue {
             field: SelectedField::Feature { column: 0 },
             ..
         })
     ));
-    let potential_overflow = [Vector::from_slice(&[f32::MAX])];
-    assert_eq!(
-        infinite_rss.check_acceptance(&potential_overflow, &[0.0], &[0]),
-        Err(AcceptanceCheckError::NonFiniteStoredDiagnostic {
-            diagnostic: StoredDiagnostic::RssF32Predictor,
-        })
-    );
 }
 
 #[test]

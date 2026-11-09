@@ -88,21 +88,26 @@ fn process_stream_reports_failures_without_stopping() {
     let mut executor = StreamingExecutor::new(&model, Vector::zeros(2));
     let mut failures = 0;
 
-    let final_state = executor
-        .process_stream(
+    let progress = executor
+        .process_stream_continuing(
             [
                 observation(&[0.1, 0.2]),
                 observation(&[f32::NAN, 0.0]),
                 observation(&[0.3, -0.4]),
             ],
-            |error| {
+            |position, error| {
+                assert_eq!(position, 1);
                 assert_eq!(*error, GruError::NonFiniteInput);
                 failures += 1;
             },
         )
-        .clone();
+        .unwrap();
 
     assert_eq!(failures, 1);
+    assert_eq!(progress.attempted, 3);
+    assert_eq!(progress.committed, 2);
+    assert_eq!(progress.failed, 1);
+    let final_state = executor.state().clone();
     let reference = Gru::new(2, 2, params()).unwrap();
     let mut reference_state = Vector::zeros(2);
     reference_state = reference

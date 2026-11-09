@@ -13,9 +13,12 @@
 //!   direct solve differ in precision and reduction order.
 
 use seqvex::execution::streaming::StreamingExecutor;
+use seqvex::foundation::error::FailureCause;
 use seqvex::foundation::numerical::{Matrix, Matrix64, Vector, Vector64};
 use seqvex::foundation::observation::Observation;
-use seqvex::foundation::state::{StateModel, process_batch, process_one, process_stream};
+use seqvex::foundation::state::{
+    StateModel, process_batch, process_one, process_stream, process_stream_continuing,
+};
 use seqvex::models::linear::rls::{
     Rls, Rls64, RlsBatchError, RlsBatchError64, RlsError, RlsError64, RlsSample, RlsSample64,
     RlsServing32, RlsServingConversionError, RlsState, RlsState64, RlsStateAdmissionError,
@@ -791,13 +794,19 @@ fn rls_error_display_and_batch_cause_contract() {
         ),
         (
             RlsError::NonFiniteOutput,
-            "checked RLS prediction produced a non-finite output",
+            "RLS prediction produced a non-finite output",
         ),
     ] {
         let message = error.to_string();
         assert!(message.contains(designated), "{message:?}");
         assert!(std::error::Error::source(&error).is_none());
     }
+
+    assert_eq!(
+        RlsError64::NonFiniteOutput.to_string(),
+        "RLS prediction produced a non-finite output"
+    );
+    assert!(std::error::Error::source(&RlsError64::NonFiniteOutput).is_none());
 
     let candidate = RlsError::NonFiniteCandidate;
     assert_eq!(
@@ -912,9 +921,7 @@ fn process_stream_matches_repeated_update_bitwise() {
         direct = model.update(&direct, observation).unwrap();
     }
 
-    let streamed = process_stream(&model, model.initial_state(), observations, |_| {
-        panic!("unexpected failure")
-    });
+    let streamed = process_stream(&model, model.initial_state(), observations).unwrap();
     assert_state_bitwise_eq(&direct, &streamed);
 }
 
@@ -928,12 +935,20 @@ fn process_stream_continues_after_a_failure() {
     ];
     let mut failures = 0;
 
-    let final_state = process_stream(&model, model.initial_state(), observations, |error| {
-        assert_eq!(*error, RlsError::NonFiniteInput);
-        failures += 1;
-    });
+    let summary = process_stream_continuing(
+        &model,
+        model.initial_state(),
+        observations,
+        |position, error| {
+            assert_eq!(position, 1);
+            assert_eq!(*error, RlsError::NonFiniteInput);
+            failures += 1;
+        },
+    )
+    .unwrap();
 
     assert_eq!(failures, 1);
+    let final_state = summary.state;
     let mut expected = model.initial_state();
     expected = model.update(&expected, &sample(&[1.0, 0.0], 1.0)).unwrap();
     expected = model.update(&expected, &sample(&[0.0, 1.0], 2.0)).unwrap();
@@ -992,7 +1007,7 @@ fn bounded_fold_stops_on_first_failure_and_keeps_last_valid_state() {
     )
     .unwrap_err();
 
-    assert_eq!(failure.error, RlsError::NonFiniteInput);
+    assert_eq!(failure.cause, FailureCause::Model(RlsError::NonFiniteInput));
     let expected = model.update(&model.initial_state(), &first).unwrap();
     assert_state_bitwise_eq(&failure.state, &expected);
 }
@@ -1439,9 +1454,7 @@ fn one_shared_model_drives_independent_stream_states() {
     for observation in &sequence_a {
         state_a = process_one(&model, &state_a, observation).unwrap();
     }
-    let state_b = process_stream(&model, model.initial_state(), sequence_b.clone(), |_| {
-        panic!("unexpected failure")
-    });
+    let state_b = process_stream(&model, model.initial_state(), sequence_b.clone()).unwrap();
 
     assert_ne!(state_a, state_b);
 
@@ -3917,7 +3930,7 @@ fn r4_e24_lambda_near_one_ignored() {
 // --- checked serving ----------------------------------------------------------
 
 #[test]
-fn checked_prediction_guards_non_finite_output_and_preserves_bare_behavior() {
+fn checked_prediction_guards_non_finite_output_and_preserves_finite_parity() {
     // Frozen deterministic public-update fixture: D = 1, lambda = 1, delta = 1.
     let model = Rls::new(1, 1.0, 1.0).unwrap();
     let state = model
@@ -3928,13 +3941,12 @@ fn checked_prediction_guards_non_finite_output_and_preserves_bare_behavior() {
     assert!(state.p.as_slice().iter().all(|value| value.is_finite()));
 
     let overflow = Vector::from_slice(&[1.0e9_f32]);
-    // Bare prediction keeps its existing non-checking behavior.
-    let bare = model
-        .predict(&state, &overflow)
-        .expect("bare predict does not check output");
-    assert!(!bare.is_finite());
-    // Checked prediction rejects the non-finite output.
+    // Ordinary prediction rejects the non-finite output.
     let snapshot = state.clone();
+    assert_eq!(
+        model.predict(&state, &overflow),
+        Err(RlsError::NonFiniteOutput)
+    );
     assert_eq!(
         model.predict_checked(&state, &overflow),
         Err(RlsError::NonFiniteOutput)
@@ -5255,13 +5267,18 @@ mod precision_profiles {
             sample64(&[1.0], 2.0),
         ];
         let mut failures = 0_usize;
-        let streamed = process_stream(
+        let summary = process_stream_continuing(
             &model,
             model.initial_state(),
             observations.clone(),
-            |_error| failures += 1,
-        );
+            |position, _error| {
+                assert_eq!(position, 1);
+                failures += 1;
+            },
+        )
+        .unwrap();
         assert_eq!(failures, 1);
+        let streamed = summary.state;
         let first = model
             .update(&model.initial_state(), &sample64(&[1.0], 1.0))
             .unwrap();
@@ -5473,11 +5490,9 @@ mod precision_profiles {
         let huge_source = state64_with_weights(&model, &[f64::MAX, 0.0]);
         let huge_features = Vector64::from_slice(&[2.0, 0.0]);
         let huge_before = huge_source.clone();
-        assert!(
-            model
-                .predict(&huge_source, &huge_features)
-                .unwrap()
-                .is_infinite()
+        assert_eq!(
+            model.predict(&huge_source, &huge_features),
+            Err(RlsError64::NonFiniteOutput)
         );
         assert_eq!(
             model.predict_checked(&huge_source, &huge_features),
@@ -5511,11 +5526,9 @@ mod precision_profiles {
             .to_serving_f32(&state64_with_weights(&model, &[f32::MAX as f64, 0.0]))
             .unwrap();
         let huge_serving_features = Vector::from_slice(&[2.0, 0.0]);
-        assert!(
-            huge_serving
-                .predict(&huge_serving_features)
-                .unwrap()
-                .is_infinite()
+        assert_eq!(
+            huge_serving.predict(&huge_serving_features),
+            Err(RlsError::NonFiniteOutput)
         );
         assert_eq!(
             huge_serving.predict_checked(&huge_serving_features),
@@ -5528,11 +5541,9 @@ mod precision_profiles {
             p: Matrix::from_rows(&[&[1.0, 0.0], &[0.0, 1.0]]).unwrap(),
         };
         let c_features = Vector::from_slice(&[2.0, 0.0]);
-        assert!(
-            c_model
-                .predict(&c_state, &c_features)
-                .unwrap()
-                .is_infinite()
+        assert_eq!(
+            c_model.predict(&c_state, &c_features),
+            Err(RlsError::NonFiniteOutput)
         );
         assert_eq!(
             c_model.predict_checked(&c_state, &c_features),

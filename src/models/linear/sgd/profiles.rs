@@ -8,6 +8,7 @@
 use crate::foundation::numerical::{DimensionMismatch, Vector, Vector64};
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
+use crate::models::linear::serving::{Narrowing, NarrowingError, narrow_f64};
 
 /// Failure classes reported by native-`f64` SGD construction, prediction or
 /// update.
@@ -159,18 +160,19 @@ impl Sgd64 {
         }
 
         let mut weights = Vec::with_capacity(self.dimension);
-        for (index, value) in state.w.as_slice().iter().enumerate() {
-            if !value.is_finite() {
-                return Err(SgdServingConversionError::SourceNonFinite { index });
+        for (index, &source) in state.w.as_slice().iter().enumerate() {
+            match narrow_f64(source) {
+                Err(NarrowingError::SourceNonFinite) => {
+                    return Err(SgdServingConversionError::SourceNonFinite { index });
+                }
+                Err(NarrowingError::Overflow) => {
+                    return Err(SgdServingConversionError::Overflow { index });
+                }
+                Ok(Narrowing::Underflow(_)) => {
+                    return Err(SgdServingConversionError::Underflow { index });
+                }
+                Ok(Narrowing::Value(value)) => weights.push(value),
             }
-            let narrowed = *value as f32;
-            if !narrowed.is_finite() {
-                return Err(SgdServingConversionError::Overflow { index });
-            }
-            if narrowed == 0.0 && *value != 0.0 {
-                return Err(SgdServingConversionError::Underflow { index });
-            }
-            weights.push(narrowed);
         }
         Ok(SgdServing32 {
             weights: Vector::from_vec(weights),

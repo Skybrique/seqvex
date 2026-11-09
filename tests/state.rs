@@ -15,8 +15,8 @@ fn state_persists_across_observations() {
             Observation::new(2_i64),
             Observation::new(3_i64),
         ],
-        |_| {},
-    );
+    )
+    .unwrap();
     assert_eq!(state, 6);
 }
 
@@ -32,6 +32,6 @@ fn next_observation_uses_previous_valid_state() {
 #[test]
 fn state_transition_produces_next_state() {
     let model = SumModel::new(100);
-    let state = process_stream(&model, 10_i64, [Observation::new(1_i64)], |_| {});
+    let state = process_stream(&model, 10_i64, [Observation::new(1_i64)]).unwrap();
     assert_eq!(state, 11);
 }

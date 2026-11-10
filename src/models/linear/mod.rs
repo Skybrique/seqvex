@@ -13,4 +13,5 @@
 
 pub mod ols;
 pub mod rls;
+pub(crate) mod serving;
 pub mod sgd;

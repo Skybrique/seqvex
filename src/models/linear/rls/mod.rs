@@ -104,12 +104,11 @@ pub enum RlsError {
     InvalidDenominator,
     /// The computed candidate `(w', P')` is not finite.
     NonFiniteCandidate,
-    /// A checked prediction produced a non-finite result.
+    /// A prediction produced a non-finite result.
     ///
-    /// Reported only by [`Rls::predict_checked`]; the bare [`Rls::predict`] path
-    /// preserves its existing behavior and does not check output finiteness. The
-    /// supplied state is unchanged, and this guard neither establishes state
-    /// finiteness nor diagnoses the cause.
+    /// Reported by ordinary and checked prediction. The supplied state is
+    /// unchanged, and this guard neither establishes state finiteness nor
+    /// diagnoses the cause.
     NonFiniteOutput,
 }
 
@@ -136,7 +135,7 @@ impl std::fmt::Display for RlsError {
                 "RLS candidate state is not finite. The candidate update was not committed; the supplied state is unchanged.",
             ),
             Self::NonFiniteOutput => {
-                formatter.write_str("checked RLS prediction produced a non-finite output")
+                formatter.write_str("RLS prediction produced a non-finite output")
             }
         }
     }
@@ -309,24 +308,23 @@ impl Rls {
         if !features.as_slice().iter().all(|value| value.is_finite()) {
             return Err(RlsError::NonFiniteInput);
         }
-        Ok(state.w.dot(features)?)
+        let value = state.w.dot(features)?;
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(RlsError::NonFiniteOutput)
+        }
     }
 
-    /// Checked prediction: like [`Rls::predict`], but additionally rejects a
-    /// non-finite result.
+    /// Compatibility alias for [`Rls::predict`].
     ///
-    /// Delegates to [`Rls::predict`], so input validation and its error
-    /// categories and precedence are unchanged, and a finite result is returned
-    /// with identical `f32` bits. A non-finite result returns
+    /// Input validation, categories, precedence, and finite-result bits are
+    /// identical. A non-finite result returns
     /// [`RlsError::NonFiniteOutput`]. Only the output is checked: this does not
     /// establish state finiteness, covariance symmetry or positive-definiteness,
     /// accuracy, or statistical validity, and the supplied state is unchanged.
     pub fn predict_checked(&self, state: &RlsState, features: &Vector) -> Result<f32, RlsError> {
-        let value = self.predict(state, features)?;
-        if !value.is_finite() {
-            return Err(RlsError::NonFiniteOutput);
-        }
-        Ok(value)
+        self.predict(state, features)
     }
 
     /// Bounded ordered reference micro-batch over the RLS update path.

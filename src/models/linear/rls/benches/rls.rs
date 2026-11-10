@@ -13,10 +13,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use seqvex::execution::streaming::StreamingExecutor;
+use seqvex::foundation::error::FailureCause;
 use seqvex::foundation::numerical::{Matrix, Matrix64, Vector, Vector64};
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::{
-    BatchFailure, StateModel, process_batch, process_one, process_stream,
+    BatchFailure, StateModel, process_batch, process_one, process_stream_continuing,
 };
 use seqvex::models::linear::rls::{
     Rls, Rls64, RlsBatchError, RlsError, RlsError64, RlsSample, RlsSample64, RlsState, RlsState64,
@@ -5246,9 +5247,9 @@ fn run_stop_diagnostics() -> bool {
         Err(_) => 0,
     };
     let batch_ok = match batch {
-        Err(BatchFailure { state, error }) => {
+        Err(BatchFailure { state, cause, .. }) => {
             state_eq32(&state, &prefix_state)
-                && matches!(error, RlsError::NonFiniteInput)
+                && matches!(cause, FailureCause::Model(RlsError::NonFiniteInput))
                 && batch_group_b_calls == 0
         }
         Ok(_) => false,
@@ -5496,7 +5497,7 @@ fn run_stop_diagnostics() -> bool {
     );
 
     let mut continue_failures = 0_u64;
-    let continue_state = process_stream(
+    let continue_summary = process_stream_continuing(
         &model,
         initial.clone(),
         vec![
@@ -5506,12 +5507,14 @@ fn run_stop_diagnostics() -> bool {
             suffix_a.clone(),
             group_b.clone(),
         ],
-        |error| {
-            if matches!(*error, RlsError::NonFiniteInput) {
+        |position, error| {
+            if position == 2 && matches!(*error, RlsError::NonFiniteInput) {
                 continue_failures += 1;
             }
         },
-    );
+    )
+    .unwrap();
+    let continue_state = continue_summary.state;
     let mut expected = prefix_state.clone();
     for observation in [&suffix_a, &group_b] {
         match model.update(&expected, observation) {

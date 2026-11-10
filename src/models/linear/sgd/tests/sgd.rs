@@ -795,6 +795,7 @@ mod precision_profiles {
     use num_traits::Zero;
 
     use seqvex::execution::streaming::StreamingExecutor;
+    use seqvex::foundation::error::FailureCause;
     use seqvex::foundation::numerical::{Vector, Vector64};
     use seqvex::foundation::observation::Observation;
     use seqvex::foundation::state::{StateModel, process_batch, process_one};
@@ -1651,21 +1652,31 @@ mod precision_profiles {
         let prefix = process_batch(&model, model.initial_state(), failure_obs)
             .expect_err("batch prefix failure");
         assert_eq!(bits64(&prefix.state.w), expected_boundary64(&trace, 5));
-        assert_eq!(prefix.error, SgdError64::NonFiniteInput);
+        assert_eq!(
+            prefix.cause,
+            FailureCause::Model(SgdError64::NonFiniteInput)
+        );
 
         let mut errors = 0usize;
         let mut executor = StreamingExecutor::new(&model, model.initial_state());
-        let stream_state = executor
-            .process_stream(
+        let progress = executor
+            .process_stream_continuing(
                 vec![
                     sample64(&rows[0].0, rows[0].1),
                     sample64(&[0.0, 0.0, 0.0], f64::NAN),
                     sample64(&rows[2].0, rows[2].1),
                 ],
-                |_| errors += 1,
+                |position, _| {
+                    assert_eq!(position, 1);
+                    errors += 1;
+                },
             )
-            .clone();
+            .unwrap();
         assert_eq!(errors, 1);
+        assert_eq!(progress.attempted, 3);
+        assert_eq!(progress.committed, 2);
+        assert_eq!(progress.failed, 1);
+        let stream_state = executor.state().clone();
         let expected_stream = reference_update64(
             0.125,
             &reference_update64(0.125, &[0.0; 3], &rows[0].0, rows[0].1),
@@ -1773,21 +1784,28 @@ mod precision_profiles {
         let prefix = process_batch(&model, model.initial_state(), failure_obs)
             .expect_err("batch prefix failure");
         assert_eq!(bits(&prefix.state.w), expected_boundary32(&trace, 5));
-        assert_eq!(prefix.error, SgdError::NonFiniteInput);
+        assert_eq!(prefix.cause, FailureCause::Model(SgdError::NonFiniteInput));
 
         let mut errors = 0usize;
         let mut executor = StreamingExecutor::new(&model, model.initial_state());
-        let stream_state = executor
-            .process_stream(
+        let progress = executor
+            .process_stream_continuing(
                 vec![
                     sample(&rows[0].0, rows[0].1),
                     sample(&[0.0, 0.0, 0.0], f32::NAN),
                     sample(&rows[2].0, rows[2].1),
                 ],
-                |_| errors += 1,
+                |position, _| {
+                    assert_eq!(position, 1);
+                    errors += 1;
+                },
             )
-            .clone();
+            .unwrap();
         assert_eq!(errors, 1);
+        assert_eq!(progress.attempted, 3);
+        assert_eq!(progress.committed, 2);
+        assert_eq!(progress.failed, 1);
+        let stream_state = executor.state().clone();
         let expected_stream = reference_update32_sum(
             0.125,
             &reference_update32_sum(0.125, &[0.0; 3], &rows[0].0, rows[0].1),

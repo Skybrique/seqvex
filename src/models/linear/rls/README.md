@@ -53,9 +53,9 @@ which take `&M`, and the tests exercise that.
 
 | Profile | Learning | Retained learner state | Inference |
 |---|---|---|---|
-| **A: native `f64`** | `Rls64::update` in `f64` | private `RlsState64 { w64, P64 }` | `Rls64::{predict,predict_checked}` in `f64` |
+| **A: native `f64`** | `Rls64::update` in `f64` | private `RlsState64 { w64, P64 }` | `Rls64::{predict,predict_checked}` in `f64` (ordinary prediction validates output) |
 | **B: `f64` learning, `f32` serving** | same A learner | authoritative `RlsState64` | `Rls64::to_serving_f32` creates `RlsServing32`; checked `f32` prediction |
-| **C: strict `f32`** | existing `Rls::update` in `f32` | public legacy `RlsState { w32, P32 }` | existing `Rls::{predict,predict_checked}` in `f32` |
+| **C: strict `f32`** | existing `Rls::update` in `f32` | public legacy `RlsState { w32, P32 }` | existing `Rls::{predict,predict_checked}` in `f32` (ordinary prediction validates output) |
 
 B converts only weights. The serving snapshot has no covariance, configuration,
 learner state, update path, resume path, or back-conversion. Conversion checks
@@ -144,28 +144,26 @@ silent covariance repair is performed.
 
 ## Checked prediction
 
-`Rls::predict_checked` is the explicit caller-side checked-prediction
-operation. It delegates to `Rls::predict`, so input validation, its error
-categories, and their precedence are unchanged. A finite result is returned
-with identical `f32` bits; a non-finite result is rejected with
-`RlsError::NonFiniteOutput`. Bare `Rls::predict` remains unchanged and does
-not check output finiteness.
+`Rls::predict` now performs the output check; `Rls::predict_checked` is the
+compatibility alias. Input validation, its error categories, and their
+precedence are unchanged. A finite result is returned with identical `f32` bits;
+a non-finite result is rejected with `RlsError::NonFiniteOutput`.
 
-`NonFiniteOutput` is a new public error variant. Downstream exhaustive matches
-over `RlsError` require another arm. Existing bare prediction behavior remains
-unchanged.
+`NonFiniteOutput` is a public error variant. Downstream exhaustive matches over
+`RlsError` require that arm. Ordinary and checked prediction share the same
+validating behavior.
 
 The guard checks only the output value. It does not establish general state
 finiteness, covariance symmetry or positive-definiteness, accuracy, or
 statistical validity. The supplied state is unchanged.
 
-The A and B forms follow the same bare/checked split. `Rls64::predict` checks
-features, weights, covariance rows, then covariance columns before feature
-finiteness and returns the ordered `f64` dot; `Rls64::predict_checked` rejects a
-non-finite output. `RlsServing32::predict` checks feature length and finiteness,
-then evaluates the ordered `f32` dot; its checked form rejects a non-finite
-output. Neither path updates, fixes a model version implicitly, or substitutes a
-default or stale prediction.
+The A and B forms share the ordinary validating behavior. `Rls64::predict`
+checks features, weights, covariance rows, then covariance columns before
+feature finiteness and returns the ordered `f64` dot or `NonFiniteOutput`;
+`Rls64::predict_checked` is the compatibility alias. `RlsServing32::predict`
+checks feature length and finiteness, then evaluates the ordered `f32` dot and
+rejects a non-finite output; its checked form is the alias. Neither path updates,
+fixes a model version implicitly, or substitutes a default or stale prediction.
 
 ## Applicability and statistical contract
 
@@ -420,9 +418,11 @@ fresh-requiring prediction is blocked. Retrying conversion must not repeat the
 update.
 
 Streaming and grouped prediction are caller-owned compositions of the selected
-single prediction; no public RLS group-prediction API is added. The existing
-`process_stream` behavior continues after failures and is not the strict
-fail-stop learner.
+single prediction; no public RLS group-prediction API is added. `process_stream`
+is the ordinary strict path: it stops at the first model failure and retains the
+committed prefix. Explicit `process_stream_continuing` instead reports model
+failures to the caller and keeps later successes; it never auto-replays an
+earlier failure.
 
 This is a semantics description only. No evaluation framework is added.
 
@@ -444,7 +444,7 @@ guards, and hard errors. Categories that have no `RlsError` representation are
 | 8 | Invalid input | `RlsError::NonFiniteInput`, `RlsError::DimensionMismatch` (features) | Hard caller/API error | Reject input; caller fixes |
 | 9 | Invalid parameter/state | `RlsError::ZeroDimension`, `InvalidForgettingFactor`, `InvalidInitialCovariance`, `DimensionMismatch` (state) | Hard config/API error | Reject; caller fixes |
 | 10 | Genuine implementation defect | symmetry residual `≠ 0`; non-finite **committed** state; broken atomicity; wrong trajectory on validated input | Implementation defect | Escalate; code change required |
-| 11 | Non-finite prediction output | `RlsError::NonFiniteOutput` (checked prediction only) | Numerical guard at the serving boundary | Reject output without substitution; supplied state is unchanged. Investigate operands, state and representability; the guard neither establishes state finiteness nor diagnoses the cause. |
+| 11 | Non-finite prediction output | `RlsError::NonFiniteOutput` (ordinary and checked prediction) | Numerical guard at the serving boundary | Reject output without substitution; supplied state is unchanged. Investigate operands, state and representability; the guard neither establishes state finiteness nor diagnoses the cause. |
 
 `RlsError::DimensionMismatch` serves both input (#8) and state (#9); the
 validation order decides the context. A genuine defect (#10) is tied only to

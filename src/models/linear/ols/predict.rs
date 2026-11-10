@@ -32,18 +32,21 @@
 //!
 //! The legacy, B-serving, and C-serving predictor uses the existing `f32`
 //! substrate ([`Vector::dot`]) and [`Observation<Vector>`]. Native profile A
-//! uses [`Vector64`] and ordered f64 arithmetic. The checked variants validate
-//! that the output is finite; they do not establish accuracy, conditioning, or
-//! underflow safety. Bare prediction retains its established output behavior.
+//! uses [`Vector64`] and ordered f64 arithmetic. Ordinary prediction validates
+//! that the output is finite; that check does not establish accuracy,
+//! conditioning, or underflow safety. The `predict_checked`/`predict_batch_checked`
+//! methods and the borrowing checked wrappers are compatibility delegates to the
+//! same validating behavior.
 //!
 //! ## Operating envelope and caller responsibility
 //!
 //! Construction rejects non-finite weights and bias
 //! ([`RegressionError::NonFiniteParameter`]). Prediction validates the feature
-//! dimension first, then feature finiteness ([`RegressionError::NonFiniteInput`]).
-//! Bare `predict` does **not** validate its output; `predict_checked` and the
-//! checked grouped/wrapper paths reject non-finite outputs without changing
-//! finite-result arithmetic.
+//! dimension first, then feature finiteness ([`RegressionError::NonFiniteInput`]),
+//! and finally rejects a non-finite output with
+//! [`RegressionError::NonFiniteOutput`]. Grouped prediction reports the
+//! zero-based position of the first non-finite output. These checks do not
+//! change finite-result arithmetic.
 //!
 //! Because the substrate is `f32`, finite operands can still overflow during
 //! multiplication or summation and produce `±inf`; a subsequent `inf + (-inf)`
@@ -55,9 +58,10 @@
 //!
 //! This is expected IEEE-754 `f32` behaviour, not a defect, and no numeric
 //! cutoff is imposed or implied: Seqvex does not invent a magnitude threshold
-//! beyond which input is rejected. The analogous pure-prediction path
-//! `Rls::predict` also computes `wᵀx` without an output-finiteness check; each
-//! model documents its own envelope rather than sharing a rule or abstraction.
+//! beyond which input is rejected. The analogous pure-prediction paths
+//! `Rls::predict` and `LinearRegression64::predict` also reject non-finite
+//! output; each model documents its own envelope rather than sharing a rule or
+//! abstraction.
 
 use crate::foundation::numerical::{DimensionMismatch, Vector, Vector64};
 use crate::foundation::observation::Observation;
@@ -79,11 +83,12 @@ pub enum RegressionError {
     NonFiniteParameter,
     /// An observation contains a non-finite feature.
     NonFiniteInput,
-    /// A **checked** prediction produced an infinite or `NaN` output.
+    /// An ordinary prediction produced an infinite or `NaN` output.
     ///
     /// `observation` is the zero-based position in the supplied group, or
-    /// `None` for a single prediction. The bare [`LinearRegression::predict`]
-    /// and [`LinearRegression::predict_batch`] paths do not report this.
+    /// `None` for a single prediction. [`LinearRegression::predict`],
+    /// [`LinearRegression::predict_batch`], their native-`f64` counterparts,
+    /// and the checked compatibility delegates all report it.
     NonFiniteOutput {
         /// Zero-based group position, or `None` for a single prediction.
         observation: Option<usize>,
@@ -108,13 +113,13 @@ impl std::fmt::Display for RegressionError {
                 formatter.write_str("linear regression input features must be finite")
             }
             Self::NonFiniteOutput { observation: None } => {
-                formatter.write_str("checked prediction produced a non-finite output")
+                formatter.write_str("prediction produced a non-finite output")
             }
             Self::NonFiniteOutput {
                 observation: Some(index),
             } => write!(
                 formatter,
-                "checked group prediction produced a non-finite output at observation {index}"
+                "group prediction produced a non-finite output at observation {index}"
             ),
         }
     }
@@ -196,22 +201,15 @@ impl LinearRegression {
     /// The dot product accumulates in weight order; this ordering is the
     /// semantic oracle every other prediction path must preserve bitwise.
     ///
-    /// The feature dimension is validated first, then feature finiteness,
-    /// matching the validation order used by the existing models.
+    /// The feature dimension is validated first, then feature finiteness, and
+    /// the result is rejected if it is not finite.
     pub fn predict(&self, features: &Vector) -> Result<f32, RegressionError> {
-        predict_borrowed(&self.weights, self.bias, features)
+        predict_checked_borrowed(&self.weights, self.bias, features)
     }
 
-    /// Checked prediction: like [`LinearRegression::predict`], but additionally
-    /// rejects a non-finite result.
-    ///
-    /// Input validation and its error categories are unchanged; a finite result
-    /// is returned with identical `f32` bits to [`LinearRegression::predict`].
-    /// A non-finite result returns [`RegressionError::NonFiniteOutput`] with
-    /// `observation = None`. No saturation, clipping, or second arithmetic path
-    /// is introduced.
+    /// Compatibility alias for [`LinearRegression::predict`].
     pub fn predict_checked(&self, features: &Vector) -> Result<f32, RegressionError> {
-        predict_checked_borrowed(&self.weights, self.bias, features)
+        self.predict(features)
     }
 
     /// Bounded micro-batch prediction over independent observations.
@@ -227,10 +225,19 @@ impl LinearRegression {
         &self,
         batch: &[Observation<Vector>],
     ) -> Result<Vec<f32>, RegressionError> {
-        batch
-            .iter()
-            .map(|observation| self.predict(observation.value()))
-            .collect()
+        let mut outputs = Vec::with_capacity(batch.len());
+        for (index, observation) in batch.iter().enumerate() {
+            match self.predict(observation.value()) {
+                Ok(value) => outputs.push(value),
+                Err(RegressionError::NonFiniteOutput { .. }) => {
+                    return Err(RegressionError::NonFiniteOutput {
+                        observation: Some(index),
+                    });
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(outputs)
     }
 
     /// Checked bounded micro-batch prediction.
@@ -248,17 +255,7 @@ impl LinearRegression {
         &self,
         batch: &[Observation<Vector>],
     ) -> Result<Vec<f32>, RegressionError> {
-        let mut outputs = Vec::with_capacity(batch.len());
-        for (index, observation) in batch.iter().enumerate() {
-            let value = self.predict(observation.value())?;
-            if !value.is_finite() {
-                return Err(RegressionError::NonFiniteOutput {
-                    observation: Some(index),
-                });
-            }
-            outputs.push(value);
-        }
-        Ok(outputs)
+        self.predict_batch(batch)
     }
 }
 
@@ -279,13 +276,12 @@ impl StateModel for LinearRegression {
 
 /// A checked view over an immutable [`LinearRegression`].
 ///
-/// It **borrows** the existing predictor and delegates to
-/// [`LinearRegression::predict_checked`] through the [`StateModel`] contract, so
-/// it can be driven by the existing
+/// It **borrows** the existing predictor and delegates to the now-validating
+/// [`LinearRegression::predict`] through the [`StateModel`] contract, so it can
+/// be driven by the existing
 /// [`crate::execution::streaming::StreamingExecutor`] with no parameter clone
-/// and no hidden mutable state. Only the model's *result classification*
-/// changes — a non-finite output becomes an error; how the executor handles
-/// errors is unchanged.
+/// and no hidden mutable state. The wrapper is retained as a compatibility
+/// view; finite bits and error behavior match the base predictor.
 #[derive(Debug, Clone)]
 pub struct CheckedLinearRegression<'a> {
     inner: &'a LinearRegression,
@@ -395,15 +391,15 @@ impl LinearRegression64 {
     /// Reference native-`f64` prediction `ŷ = w · x + b`.
     ///
     /// The dot product accumulates in weight order. The feature dimension is
-    /// validated first, then feature finiteness; the output is not inspected.
+    /// validated first, then feature finiteness, and the result is rejected if
+    /// it is not finite.
     pub fn predict(&self, features: &Vector64) -> Result<f64, RegressionError> {
-        predict_borrowed64(&self.weights, self.bias, features)
+        predict_checked_borrowed64(&self.weights, self.bias, features)
     }
 
-    /// Checked prediction: rejects a non-finite output without changing the
-    /// finite-result arithmetic or bits.
+    /// Compatibility alias for [`LinearRegression64::predict`].
     pub fn predict_checked(&self, features: &Vector64) -> Result<f64, RegressionError> {
-        predict_checked_borrowed64(&self.weights, self.bias, features)
+        self.predict(features)
     }
 
     /// Bounded group prediction over independent observations, in input order.
@@ -411,10 +407,19 @@ impl LinearRegression64 {
         &self,
         batch: &[Observation<Vector64>],
     ) -> Result<Vec<f64>, RegressionError> {
-        batch
-            .iter()
-            .map(|observation| self.predict(observation.value()))
-            .collect()
+        let mut outputs = Vec::with_capacity(batch.len());
+        for (index, observation) in batch.iter().enumerate() {
+            match self.predict(observation.value()) {
+                Ok(value) => outputs.push(value),
+                Err(RegressionError::NonFiniteOutput { .. }) => {
+                    return Err(RegressionError::NonFiniteOutput {
+                        observation: Some(index),
+                    });
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(outputs)
     }
 
     /// Checked bounded group prediction.
@@ -426,17 +431,7 @@ impl LinearRegression64 {
         &self,
         batch: &[Observation<Vector64>],
     ) -> Result<Vec<f64>, RegressionError> {
-        let mut outputs = Vec::with_capacity(batch.len());
-        for (index, observation) in batch.iter().enumerate() {
-            let value = self.predict(observation.value())?;
-            if !value.is_finite() {
-                return Err(RegressionError::NonFiniteOutput {
-                    observation: Some(index),
-                });
-            }
-            outputs.push(value);
-        }
-        Ok(outputs)
+        self.predict_batch(batch)
     }
 }
 

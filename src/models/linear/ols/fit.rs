@@ -55,9 +55,11 @@
 
 use super::artifact::{self, ArtifactError, TrainedModel, TrainingMeta};
 use super::predict::{
-    LinearRegression, LinearRegression64, RegressionError, predict_checked_borrowed,
+    LinearRegression, LinearRegression64, RegressionError, predict_borrowed,
+    predict_checked_borrowed,
 };
 use crate::foundation::numerical::{Vector, Vector64};
+use crate::models::linear::serving::{Narrowing, NarrowingError, narrow_f64};
 
 use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
 use faer::linalg::qr::col_pivoting::factor::{
@@ -598,6 +600,10 @@ pub enum FitError {
     },
     /// The solver produced a non-finite coefficient, or failed internally.
     NumericalFailure,
+    /// A legacy diagnostic RSS value is not finite.
+    NonFiniteRss,
+    /// A raw diagnostic prediction failed an internal invariant check.
+    Diagnostic(RegressionError),
     /// A fitted coefficient could not be converted to the `f32` predictor.
     ConversionRejected(ConversionCause),
 }
@@ -669,6 +675,15 @@ impl std::fmt::Display for FitError {
                 )
             }
             Self::NumericalFailure => formatter.write_str("OLS numerical calculation failed"),
+            Self::NonFiniteRss => {
+                formatter.write_str("legacy OLS fit produced a non-finite RSS diagnostic")
+            }
+            Self::Diagnostic(error) => {
+                write!(
+                    formatter,
+                    "legacy OLS diagnostic prediction failed: {error}"
+                )
+            }
             Self::ConversionRejected(cause) => write!(
                 formatter,
                 "OLS coefficient conversion rejected: {}",
@@ -694,7 +709,14 @@ fn conversion_cause_name(cause: ConversionCause) -> &'static str {
     }
 }
 
-impl std::error::Error for FitError {}
+impl std::error::Error for FitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Diagnostic(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// Fits dense, unweighted OLS with one scalar target over the selected training
 /// rows.
@@ -982,15 +1004,14 @@ pub fn fit(
 
     // 13. Training diagnostics on the selected rows only.
     //
-    // The two `Vector::from_slice` copies below (the transient diagnostics
-    // predictor and the retained result coefficients) are **infallible**
-    // allocations. They are budgeted (`diagnostics_bytes` + `retained_bytes`)
-    // but are not allocation-failure recoverable. Universal OOM recovery is
-    // not claimed.
+    // The retained result coefficients are an **infallible** allocation. They
+    // are budgeted (`retained_bytes`) but are not allocation-failure
+    // recoverable. Raw diagnostic prediction borrows these coefficients rather
+    // than constructing a second predictor. Universal OOM recovery is not
+    // claimed.
     let mut rss64 = 0.0f64;
     let mut rss32 = 0.0f64;
-    let predictor = LinearRegression::new(Vector::from_slice(&weights32), bias32)
-        .map_err(|_| FitError::NumericalFailure)?;
+    let coefficients32 = Vector::from_slice(&weights32);
     for &index in train {
         let row = features[index].as_slice();
         let target = f64::from(targets[index]);
@@ -1003,11 +1024,14 @@ pub fn fit(
         let residual64 = acc - target;
         rss64 += residual64 * residual64;
 
-        let prediction = predictor
-            .predict(&features[index])
-            .map_err(|_| FitError::NumericalFailure)?;
+        let prediction = predict_borrowed(&coefficients32, bias32, &features[index])
+            .map_err(FitError::Diagnostic)?;
         let residual32 = f64::from(prediction) - target;
         rss32 += residual32 * residual32;
+    }
+
+    if !rss64.is_finite() || !rss32.is_finite() {
+        return Err(FitError::NonFiniteRss);
     }
 
     let diagnostics = FitDiagnostics {
@@ -1023,7 +1047,7 @@ pub fn fit(
     };
 
     Ok(FitResult {
-        coefficients: Vector::from_slice(&weights32),
+        coefficients: coefficients32,
         intercept: bias32,
         diagnostics,
     })
@@ -1075,8 +1099,8 @@ fn try_vec_filled<T: Clone>(
 }
 
 impl From<RegressionError> for FitError {
-    fn from(_: RegressionError) -> Self {
-        Self::NumericalFailure
+    fn from(error: RegressionError) -> Self {
+        Self::Diagnostic(error)
     }
 }
 
@@ -1604,17 +1628,17 @@ fn convert_serving(
     field: ServingField,
     on_underflow: UnderflowPolicy,
 ) -> Result<f32, ServingConversionError> {
-    if !value.is_finite() {
-        return Err(ServingConversionError::SourceNonFinite { field });
+    match narrow_f64(value) {
+        Err(NarrowingError::SourceNonFinite) => {
+            Err(ServingConversionError::SourceNonFinite { field })
+        }
+        Err(NarrowingError::Overflow) => Err(ServingConversionError::Overflow { field }),
+        Ok(Narrowing::Underflow(_)) if on_underflow == UnderflowPolicy::Reject => {
+            Err(ServingConversionError::Underflow { field })
+        }
+        Ok(Narrowing::Underflow(converted)) => Ok(converted),
+        Ok(Narrowing::Value(converted)) => Ok(converted),
     }
-    let converted = value as f32;
-    if !converted.is_finite() {
-        return Err(ServingConversionError::Overflow { field });
-    }
-    if value != 0.0 && converted == 0.0 && on_underflow == UnderflowPolicy::Reject {
-        return Err(ServingConversionError::Underflow { field });
-    }
-    Ok(converted)
 }
 
 /// Fits dense, unweighted OLS from native `f64` rows and targets.
@@ -2164,8 +2188,8 @@ fn try_matrix_f32(rows: usize, cols: usize) -> Result<Mat<f32>, TryReserveError>
 #[cfg(test)]
 mod tests {
     use super::{
-        AcceptanceCheckError, FitDiagnostics, FitDiagnostics64, FitResult, FitResult64,
-        ServingConversionError, ServingField, StoredDiagnostic, UnderflowPolicy,
+        AcceptanceCheckError, FitDiagnostics, FitDiagnostics64, FitError, FitResult, FitResult64,
+        RegressionError, ServingConversionError, ServingField, StoredDiagnostic, UnderflowPolicy,
     };
     use crate::foundation::numerical::{Vector, Vector64};
 
@@ -2204,6 +2228,30 @@ mod tests {
             candidate.check_acceptance(&[], &[1.0], &[0]),
             Err(AcceptanceCheckError::NonFiniteBias)
         );
+    }
+
+    #[test]
+    fn f32_rss_diagnostic_rejection_is_preserved() {
+        let mut stored = diagnostics();
+        stored.rss_f32_predictor = f64::INFINITY;
+        let candidate = result(&[1.0], 0.0, stored);
+
+        assert_eq!(
+            candidate.check_acceptance(&[Vector::from_slice(&[1.0])], &[1.0], &[0]),
+            Err(AcceptanceCheckError::NonFiniteStoredDiagnostic {
+                diagnostic: StoredDiagnostic::RssF32Predictor,
+            })
+        );
+    }
+
+    #[test]
+    fn regression_error_conversion_preserves_diagnostic_cause() {
+        let error = FitError::from(RegressionError::NonFiniteInput);
+        assert!(matches!(
+            error,
+            FitError::Diagnostic(RegressionError::NonFiniteInput)
+        ));
+        assert!(std::error::Error::source(&error).is_some());
     }
 
     #[test]

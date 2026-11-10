@@ -55,7 +55,14 @@ fn regression_error_reports_its_known_failure_without_a_source() {
     assert!(std::error::Error::source(&mismatch).is_none());
     assert_eq!(
         RegressionError::NonFiniteOutput { observation: None }.to_string(),
-        "checked prediction produced a non-finite output"
+        "prediction produced a non-finite output"
+    );
+    assert_eq!(
+        RegressionError::NonFiniteOutput {
+            observation: Some(3)
+        }
+        .to_string(),
+        "group prediction produced a non-finite output at observation 3"
     );
     assert!(
         std::error::Error::source(&RegressionError::NonFiniteOutput {
@@ -1177,46 +1184,32 @@ fn numerical_dynamic_range_reports_boundary() {
 }
 
 #[test]
-fn finite_input_non_finite_output_is_observed() {
-    // OBSERVED BEHAVIOUR (characterization, not a defect assertion): validated
-    // finite parameters and finite inputs can overflow f32 and produce a
-    // non-finite output. `predict` currently has no output-finiteness guard.
+fn finite_input_non_finite_output_is_rejected() {
+    // Ordinary prediction validates the output. Finite parameters and inputs
+    // can overflow f32; the public result is an explicit error, not Ok(inf).
     let product_overflow = model(&[1.0e20], 0.0);
-    let result = product_overflow
-        .predict(&Vector::from_slice(&[1.0e20]))
-        .unwrap();
-    assert!(
-        result.is_infinite() && result > 0.0,
-        "expected +inf, got {result}"
+    assert_eq!(
+        product_overflow.predict(&Vector::from_slice(&[1.0e20])),
+        Err(RegressionError::NonFiniteOutput { observation: None })
     );
 
     let summation_overflow = model(&[2.0e38, 2.0e38], 0.0);
-    let result = summation_overflow
-        .predict(&Vector::from_slice(&[1.0, 1.0]))
-        .unwrap();
-    assert!(
-        result.is_infinite() && result > 0.0,
-        "expected +inf, got {result}"
+    assert_eq!(
+        summation_overflow.predict(&Vector::from_slice(&[1.0, 1.0])),
+        Err(RegressionError::NonFiniteOutput { observation: None })
     );
 
     let nan_from_infinities = model(&[1.0e20, -1.0e20], 0.0);
-    let result = nan_from_infinities
-        .predict(&Vector::from_slice(&[1.0e20, 1.0e20]))
-        .unwrap();
-    assert!(result.is_nan(), "expected NaN, got {result}");
+    assert_eq!(
+        nan_from_infinities.predict(&Vector::from_slice(&[1.0e20, 1.0e20])),
+        Err(RegressionError::NonFiniteOutput { observation: None })
+    );
 
     // Boundary bracket: 1e38 is finite, 1e40 is not.
     let below = model(&[1.0e19], 0.0);
     assert!(
         below
             .predict(&Vector::from_slice(&[1.0e19]))
-            .unwrap()
-            .is_finite()
-    );
-    let above = model(&[1.0e20], 0.0);
-    assert!(
-        !above
-            .predict(&Vector::from_slice(&[1.0e20]))
             .unwrap()
             .is_finite()
     );

@@ -52,7 +52,7 @@ baseline now includes:
 - Metadata/content identity and binary artifact v1:
   [`ols/artifact.rs`](ols/artifact.rs); deliberate refit handover uses a new
   executor and preserves the active model on failed candidates.
-- Opt-in checked single/group/stream serving, preserving bare prediction behavior.
+- Ordinary finite-or-error single/group/stream serving; checked aliases remain compatibility delegates.
 - Independent oracle, fitter, artifact, checked-serving and temporal-selection
   tests; the registered [`fit_salary`](ols/examples/fit_salary.rs) CSV example
   and [`ols_fit`](ols/benches/fit.rs) resource benchmark.
@@ -68,10 +68,12 @@ weighted/sparse/multi-output fitting, and any generic linear-model trait.
 
 ## Status (OLS)
 
-Bare prediction behavior is preserved bitwise: reduction order, validation
+Ordinary prediction validates the final output; finite-result bits and reduction order are preserved: validation
 order and existing errors are unchanged. Checked serving adds the public
 `NonFiniteOutput` variant; downstream exhaustive error matches need a new arm.
-The baseline follows the accepted fitting-design direction with the explicit
-scope deferrals above. The Salary example demonstrates integration using an
+The public `NonFiniteOutput` variant is part of ordinary prediction; checked
+aliases remain compatibility delegates. The baseline follows the accepted
+fitting-design direction with the explicit scope deferrals above. The Salary
+example demonstrates integration using an
 interleaved every-fifth-row holdout; it is not chronological evaluation or a
 production-readiness claim.

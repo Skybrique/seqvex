@@ -245,14 +245,16 @@ the error. A full restart from `initial_state()` over the same order reproduces
 the run deterministically. Do not resume by re-applying already-committed rows
 on top of the committed state: ordered updates are non-idempotent and that
 duplicates them. Retry is an optional caller action, and unchanged invalid data
-does not become recoverable by retrying. Do not use
-`StreamingExecutor::process_stream` for learning; it continues past failures by
-design.
+does not become recoverable by retrying. `StreamingExecutor::process_stream` is now the strict ordinary path: it stops
+at the first failure and retains the committed prefix. Use
+`process_stream_continuing` only when caller-selected skip/continue semantics
+are intended; it continues from the last committed state and reports failure
+positions.
 
 ## Bounded ordered caller protocol
 
-SGD has no public bounded-learning method. The caller protocol over a borrowed
-slice is:
+SGD still has no public bounded-learning method in this package; F26 remains
+OPEN. The caller protocol over a borrowed slice is:
 
 ```rust
 use seqvex::foundation::observation::Observation;

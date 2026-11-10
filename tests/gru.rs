@@ -9,7 +9,9 @@
 use seqvex::execution::streaming::StreamingExecutor;
 use seqvex::foundation::numerical::{Matrix, RandomGenerator, Vector};
 use seqvex::foundation::observation::Observation;
-use seqvex::foundation::state::{StateModel, process_batch, process_one, process_stream};
+use seqvex::foundation::state::{
+    StateModel, process_batch, process_one, process_stream_continuing,
+};
 use seqvex::models::recurrent::gru::{Gru, GruBatchError, GruError, GruExecutor, GruParameters};
 
 // --- independent scalar reference -------------------------------------------
@@ -760,9 +762,10 @@ fn chunked_execution_matches_continuous_stream() {
 
     let executor_model = Gru::new(3, 4, to_parameters(&params)).unwrap();
     let mut executor = StreamingExecutor::new(&executor_model, Vector::zeros(4));
-    let streamed = executor
-        .process_stream(observations.iter().cloned(), |_| {})
-        .clone();
+    executor
+        .process_stream(observations.iter().cloned())
+        .unwrap();
+    let streamed = executor.state().clone();
     assert_bitwise_eq(streamed.as_slice(), continuous.as_slice());
 
     assert_close(continuous.as_slice(), &scalar_fold(&params, &inputs), 1e-5);
@@ -930,10 +933,17 @@ fn stream_failure_preserves_state_and_continues_from_last_valid() {
     let good = observation(&[0.3, -0.4]);
     let observations = [good.clone(), observation(&[f32::NAN, 0.1]), good.clone()];
     let mut failures = 0_usize;
-    let final_state = process_stream(&gru, Vector::zeros(2), observations.iter().cloned(), |_| {
-        failures += 1
-    })
-    .clone();
+    let summary = process_stream_continuing(
+        &gru,
+        Vector::zeros(2),
+        observations.iter().cloned(),
+        |position, _error| {
+            assert_eq!(position, 1);
+            failures += 1;
+        },
+    )
+    .unwrap();
+    let final_state = summary.state;
 
     assert_eq!(failures, 1);
     let mut expected = vec![0.0_f32; 2];

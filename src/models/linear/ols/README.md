@@ -27,7 +27,7 @@ OLS learns a linear predictor from a declared training dataset. For a new featur
 | Capability | Current capability | Requirement / owner |
 |---|---|---|
 | Existing supplied-parameter prediction primitive | Implemented and preserved; fitting now supplies learned parameters | Preserved alongside the additive fitter. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
-| Streaming and caller-bounded grouped prediction | Implemented for fitted models; opt-in checked paths reject non-finite outputs | Demonstrated by checked-serving tests and the Salary example. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
+| Streaming and caller-bounded grouped prediction | Implemented for fitted models; ordinary prediction validates output and grouped errors retain the observation index | Demonstrated by checked-serving tests and the Salary example. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
 | Fit weights/intercept from labelled rows | Implemented: `fit`, multi-feature scalar response, optional intercept; faer column-pivoted QR, `Par::Seq` | Implemented in `fit.rs`; `tests/fitting.rs`. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
 | Rank/numerical diagnostics | Implemented: relative-pivot rank indicator and rounded-f64/f32 RSS diagnostics; formal certification deferred | Independent references, fitter tests and cross-solver comparison. ([#44](https://github.com/Skybrique/seqvex/issues/44)) |
 | Causal periodic refitting | Explicit training indices supported; temporal tests construct eligible/purged windows; automatic eligibility and transforms remain caller-owned | Selection isolation and regime-window tests; no automatic leakage detection. ([#45](https://github.com/Skybrique/seqvex/issues/45)) |
@@ -81,7 +81,7 @@ fit(features: &[Vector], targets: &[f32], train: &[usize], config: &FitConfig)
     -> Result<FitResult, FitError>
 ```
 
-Full feature/target array lengths must agree; fitting reads values only at the explicit training indices. `FitResult::into_predictor(self) -> LinearRegression` moves learned parameters into the predictor and is infallible. `FitResult::into_trained(self, &TrainingMeta) -> Result<TrainedModel, ArtifactError>` adds caller-supplied training linkage and derived artifact metadata.
+Full feature/target array lengths must agree; fitting reads values only at the explicit training indices. Legacy `fit` now rejects a non-finite deployed `rss_f32_predictor` (or `rss_f64_reference`) with `FitError::NonFiniteRss` before returning a candidate. Residual raw-diagnostic errors are preserved as `FitError::Diagnostic(RegressionError)`; `From<RegressionError> for FitError` maps to that cause-preserving variant. `FitResult::into_predictor(self) -> LinearRegression` moves learned parameters into the predictor and is infallible. `FitResult::into_trained(self, &TrainingMeta) -> Result<TrainedModel, ArtifactError>` adds caller-supplied training linkage and derived artifact metadata.
 
 ### Candidate acceptance and installation
 
@@ -93,7 +93,7 @@ candidate.check_acceptance(&features, &targets, &acceptance_indices)?;
 
 `check_acceptance` borrows the candidate and rows, counts repeated indices in supplied order, inspects selected rows only, checks the stored `rss_f64_reference` and `rss_f32_predictor`, and reports the sequential f64 RSS of checked deployed-f32 predictions. `fit` has already enforced its rank policy; this method does not revalidate rank. A finite report is not a predictive-quality threshold or a guarantee about unselected/future rows.
 
-After admission, the caller may convert/build the artifact and verify a candidate executor, then explicitly install the candidate. Admission does not mutate or publish an active model. The existing `fit_salary` refit example demonstrates candidate executor verification while retaining the active model; installation remains an application-owned action. Bare `predict` retains its existing non-finite-output behavior; output rejection remains opt-in through checked prediction paths.
+After admission, the caller may convert/build the artifact and verify a candidate executor, then explicitly install the candidate. Admission does not mutate or publish an active model. The existing `fit_salary` refit example demonstrates candidate executor verification while retaining the active model; installation remains an application-owned action. Ordinary `predict` now rejects non-finite output; `predict_checked` remains a compatibility alias and finite result bits are unchanged.
 
 The separate legacy Salary example requires a caller-supplied CSV path (positional, not `--input`):
 
@@ -105,7 +105,7 @@ cargo +1.85.1 run --locked --example fit_salary -- examples/data/Salary_dataset.
 
 `weights()` and `bias()` expose the supplied parameters; they do not establish a durable artifact format. The former classic import paths have been removed; use `seqvex::models::linear::ols::{LinearRegression, RegressionError}`. User-facing examples and rustdoc belong to [#43](https://github.com/Skybrique/seqvex/issues/43).
 
-The model requires nonempty, finite weights and a finite bias. `predict` checks feature dimension before feature finiteness. The bare prediction errors remain `ZeroDimension`, `NonFiniteParameter`, `DimensionMismatch { expected, actual }` and `NonFiniteInput`. Opt-in checked serving additionally reports `NonFiniteOutput { observation: Option<usize> }`; grouped checked serving reports the zero-based position of the first non-finite output. The additive public enum variant requires a new arm in downstream exhaustive matches. The scalar response does not restrict the number of input features. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
+The model requires nonempty, finite weights and a finite bias. `predict` checks feature dimension before feature finiteness. Prediction errors are `ZeroDimension`, `NonFiniteParameter`, `DimensionMismatch { expected, actual }`, `NonFiniteInput`, and `NonFiniteOutput { observation: Option<usize> }`. Single prediction reports `observation: None`; grouped prediction reports the zero-based position of the first non-finite output. `predict_checked`/`predict_batch_checked` are compatibility aliases with the same behavior. The additive public enum variant requires a new arm in downstream exhaustive matches. The scalar response does not restrict the number of input features. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 
 - Define fitting inputs as \(N\) rows of \(d\) features and \(N\) numeric targets, with explicit ownership and shape validation. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 - Preserve the implemented `fit`/`FitResult` path to an immutable predictor; further public API changes require the applicable design review. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
@@ -136,7 +136,7 @@ With no intercept, \(b=0\). Equivalently, append a column of ones to obtain \(A=
 - Implement and report the accepted rank/outcome policy, residual diagnostics and relevant numerical failures. A condition estimate is included only if the chosen method supports a meaningful estimate. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
 - Verify the selected solver and numerical boundary independently, including nearly dependent features and training-to-prediction conversion. **([#44](https://github.com/Skybrique/seqvex/issues/44))**
 
-**Existing predictor boundary:** weights/features are `f32`; the dot product reduces in weight-index order. Finite operands can produce infinity/NaN through overflow. Bare `predict`/`predict_batch` preserve their existing behavior and do not check output finiteness; `predict_checked`, `predict_batch_checked` and the borrowing `CheckedLinearRegression` wrapper reject non-finite outputs without changing finite result bits. Checked serving does not certify finite accuracy or detect every underflow.
+**Existing predictor boundary:** weights/features are `f32`; the dot product reduces in weight-index order. Finite operands can still overflow to infinity/NaN. Ordinary `predict`/`predict_batch` reject a non-finite output with `NonFiniteOutput`; grouped prediction reports the first failing index and returns no partial vector. `predict_checked`/`predict_batch_checked` and the borrowing `CheckedLinearRegression` wrapper are compatibility delegates and preserve finite result bits. Serving validation does not certify finite accuracy or detect every underflow.
 
 - Preserve required bitwise equivalence across existing prediction paths. Fitting comparisons use separately justified, conditioning-aware tolerances. **([#44](https://github.com/Skybrique/seqvex/issues/44))**
 - If fitting uses another precision, specify conversion and validate the resulting `f32` parameters/predictions. A stricter workflow-level finite-result policy must be explicit; it must not silently change the old predictor API. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
@@ -225,7 +225,7 @@ Bring any missing, ambiguous or contradictory failure policy to the maintainer b
 | Import is malformed/incompatible | Reject before installation; preserve active model | [#43](https://github.com/Skybrique/seqvex/issues/43) |
 | Model/transform pair mismatches | Reject or prevent incoherent publication under the approved schema | [#43](https://github.com/Skybrique/seqvex/issues/43) |
 | Prediction/group fails | Preserve the existing committed-state/partial-output contract | [#43](https://github.com/Skybrique/seqvex/issues/43) |
-| Finite operands yield non-finite output | Bare prediction preserves its existing behavior; opt-in checked serving returns `NonFiniteOutput`; no substitute prediction | [#43](https://github.com/Skybrique/seqvex/issues/43), supporting [#44](https://github.com/Skybrique/seqvex/issues/44) |
+| Finite operands yield non-finite output | Ordinary prediction returns `NonFiniteOutput`; grouped prediction reports the first index and returns no partial vector; no substitute prediction | [#43](https://github.com/Skybrique/seqvex/issues/43), supporting [#44](https://github.com/Skybrique/seqvex/issues/44) |
 | Training row contains unavailable information | Exclude/reject it under the declared workflow policy and test that policy | [#45](https://github.com/Skybrique/seqvex/issues/45) |
 
 - Define the minimum artifact: approved format/version, coefficients/intercept, dimensions, feature-order/schema information and necessary transformation/version linkage. Document encoding precision and validate before accepting it. No durable storage service is implied. **([#43](https://github.com/Skybrique/seqvex/issues/43))**
@@ -382,7 +382,7 @@ Run the applicable critical architecture review before choices affecting ownersh
 |---|---|---|
 | `src/models/linear/mod.rs` and family README | Family namespace and orientation | #43 |
 | `src/models/linear/ols/mod.rs` | Canonical public exports | #43 |
-| `src/models/linear/ols/predict.rs` | Immutable prediction, preserved bare behavior and additive checked serving | #43 |
+| `src/models/linear/ols/predict.rs` | Immutable finite-or-error prediction, grouped index, compatibility checked aliases | #43 |
 | `src/models/linear/ols/fit.rs` | Selected-row fitting, rank/conversion checks and diagnostics | #43; verification #44 |
 | `src/models/linear/ols/artifact.rs` | Metadata, identity and binary artifact v1 | #43 |
 | `src/models/linear/ols/tests/oracle.rs` | Independent exact references; Cargo target `ols_oracle` | #44 |
@@ -422,7 +422,7 @@ The additive typed profiles preserve the accepted legacy `fit`/`FitResult`/`Line
 
 A and B share one native-f64 CPQR implementation; C uses a separate native-f32 CPQR path with f32 rank, solver, parameters, prediction and RSS arithmetic. All profiles inspect selected training rows only, preserve the legacy validation precedence and rank policy (with profile-specific unit roundoff), and expose single, streaming and caller-bounded grouped inference. They remain dataset fit/refit APIs: grouping does not imply incremental OLS.
 
-`to_serving_f32` is non-mutating and scans weights in index order, then the intercept when enabled. It rejects non-finite sources, finite-to-infinite overflow, and (by default) nonzero-to-zero underflow; `UnderflowPolicy::AllowLoss` explicitly accepts the zero. Representable subnormals and signed zero are preserved. The returned f32 predictor is independently owned; on conversion or later checked-acceptance failure, the f64 learner and any active predictor remain unchanged. There is no automatic install or fallback.
+`to_serving_f32` is non-mutating and scans weights in index order, then the intercept when enabled. It uses the shared, policy-neutral narrowing helper: non-finite sources and finite-to-infinite overflow reject, while each algorithm applies its own underflow policy; OLS `UnderflowPolicy::AllowLoss` explicitly accepts the zero and RLS/SGD reject it. Representable subnormals and signed zero are preserved. The returned f32 predictor is independently owned; on conversion or later checked-acceptance failure, the f64 learner and any active predictor remain unchanged. There is no automatic install or fallback.
 
 Run the typed in-memory example with:
 

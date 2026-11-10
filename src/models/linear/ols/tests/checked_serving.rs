@@ -1,16 +1,17 @@
-//! Checked-serving behavior: opt-in prediction that rejects non-finite outputs,
-//! plus the borrowing `CheckedLinearRegression` streaming wrapper.
+//! Checked-serving behavior: ordinary prediction validates output, and the
+//! borrowing `CheckedLinearRegression` wrapper and checked methods remain
+//! compatibility delegates.
 //!
-//! The bare `predict` / `predict_batch` paths are asserted to keep their
-//! existing behavior on the same cases.
+//! The ordinary `predict` / `predict_batch` paths and their checked aliases are
+//! asserted to share the same validating behavior and finite-result bits.
 
 use seqvex::execution::streaming::StreamingExecutor;
+use seqvex::foundation::error::FailureCause;
 use seqvex::foundation::numerical::Vector;
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::process_batch;
 use seqvex::models::linear::ols::{
-    AcceptanceCheckError, CheckedLinearRegression, FitConfig, LinearRegression, RegressionError,
-    StoredDiagnostic, fit,
+    CheckedLinearRegression, FitConfig, FitError, LinearRegression, RegressionError, fit,
 };
 
 fn model(weights: &[f32], bias: f32) -> LinearRegression {
@@ -76,8 +77,10 @@ fn input_errors_are_retained() {
 fn product_overflow_is_rejected_when_checked() {
     let model = model(&[1.0e20], 0.0);
     let features = Vector::from_slice(&[1.0e20]);
-    // Bare path is unchanged: it returns the non-finite value.
-    assert!(model.predict(&features).unwrap().is_infinite());
+    assert_eq!(
+        model.predict(&features),
+        Err(RegressionError::NonFiniteOutput { observation: None })
+    );
     assert_eq!(
         model.predict_checked(&features),
         Err(RegressionError::NonFiniteOutput { observation: None })
@@ -89,7 +92,10 @@ fn bias_addition_overflow_is_rejected_when_checked() {
     // Finite product (3.2e38) plus a finite bias overflows f32::MAX.
     let model = model(&[1.6e38], 2.0e38);
     let features = Vector::from_slice(&[2.0]);
-    assert!(model.predict(&features).unwrap().is_infinite());
+    assert_eq!(
+        model.predict(&features),
+        Err(RegressionError::NonFiniteOutput { observation: None })
+    );
     assert_eq!(
         model.predict_checked(&features),
         Err(RegressionError::NonFiniteOutput { observation: None })
@@ -101,7 +107,10 @@ fn nan_from_arithmetic_is_rejected_when_checked() {
     // +inf and -inf products summed produce NaN.
     let model = model(&[1.0e20, 1.0e20], 0.0);
     let features = Vector::from_slice(&[1.0e20, -1.0e20]);
-    assert!(model.predict(&features).unwrap().is_nan());
+    assert_eq!(
+        model.predict(&features),
+        Err(RegressionError::NonFiniteOutput { observation: None })
+    );
     assert_eq!(
         model.predict_checked(&features),
         Err(RegressionError::NonFiniteOutput { observation: None })
@@ -214,13 +223,19 @@ fn process_stream_reports_failure_and_continues() {
         observation(&[2.0e38]), // failure
         observation(&[5.0]),    // 11.0
     ];
-    let final_state = *executor.process_stream(observations, |error| {
-        failures.push(format!("{error:?}"));
-    });
+    let progress = executor
+        .process_stream_continuing(observations, |position, error| {
+            assert_eq!(position, 1);
+            failures.push(format!("{error:?}"));
+        })
+        .unwrap();
 
     assert_eq!(failures.len(), 1);
     assert!(failures[0].contains("NonFiniteOutput"));
-    assert_bits_eq(final_state, 11.0);
+    assert_eq!(progress.attempted, 3);
+    assert_eq!(progress.committed, 2);
+    assert_eq!(progress.failed, 1);
+    assert_bits_eq(*executor.state(), 11.0);
 }
 
 #[test]
@@ -234,44 +249,25 @@ fn grouped_process_batch_stops_at_first_failure() {
     ];
     let failure = process_batch(&checked, 0.0f32, observations).unwrap_err();
     assert_eq!(
-        failure.error,
-        RegressionError::NonFiniteOutput { observation: None }
+        failure.cause,
+        FailureCause::Model(RegressionError::NonFiniteOutput { observation: None })
     );
     // The last committed valid state before the failure is returned.
     assert_bits_eq(failure.state, 7.0);
 }
 
 #[test]
-fn acceptance_rejection_preserves_candidate_and_active_predictor() {
+fn extreme_finite_fit_is_rejected_before_acceptance() {
     let candidate_features = [Vector::from_slice(&[1.0]), Vector::from_slice(&[2.0])];
     let candidate_targets = [f32::MAX, f32::MAX];
     let config = FitConfig {
         intercept: false,
         ..FitConfig::default()
     };
-    let candidate = fit(&candidate_features, &candidate_targets, &[0, 1], &config)
-        .expect("legacy fit succeeds");
-    let weights_before = candidate.weights().clone();
-    let bias_before = candidate.intercept();
-    let diagnostics_before = candidate.diagnostics().clone();
-
-    let active = model(&[2.0], 1.0);
-    let active_row = Vector::from_slice(&[3.0]);
-    let active_before = active.predict_checked(&active_row).unwrap();
-    let error = candidate
-        .check_acceptance(&candidate_features, &candidate_targets, &[0])
-        .unwrap_err();
-
     assert_eq!(
-        error,
-        AcceptanceCheckError::NonFiniteStoredDiagnostic {
-            diagnostic: StoredDiagnostic::RssF32Predictor,
-        }
+        fit(&candidate_features, &candidate_targets, &[0, 1], &config),
+        Err(FitError::NonFiniteRss)
     );
-    assert_eq!(candidate.weights(), &weights_before);
-    assert_eq!(candidate.intercept(), bias_before);
-    assert_eq!(candidate.diagnostics(), &diagnostics_before);
-    assert_bits_eq(active.predict_checked(&active_row).unwrap(), active_before);
 }
 
 #[test]

@@ -493,13 +493,9 @@ fn run() -> Result<(), String> {
         OVERFLOW_COMPAT_BIAS,
     )
     .map_err(|error| format!("overflow model construction failed: {error:?}"))?;
-    let overflow_bare = overflow_model
-        .predict(&Vector::from_slice(&OVERFLOW_COMPAT_FEATURES[1]))
-        .map_err(|error| format!("overflow bare prediction failed: {error:?}"))?;
-    if overflow_bare.to_bits() != f32::INFINITY.to_bits() {
-        return Err(format!(
-            "expected positive infinite bare overflow prediction, got {overflow_bare}"
-        ));
+    match overflow_model.predict(&Vector::from_slice(&OVERFLOW_COMPAT_FEATURES[1])) {
+        Err(RegressionError::NonFiniteOutput { observation: None }) => {}
+        other => return Err(format!("expected NonFiniteOutput, got {other:?}")),
     }
     match overflow_model.predict_checked(&Vector::from_slice(&OVERFLOW_COMPAT_FEATURES[1])) {
         Err(RegressionError::NonFiniteOutput { observation: None }) => {}
@@ -557,7 +553,9 @@ fn run() -> Result<(), String> {
     println!("shifted intercept = {shifted_intercept}");
     println!("shifted predictions = {shifted_predictions:?}");
     println!("bare == checked (finite) = true");
-    println!("overflow bare = {overflow_bare}; checked = NonFiniteOutput {{ observation: None }}");
+    println!(
+        "overflow bare = NonFiniteOutput {{ observation: None }}; checked = NonFiniteOutput {{ observation: None }}"
+    );
     println!("grouped overflow = NonFiniteOutput {{ observation: Some(1) }}");
 
     Ok(())

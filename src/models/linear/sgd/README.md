@@ -74,8 +74,9 @@ use seqvex::foundation::numerical::{Vector, Vector64};
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::StateModel;
 use seqvex::models::linear::sgd::{
-    Sgd, Sgd64, SgdError, SgdError64, SgdSample, SgdSample64, SgdServing32,
-    SgdServingConversionError, SgdState, SgdState64,
+    Sgd, Sgd64, SgdError, SgdError64, SgdPredictionError, SgdPredictionError64, SgdSample,
+    SgdSample64, SgdServing32, SgdServingConversionError, SgdState, SgdState64,
+    SgdUpdateBatchError, SgdUpdateBatchError64,
 };
 ```
 
@@ -86,20 +87,28 @@ use seqvex::models::linear::sgd::{
 | `Sgd::learning_rate` | `-> f32` |
 | `Sgd::initial_state` | `-> SgdState` (`w = 0`) |
 | `Sgd::predict` | `predict(&self, state: &SgdState, features: &Vector) -> Result<f32, SgdError>` |
+| `Sgd::predict_batch` | `predict_batch(&self, state: &SgdState, observations: &[Observation<Vector>], max_predictions: usize) -> Result<Vec<f32>, SgdPredictionError>` |
 | `StateModel::update` (C) | `update(&self, state: &SgdState, observation: &Observation<SgdSample>) -> Result<SgdState, SgdError>` |
+| `Sgd::update_batch` | `update_batch(&self, state: SgdState, observations: &[Observation<SgdSample>], max_batch: usize) -> Result<SgdState, SgdUpdateBatchError>` |
 | `SgdState` | `{ pub w: Vector }` — per-execution `f32` learned weights |
 | `SgdSample` | `{ pub features: Vector, pub target: f32 }` |
 | `SgdError` | `ZeroDimension`, `DimensionMismatch { expected, actual }`, `InvalidLearningRate`, `NonFiniteInput`, `NonFiniteCandidate`, `NonFiniteOutput` |
 | `Sgd64::new` | `new(dimension: usize, learning_rate: f64) -> Result<Sgd64, SgdError64>` |
 | `Sgd64::predict` | `predict(&self, state: &SgdState64, features: &Vector64) -> Result<f64, SgdError64>` |
+| `Sgd64::predict_batch` | `predict_batch(&self, state: &SgdState64, observations: &[Observation<Vector64>], max_predictions: usize) -> Result<Vec<f64>, SgdPredictionError64>` |
 | `Sgd64::to_serving_f32` | `to_serving_f32(&self, state: &SgdState64) -> Result<SgdServing32, SgdServingConversionError>` |
 | `StateModel::update` (A) | `update(&self, state: &SgdState64, observation: &Observation<SgdSample64>) -> Result<SgdState64, SgdError64>` |
+| `Sgd64::update_batch` | `update_batch(&self, state: SgdState64, observations: &[Observation<SgdSample64>], max_batch: usize) -> Result<SgdState64, SgdUpdateBatchError64>` |
 | `SgdState64` / `SgdSample64` | `{ pub w: Vector64 }` / `{ pub features: Vector64, pub target: f64 }` |
 | `SgdServing32` | Immutable `f32` snapshot; `dimension`, `weights`, output-validating `predict(&Vector) -> Result<f32, SgdError>` |
+| `SgdServing32::predict_batch` | `predict_batch(&self, observations: &[Observation<Vector>], max_predictions: usize) -> Result<Vec<f32>, SgdPredictionError>` |
 | `SgdServingConversionError` | `StateDimensionMismatch { expected, actual }`, `SourceNonFinite { index }`, `Overflow { index }`, `Underflow { index }` |
+| `SgdUpdateBatchError` / `SgdPredictionError` | f32 group errors: `TooLarge { max, actual, state }` / `Transition { failed_index, committed, state, error }`; `TooLarge { max, actual }` / `At { index, error }` |
+| `SgdUpdateBatchError64` / `SgdPredictionError64` | f64 group errors with the same shapes and `SgdError64` inner errors |
 
-**Precision profiles.** `Sgd` is the existing strict-`f32` C surface and is
-unchanged. `Sgd64` is the native-`f64` A learner. B reuses A's learner and creates
+**Precision profiles.** `Sgd` is the existing strict-`f32` C surface; its
+existing single-step behavior is preserved and additive grouped methods are
+introduced. `Sgd64` is the native-`f64` A learner. B reuses A's learner and creates
 an independently owned, immutable `SgdServing32` snapshot through checked
 conversion; the snapshot has no update, resume, transform or back-conversion
 path. A and C expose one output-validating `predict`; there is no bare/checked
@@ -251,71 +260,68 @@ at the first failure and retains the committed prefix. Use
 are intended; it continues from the last committed state and reports failure
 positions.
 
-## Bounded ordered caller protocol
+## Bounded ordered learning and grouped prediction
 
-SGD still has no public bounded-learning method in this package; F26 remains
-OPEN. The caller protocol over a borrowed slice is:
+`Sgd::update_batch` and `Sgd64::update_batch` apply the existing single-step
+update once per row in increasing index order. They preserve the ordered,
+non-averaged recurrence; they do not shuffle, rescale, average or solve. Both
+take the state by value and return it only on full success:
 
 ```rust
 use seqvex::foundation::observation::Observation;
-use seqvex::models::linear::sgd::{Sgd, SgdError, SgdSample, SgdState};
-
-enum Failure {
-    TooLarge { max: usize, actual: usize, state: SgdState },
-    Transition {
-        failed_index: usize,
-        committed: usize,
-        state: SgdState,
-        error: SgdError,
-    },
-}
+use seqvex::models::linear::sgd::{Sgd, SgdSample, SgdState, SgdUpdateBatchError};
 
 fn replay_bounded(
     model: &Sgd,
-    mut state: SgdState,
+    state: SgdState,
     rows: &[Observation<SgdSample>],
     max_batch: usize,
-) -> Result<SgdState, Failure> {
-    if rows.len() > max_batch {
-        return Err(Failure::TooLarge {
-            max: max_batch,
-            actual: rows.len(),
-            state,
-        });
-    }
-    for (failed_index, row) in rows.iter().enumerate() {
-        match model.update(&state, row) {
-            Ok(next) => state = next,
-            Err(error) => {
-                return Err(Failure::Transition {
-                    failed_index,
-                    committed: failed_index,
-                    state,
-                    error,
-                });
-            }
-        }
-    }
-    Ok(state)
+) -> Result<SgdState, SgdUpdateBatchError> {
+    model.update_batch(state, rows, max_batch)
 }
 ```
 
-The native-f64 `Sgd64` form is identical with `SgdState64`, `SgdSample64` and
-`SgdError64`. Oversize is rejected before transitions or observation validation;
-the unchanged supplied state is returned in `TooLarge`, so continuation needs no
-reset or duplicate update. Empty returns the supplied state unchanged; zero
-accepts only empty. Successive updates remain the ordered, non-averaged SGD
-recurrence.
+The group-length check runs before any row validation or transition:
 
-`run_local_bounded64`, `run_local_bounded32` and the example collectors are
-test-local evidence, not public APIs. Their stopping behavior does not establish
-public oversize rejection.
+- `rows.len() > max_batch` returns `TooLarge { max, actual, state }` with the
+  supplied state bitwise unchanged and unvalidated; no row is attempted. This
+  includes non-empty input with `max_batch == 0`. `max_batch == usize::MAX`
+  always accepts, so `TooLarge` is unreachable at that limit.
+- Empty input succeeds and returns the supplied state unchanged.
+- A row failure returns `Transition { failed_index, committed, state, error }`:
+  `failed_index` is zero-based within the supplied slice, `committed` equals it,
+  `state` is the bitwise successful prefix, and the suffix is unattempted.
+- `attempted == committed + 1` and `failed == 1` are derived invariants, not
+  fields.
+
+An unchanged invalid row fails again with no state advance. A corrected retry
+must resume from the returned prefix with the corrected suffix; re-applying
+already-committed rows would duplicate ordered updates. Retry indices are
+relative to the slice supplied to that call, so callers map them back to the
+original position. Error `Display` names the bound or the failing index and does
+not print state contents or duplicate the inner message; `source()` returns the
+inner `SgdError`/`SgdError64` for a transition and `None` for `TooLarge`.
+
+`Sgd::predict_batch`, `Sgd64::predict_batch` and
+`SgdServing32::predict_batch` apply the corresponding single-step prediction
+once per row in increasing order from one pinned state or snapshot. They check
+`max_predictions` before validating any row. `TooLarge` returns no vector; a
+row failure returns `At { index, error }` and no partial vector. The state or
+snapshot is borrowed immutably and is unchanged on failure. Empty input returns
+an empty vector. B checks the borrowed snapshot's `weights.len()`; it has no
+caller-supplied state.
+
+`run_local_bounded64`, `run_local_bounded32` and the example collectors remain
+test-local evidence, not public APIs; the public rejection and retry semantics
+are the ones specified by `update_batch` and `predict_batch`.
 
 ## Bounded fixed-inference and publication
 
-Check a caller-defined `max_predictions` before prediction; pin one state or B
-snapshot; collect checked outputs privately and return them only after full
-success. Calculation failure yields no partial vector. External publication is
+Use `Sgd::predict_batch`, `Sgd64::predict_batch` or
+`SgdServing32::predict_batch` with a caller-defined `max_predictions`. Each
+pins one state or B snapshot, checks the bound before validating any row,
+returns outputs only after full success, and returns no partial vector on a
+row failure; the state or snapshot is unchanged. External publication is
 caller-owned: full acknowledgement, definitely no write, acknowledged-prefix/
 definitely-unwritten suffix, acknowledged-prefix/potentially-written suffix and
 unclassified failure are distinct. Only the definitely-unwritten suffix is
@@ -392,7 +398,12 @@ held-out scoring rows, `η=0.01`, and 200 ordered passes (80,000 updates for eac
 of A and C). B performs no training updates: it is one checked conversion of A's
 post-training state, evaluated with explicitly narrowed `f32` features against
 A's `f64` targets. Scoring is exactly 400 fixed predictions per profile; no
-labels enter the predictor and no updates occur during or after scoring.
+labels enter the predictor and no updates occur during or after scoring. The
+frozen run uses `Sgd64::update_batch`, `Sgd64::predict_batch`,
+`SgdServing32::predict_batch` and `Sgd::update_batch`/`Sgd::predict_batch`.
+Separate controls exercise bounded-versus-repeated equivalence, snapshot
+isolation, freshness and conversion failure without contributing to the frozen
+counts, states or metrics.
 
 The fixture records MAE and R² for A, B and C and enforces the frozen limits:
 
@@ -729,9 +740,9 @@ nowcasting evidence only.
 
 | Path | Purpose |
 |---|---|
-| `mod.rs` | C `Sgd`/`SgdState`/`SgdSample`/`SgdError`; canonical A/B reexports |
-| `profiles.rs` | A `Sgd64`/`SgdState64`/`SgdSample64`/`SgdError64`; B `SgdServing32` and checked conversion |
-| `tests/sgd.rs` | Integration target `sgd`, including A/B/C profile controls |
+| `mod.rs` | C `Sgd`/`SgdState`/`SgdSample`/`SgdError`; public f32 `update_batch`/`predict_batch` and group errors; canonical A/B reexports |
+| `profiles.rs` | A `Sgd64`/`SgdState64`/`SgdSample64`/`SgdError64`; public f64 grouped methods/errors; B `SgdServing32` grouped `predict_batch` and checked conversion |
+| `tests/sgd.rs` | Integration target `sgd`, including public batch API and A/B/C profile controls |
 | `examples/sgd_learn.rs` | Synthetic learning/prediction example `sgd_learn` |
 | `examples/sgd_profiles.rs` | Deterministic A/B/C `SGD-QUALITY800` example |
 | `examples/sgd_regression.rs` | Real-data CSV example `sgd_regression` |

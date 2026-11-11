@@ -2,8 +2,11 @@
 //!
 //! [`Sgd64`] is the native-`f64` learner. It owns no learned state; callers carry
 //! [`SgdState64`] per stream. [`Sgd64::to_serving_f32`] produces an independently
-//! owned, immutable [`SgdServing32`] snapshot for fixed `f32` inference. The
-//! existing [`super::Sgd`] remains the strict-`f32` profile and is unchanged.
+//! owned, immutable [`SgdServing32`] snapshot for fixed `f32` inference.
+//! [`SgdServing32::predict_batch`] provides grouped fixed-`f32` prediction from
+//! one pinned snapshot. The existing [`super::Sgd`] remains the strict-`f32`
+//! profile; its existing single-step behavior is preserved and additive grouped
+//! methods are introduced.
 
 use crate::foundation::numerical::{DimensionMismatch, Vector, Vector64};
 use crate::foundation::observation::Observation;
@@ -84,6 +87,102 @@ pub struct SgdSample64 {
     pub target: f64,
 }
 
+/// Failure classes reported by bounded ordered native-`f64` SGD learning.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SgdUpdateBatchError64 {
+    /// The supplied group exceeds the caller's maximum.
+    TooLarge {
+        /// The caller-supplied maximum group size.
+        max: usize,
+        /// The supplied group length.
+        actual: usize,
+        /// The supplied state, bitwise unchanged and unvalidated.
+        state: SgdState64,
+    },
+    /// A row failed; the successful prefix is returned.
+    Transition {
+        /// Zero-based index within the supplied slice.
+        failed_index: usize,
+        /// Number of committed rows; equal to `failed_index`.
+        committed: usize,
+        /// The successful prefix after rows `0..failed_index`.
+        state: SgdState64,
+        /// The inner single-step error.
+        error: SgdError64,
+    },
+}
+
+impl std::fmt::Display for SgdUpdateBatchError64 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge { max, actual, .. } => write!(
+                formatter,
+                "SGD update group is too large: max {max}, got {actual}; no observation was validated or processed and the supplied state was returned unchanged"
+            ),
+            Self::Transition {
+                failed_index,
+                committed,
+                ..
+            } => write!(
+                formatter,
+                "SGD update failed at index {failed_index} after {committed} committed rows; the failed candidate was not committed and the successful prefix was returned"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SgdUpdateBatchError64 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::TooLarge { .. } => None,
+            Self::Transition { error, .. } => Some(error),
+        }
+    }
+}
+
+/// Failure classes reported by grouped native-`f64` SGD prediction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SgdPredictionError64 {
+    /// The supplied group exceeds the caller's maximum.
+    TooLarge {
+        /// The caller-supplied maximum prediction count.
+        max: usize,
+        /// The supplied group length.
+        actual: usize,
+    },
+    /// A row failed; no partial vector is returned.
+    At {
+        /// Zero-based index within the supplied slice.
+        index: usize,
+        /// The inner single-step error.
+        error: SgdError64,
+    },
+}
+
+impl std::fmt::Display for SgdPredictionError64 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge { max, actual } => write!(
+                formatter,
+                "SGD prediction group is too large: max {max}, got {actual}; no observation was validated or predicted and no output was returned"
+            ),
+            Self::At { index, .. } => write!(
+                formatter,
+                "SGD prediction failed at index {index}; no partial prediction vector was returned"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SgdPredictionError64 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::TooLarge { .. } => None,
+            Self::At { error, .. } => Some(error),
+        }
+    }
+}
+
 /// An immutable native-`f64` SGD linear-regression configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sgd64 {
@@ -139,6 +238,73 @@ impl Sgd64 {
             return Err(SgdError64::NonFiniteOutput);
         }
         Ok(value)
+    }
+
+    /// Bounded ordered native-`f64` learning: applies [`Sgd64::update`] once per
+    /// observation in increasing order.
+    ///
+    /// The group length is checked against `max_batch` before any row is
+    /// validated or transitioned. `TooLarge` returns the supplied state
+    /// unchanged and unvalidated. On a row failure, `Transition` returns the
+    /// successful prefix, the zero-based failing index and the inner error;
+    /// rows after the failure are not attempted. Empty input succeeds and
+    /// returns the supplied state unchanged.
+    pub fn update_batch(
+        &self,
+        mut state: SgdState64,
+        observations: &[Observation<SgdSample64>],
+        max_batch: usize,
+    ) -> Result<SgdState64, SgdUpdateBatchError64> {
+        if observations.len() > max_batch {
+            return Err(SgdUpdateBatchError64::TooLarge {
+                max: max_batch,
+                actual: observations.len(),
+                state,
+            });
+        }
+        for (index, observation) in observations.iter().enumerate() {
+            match self.update(&state, observation) {
+                Ok(next) => state = next,
+                Err(error) => {
+                    return Err(SgdUpdateBatchError64::Transition {
+                        failed_index: index,
+                        committed: index,
+                        state,
+                        error,
+                    });
+                }
+            }
+        }
+        Ok(state)
+    }
+
+    /// Grouped native-`f64` prediction: applies [`Sgd64::predict`] once per
+    /// observation in increasing order from the pinned state.
+    ///
+    /// The group length is checked against `max_predictions` before any row is
+    /// validated or predicted. `TooLarge` returns no vector. On a row failure,
+    /// `At` returns the zero-based failing index and the inner error; no partial
+    /// vector is returned. Empty input returns an empty vector.
+    pub fn predict_batch(
+        &self,
+        state: &SgdState64,
+        observations: &[Observation<Vector64>],
+        max_predictions: usize,
+    ) -> Result<Vec<f64>, SgdPredictionError64> {
+        if observations.len() > max_predictions {
+            return Err(SgdPredictionError64::TooLarge {
+                max: max_predictions,
+                actual: observations.len(),
+            });
+        }
+        let mut outputs = Vec::with_capacity(observations.len());
+        for (index, observation) in observations.iter().enumerate() {
+            match self.predict(state, observation.value()) {
+                Ok(value) => outputs.push(value),
+                Err(error) => return Err(SgdPredictionError64::At { index, error }),
+            }
+        }
+        Ok(outputs)
     }
 
     /// Produces an independently owned `f32` serving snapshot from A's state.
@@ -275,6 +441,34 @@ impl SgdServing32 {
             return Err(super::SgdError::NonFiniteOutput);
         }
         Ok(value)
+    }
+
+    /// Grouped fixed-`f32` prediction from this pinned serving snapshot.
+    ///
+    /// The group length is checked against `max_predictions` before any row is
+    /// validated or predicted. `TooLarge` returns no vector. On a row failure,
+    /// `At` returns the zero-based failing index and the inner error; no partial
+    /// vector is returned. Empty input returns an empty vector. The snapshot is
+    /// borrowed immutably and is never mutated.
+    pub fn predict_batch(
+        &self,
+        observations: &[Observation<Vector>],
+        max_predictions: usize,
+    ) -> Result<Vec<f32>, super::SgdPredictionError> {
+        if observations.len() > max_predictions {
+            return Err(super::SgdPredictionError::TooLarge {
+                max: max_predictions,
+                actual: observations.len(),
+            });
+        }
+        let mut outputs = Vec::with_capacity(observations.len());
+        for (index, observation) in observations.iter().enumerate() {
+            match self.predict(observation.value()) {
+                Ok(value) => outputs.push(value),
+                Err(error) => return Err(super::SgdPredictionError::At { index, error }),
+            }
+        }
+        Ok(outputs)
     }
 }
 

@@ -6,12 +6,12 @@
 mod support;
 
 use support::{
-    AcceptanceDecision, ActiveOls, BatchFailure, FeatureSnapshot, FreshnessCheck, FreshnessPolicy,
+    AcceptanceDecision, ActiveOls, FeatureSnapshot, FreshnessCheck, FreshnessPolicy,
     FreshnessPolicyError, InstallError, ObservingSink, OlsCandidate, OlsProgress, OrderedSource,
     PendingBudget, PredictionRecord, Progress, PublicationAction, PublicationOutcome,
     RetainedBatch, ServingRecord, TemporalFailure, WorkflowMode, apply_pending_prefix,
     check_freshness, collect32, collect64, publish_retained, recover_missing_prediction,
-    replay_sgd32, replay_sgd64, try_install_ols,
+    try_install_ols,
 };
 
 use seqvex::execution::streaming::StreamingExecutor;
@@ -22,7 +22,9 @@ use seqvex::models::linear::ols::{
     FitConfig32, FitConfig64, LinearRegression, UnderflowPolicy, fit_f32, fit_f64,
 };
 use seqvex::models::linear::rls::{Rls, Rls64, RlsSample, RlsSample64};
-use seqvex::models::linear::sgd::{Sgd, Sgd64, SgdSample, SgdSample64};
+use seqvex::models::linear::sgd::{
+    Sgd, Sgd64, SgdSample, SgdSample64, SgdUpdateBatchError, SgdUpdateBatchError64,
+};
 
 fn sgd_sample(features: &[f32], target: f32) -> Observation<SgdSample> {
     Observation::new(SgdSample {
@@ -245,8 +247,10 @@ fn run_sgd_and_rls() -> Result<(), String> {
     let sgd_single = sgd
         .update(&sgd_initial, &rows32[0])
         .map_err(|error| format!("SGD single update failed: {error:?}"))?;
-    if replay_sgd32(&sgd, sgd_initial.clone(), &[], 0).is_err()
-        || replay_sgd32(&sgd, sgd_initial.clone(), &rows32[..1], 1).is_err()
+    if sgd.update_batch(sgd_initial.clone(), &[], 0).is_err()
+        || sgd
+            .update_batch(sgd_initial.clone(), &rows32[..1], 1)
+            .is_err()
     {
         return Err("SGD C empty/singleton bounded path failed".to_string());
     }
@@ -254,13 +258,14 @@ fn run_sgd_and_rls() -> Result<(), String> {
         .iter()
         .try_fold(sgd_initial.clone(), |state, row| sgd.update(&state, row))
         .map_err(|error| format!("SGD learning failed: {error:?}"))?;
-    let bounded = replay_sgd32(&sgd, sgd_initial.clone(), &rows32, 3)
-        .map_err(|error| format!("SGD bounded replay failed: {error:?}"))?;
+    let bounded = sgd
+        .update_batch(sgd_initial.clone(), &rows32, 3)
+        .map_err(|error| format!("SGD bounded update failed: {error:?}"))?;
     if bounded != sgd_state {
         return Err("SGD bounded replay diverged".to_string());
     }
-    match replay_sgd32(&sgd, sgd_initial.clone(), &rows32, 2) {
-        Err(BatchFailure::TooLarge { state, .. }) => {
+    match sgd.update_batch(sgd_initial.clone(), &rows32, 2) {
+        Err(SgdUpdateBatchError::TooLarge { state, .. }) => {
             if state != sgd_initial {
                 return Err("SGD oversized rejection lost its state".to_string());
             }
@@ -269,8 +274,8 @@ fn run_sgd_and_rls() -> Result<(), String> {
     }
     let mut bad32 = rows32.clone();
     bad32[1] = sgd_sample(&[0.0, 1.0], f32::NAN);
-    match replay_sgd32(&sgd, sgd.initial_state(), &bad32, bad32.len()) {
-        Err(BatchFailure::Transition {
+    match sgd.update_batch(sgd.initial_state(), &bad32, bad32.len()) {
+        Err(SgdUpdateBatchError::Transition {
             failed_index: 1,
             state,
             error: seqvex::models::linear::sgd::SgdError::NonFiniteInput,
@@ -285,9 +290,10 @@ fn run_sgd_and_rls() -> Result<(), String> {
         Observation::new(Vector::from_slice(&[0.5, -0.5])),
         Observation::new(Vector::from_slice(&[0.25, 0.25])),
     ];
-    let collected = collect32(2, &prediction_rows, |row| sgd.predict(&sgd_state, row))
-        .map_err(|error| format!("SGD collection failed: {error:?}"))?;
-    if collected.first().copied() != Some(prediction) {
+    let collected = sgd
+        .predict_batch(&sgd_state, &prediction_rows, prediction_rows.len())
+        .map_err(|error| format!("SGD grouped prediction failed: {error:?}"))?;
+    if collected.first().map(|value| value.to_bits()) != Some(prediction.to_bits()) {
         return Err("SGD grouped prediction diverged".to_string());
     }
 
@@ -301,8 +307,10 @@ fn run_sgd_and_rls() -> Result<(), String> {
     let sgd64_single = sgd64
         .update(&sgd64_initial, &rows64[0])
         .map_err(|error| format!("SGD64 single update failed: {error:?}"))?;
-    if replay_sgd64(&sgd64, sgd64_initial.clone(), &[], 0).is_err()
-        || replay_sgd64(&sgd64, sgd64_initial.clone(), &rows64[..1], 1).is_err()
+    if sgd64.update_batch(sgd64_initial.clone(), &[], 0).is_err()
+        || sgd64
+            .update_batch(sgd64_initial.clone(), &rows64[..1], 1)
+            .is_err()
     {
         return Err("SGD A empty/singleton bounded path failed".to_string());
     }
@@ -316,14 +324,15 @@ fn run_sgd_and_rls() -> Result<(), String> {
             .commit_update(&mut sgd64_state, Ok::<_, ()>(update))
             .map_err(|_| "SGD64 progress commit failed")?;
     }
-    let bounded64 = replay_sgd64(&sgd64, sgd64_initial.clone(), &rows64, rows64.len())
-        .map_err(|error| format!("SGD64 bounded replay failed: {error:?}"))?;
+    let bounded64 = sgd64
+        .update_batch(sgd64_initial.clone(), &rows64, rows64.len())
+        .map_err(|error| format!("SGD64 bounded update failed: {error:?}"))?;
     if bounded64 != sgd64_state {
         return Err("SGD64 bounded replay diverged".to_string());
     }
     if !matches!(
-        replay_sgd64(&sgd64, sgd64_initial.clone(), &rows64, rows64.len() - 1),
-        Err(BatchFailure::TooLarge { .. })
+        sgd64.update_batch(sgd64_initial.clone(), &rows64, rows64.len() - 1),
+        Err(SgdUpdateBatchError64::TooLarge { .. })
     ) {
         return Err("SGD64 oversize group was accepted".to_string());
     }
@@ -335,9 +344,14 @@ fn run_sgd_and_rls() -> Result<(), String> {
         .iter()
         .map(|row| sgd64.predict(&sgd64_state, row.value()).unwrap())
         .collect();
-    let a_grouped = collect64(2, &a_rows, |row| sgd64.predict(&sgd64_state, row))
-        .map_err(|error| format!("SGD A group prediction failed: {error:?}"))?;
-    if a_single != a_grouped {
+    let a_grouped = sgd64
+        .predict_batch(&sgd64_state, &a_rows, a_rows.len())
+        .map_err(|error| format!("SGD A grouped prediction failed: {error:?}"))?;
+    if a_single
+        .iter()
+        .zip(&a_grouped)
+        .any(|(left, right)| left.to_bits() != right.to_bits())
+    {
         return Err("SGD A grouped prediction diverged".to_string());
     }
     let serving = sgd64
@@ -346,19 +360,24 @@ fn run_sgd_and_rls() -> Result<(), String> {
     let b_prediction = serving
         .predict(&Vector::from_slice(&[0.5, -0.5]))
         .map_err(|error| format!("SGD B prediction failed: {error:?}"))?;
-    let b_group = collect32(2, &prediction_rows, |features| serving.predict(features))
+    let b_group = serving
+        .predict_batch(&prediction_rows, prediction_rows.len())
         .map_err(|error| format!("SGD B grouped prediction failed: {error:?}"))?;
     let b_single: Vec<f32> = prediction_rows
         .iter()
         .map(|row| serving.predict(row.value()).unwrap())
         .collect();
-    if b_group != b_single {
+    if b_group
+        .iter()
+        .zip(&b_single)
+        .any(|(left, right)| left.to_bits() != right.to_bits())
+    {
         return Err("SGD B grouped prediction diverged".to_string());
     }
     let mut bad64 = rows64.clone();
     bad64[1] = sgd_sample64(&[0.0, 1.0], f64::NAN);
-    match replay_sgd64(&sgd64, sgd64.initial_state(), &bad64, bad64.len()) {
-        Err(BatchFailure::Transition {
+    match sgd64.update_batch(sgd64.initial_state(), &bad64, bad64.len()) {
+        Err(SgdUpdateBatchError64::Transition {
             failed_index: 1,
             state,
             error: seqvex::models::linear::sgd::SgdError64::NonFiniteInput,

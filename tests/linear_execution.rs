@@ -7,8 +7,7 @@ use support::{
     PendingBudget, PredictionFailure, PredictionRecord, Progress, PublicationAction,
     PublicationOutcome, RetainedBatch, ServingRecord, TemporalFailure, WorkflowMode,
     apply_pending_prefix, check_freshness, collect32, collect64, publish_retained,
-    recover_missing_prediction, replay_sgd32, replay_sgd32_observed, replay_sgd64,
-    replay_sgd64_observed, try_install_ols,
+    recover_missing_prediction, replay_sgd32_observed, replay_sgd64_observed, try_install_ols,
 };
 
 use seqvex::execution::streaming::StreamingExecutor;
@@ -20,7 +19,10 @@ use seqvex::models::linear::ols::{
     LinearRegression64, UnderflowPolicy, fit_f32, fit_f64,
 };
 use seqvex::models::linear::rls::{Rls, Rls64, RlsBatchError, RlsError, RlsSample, RlsSample64};
-use seqvex::models::linear::sgd::{Sgd, Sgd64, SgdError, SgdSample, SgdSample64, SgdState64};
+use seqvex::models::linear::sgd::{
+    Sgd, Sgd64, SgdError, SgdSample, SgdSample64, SgdState64, SgdUpdateBatchError,
+    SgdUpdateBatchError64,
+};
 
 fn sample32(features: &[f32], target: f32) -> Observation<SgdSample> {
     Observation::new(SgdSample {
@@ -70,11 +72,13 @@ fn bounded_sgd_and_rls_admission_and_oversize_recovery() {
         .update(&model32.initial_state(), &rows32[0])
         .expect("nonzero learned C state");
     let supplied32 = learned32.clone();
-    match replay_sgd32(&model32, learned32, &rows32, 2) {
-        Err(BatchFailure::TooLarge { max, actual, state }) => {
+    match model32.update_batch(learned32, &rows32, 2) {
+        Err(SgdUpdateBatchError::TooLarge { max, actual, state }) => {
             assert_eq!((max, actual), (2, 3));
             assert_eq!(state, supplied32);
-            let continued = replay_sgd32(&model32, state.clone(), &rows32[..2], 2).unwrap();
+            let continued = model32
+                .update_batch(state.clone(), &rows32[..2], 2)
+                .unwrap();
             let expected = rows32[..2]
                 .iter()
                 .try_fold(supplied32, |state, row| model32.update(&state, row))
@@ -94,10 +98,12 @@ fn bounded_sgd_and_rls_admission_and_oversize_recovery() {
         .update(&model64.initial_state(), &rows64[0])
         .expect("nonzero learned A state");
     let supplied64 = learned64.clone();
-    match replay_sgd64(&model64, learned64, &rows64, 2) {
-        Err(BatchFailure::TooLarge { state, .. }) => {
+    match model64.update_batch(learned64, &rows64, 2) {
+        Err(SgdUpdateBatchError64::TooLarge { state, .. }) => {
             assert_eq!(state, supplied64);
-            let continued = replay_sgd64(&model64, state.clone(), &rows64[..2], 2).unwrap();
+            let continued = model64
+                .update_batch(state.clone(), &rows64[..2], 2)
+                .unwrap();
             let expected = rows64[..2]
                 .iter()
                 .try_fold(supplied64, |state, row| model64.update(&state, row))
@@ -113,8 +119,8 @@ fn bounded_sgd_and_rls_admission_and_oversize_recovery() {
         sample32(&[0.0, f32::NAN], 1.0),
         sample32(&[1.0, 1.0], 1.0),
     ];
-    match replay_sgd32(&model32, model32.initial_state(), &invalid, 1) {
-        Err(BatchFailure::TooLarge { state, .. }) => {
+    match model32.update_batch(model32.initial_state(), &invalid, 1) {
+        Err(SgdUpdateBatchError::TooLarge { state, .. }) => {
             assert_eq!(state, model32.initial_state());
         }
         other => panic!("expected bound precedence, got {other:?}"),
@@ -157,7 +163,11 @@ fn bounded_sgd_and_rls_admission_and_oversize_recovery() {
         rls.process_batch_reference(rls.initial_state(), &[], 0)
             .is_ok()
     );
-    assert!(replay_sgd32(&model32, model32.initial_state(), &[], 0).is_ok());
+    assert!(
+        model32
+            .update_batch(model32.initial_state(), &[], 0)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -174,8 +184,8 @@ fn strict_fail_stop_prefix_and_continuation_are_exact() {
     for row in &rows[..2] {
         expected_prefix = model.update(&expected_prefix, row).unwrap();
     }
-    match replay_sgd32(&model, model.initial_state(), &rows, rows.len()) {
-        Err(BatchFailure::Transition {
+    match model.update_batch(model.initial_state(), &rows, rows.len()) {
+        Err(SgdUpdateBatchError::Transition {
             failed_index,
             committed,
             state,
@@ -194,7 +204,9 @@ fn strict_fail_stop_prefix_and_continuation_are_exact() {
     corrected[2] = sample32(&[1.0, 1.0], 0.0);
     let prefix = model.update(&model.initial_state(), &rows[0]).unwrap();
     let prefix = model.update(&prefix, &rows[1]).unwrap();
-    let retried = replay_sgd32(&model, prefix.clone(), &corrected[2..], 3).unwrap();
+    let retried = model
+        .update_batch(prefix.clone(), &corrected[2..], 3)
+        .unwrap();
     let uninterrupted = corrected[..]
         .iter()
         .try_fold(model.initial_state(), |state, row| {
@@ -256,21 +268,25 @@ fn sgd_a_c_bounds_failures_and_corrected_retries_cover_each_position() {
     ];
     let model32 = Sgd::new(2, 0.125).unwrap();
     let initial32 = model32.initial_state();
-    let singleton32 = replay_sgd32(&model32, initial32.clone(), &rows32[..1], 1).unwrap();
+    let singleton32 = model32
+        .update_batch(initial32.clone(), &rows32[..1], 1)
+        .unwrap();
     assert_eq!(singleton32, model32.update(&initial32, &rows32[0]).unwrap());
     assert_eq!(
-        replay_sgd32(&model32, initial32.clone(), &[], 0).unwrap(),
+        model32.update_batch(initial32.clone(), &[], 0).unwrap(),
         initial32
     );
-    let exact32 = replay_sgd32(&model32, initial32.clone(), &rows32, rows32.len()).unwrap();
+    let exact32 = model32
+        .update_batch(initial32.clone(), &rows32, rows32.len())
+        .unwrap();
     let reference32 = rows32
         .iter()
         .try_fold(initial32.clone(), |state, row| model32.update(&state, row))
         .unwrap();
     assert_eq!(exact32, reference32);
     let learned32 = model32.update(&initial32, &rows32[0]).unwrap();
-    match replay_sgd32(&model32, learned32.clone(), &rows32[..1], 0) {
-        Err(BatchFailure::TooLarge {
+    match model32.update_batch(learned32.clone(), &rows32[..1], 0) {
+        Err(SgdUpdateBatchError::TooLarge {
             max: 0,
             actual: 1,
             state,
@@ -309,13 +325,13 @@ fn sgd_a_c_bounds_failures_and_corrected_retries_cover_each_position() {
 
         let mut corrected = bad;
         corrected[failed_at] = rows32[failed_at].clone();
-        let resumed = replay_sgd32(
-            &model32,
-            expected_prefix,
-            &corrected[failed_at..],
-            corrected.len() - failed_at,
-        )
-        .unwrap();
+        let resumed = model32
+            .update_batch(
+                expected_prefix,
+                &corrected[failed_at..],
+                corrected.len() - failed_at,
+            )
+            .unwrap();
         let uninterrupted = corrected
             .iter()
             .try_fold(initial32.clone(), |state, row| model32.update(&state, row))
@@ -330,21 +346,25 @@ fn sgd_a_c_bounds_failures_and_corrected_retries_cover_each_position() {
     ];
     let model64 = Sgd64::new(2, 0.125).unwrap();
     let initial64 = model64.initial_state();
-    let singleton64 = replay_sgd64(&model64, initial64.clone(), &rows64[..1], 1).unwrap();
+    let singleton64 = model64
+        .update_batch(initial64.clone(), &rows64[..1], 1)
+        .unwrap();
     assert_eq!(singleton64, model64.update(&initial64, &rows64[0]).unwrap());
     assert_eq!(
-        replay_sgd64(&model64, initial64.clone(), &[], 0).unwrap(),
+        model64.update_batch(initial64.clone(), &[], 0).unwrap(),
         initial64
     );
-    let exact64 = replay_sgd64(&model64, initial64.clone(), &rows64, rows64.len()).unwrap();
+    let exact64 = model64
+        .update_batch(initial64.clone(), &rows64, rows64.len())
+        .unwrap();
     let reference64 = rows64
         .iter()
         .try_fold(initial64.clone(), |state, row| model64.update(&state, row))
         .unwrap();
     assert_eq!(exact64, reference64);
     let learned64 = model64.update(&initial64, &rows64[0]).unwrap();
-    match replay_sgd64(&model64, learned64.clone(), &rows64[..1], 0) {
-        Err(BatchFailure::TooLarge {
+    match model64.update_batch(learned64.clone(), &rows64[..1], 0) {
+        Err(SgdUpdateBatchError64::TooLarge {
             max: 0,
             actual: 1,
             state,
@@ -386,13 +406,13 @@ fn sgd_a_c_bounds_failures_and_corrected_retries_cover_each_position() {
 
         let mut corrected = bad;
         corrected[failed_at] = rows64[failed_at].clone();
-        let resumed = replay_sgd64(
-            &model64,
-            expected_prefix,
-            &corrected[failed_at..],
-            corrected.len() - failed_at,
-        )
-        .unwrap();
+        let resumed = model64
+            .update_batch(
+                expected_prefix,
+                &corrected[failed_at..],
+                corrected.len() - failed_at,
+            )
+            .unwrap();
         let uninterrupted = corrected
             .iter()
             .try_fold(initial64.clone(), |state, row| model64.update(&state, row))
@@ -403,7 +423,7 @@ fn sgd_a_c_bounds_failures_and_corrected_retries_cover_each_position() {
     let mut chunked = model64.initial_state();
     let mut reference = model64.initial_state();
     for chunk in rows64.chunks(2) {
-        chunked = replay_sgd64(&model64, chunked, chunk, chunk.len()).unwrap();
+        chunked = model64.update_batch(chunked, chunk, chunk.len()).unwrap();
         reference = chunk
             .iter()
             .try_fold(reference, |state, row| model64.update(&state, row))
@@ -437,7 +457,7 @@ fn uneven_chunks_preserve_learning_states_and_boundary_predictions() {
     let mut boundaries = Vec::new();
     let mut expected_boundaries = Vec::new();
     for chunk in rows.chunks(2) {
-        chunked = replay_sgd32(&model, chunked, chunk, chunk.len()).unwrap();
+        chunked = model.update_batch(chunked, chunk, chunk.len()).unwrap();
         for row in chunk {
             reference = model.update(&reference, row).unwrap();
         }
@@ -448,7 +468,7 @@ fn uneven_chunks_preserve_learning_states_and_boundary_predictions() {
                 .unwrap(),
         );
     }
-    chunked = replay_sgd32(&model, chunked, &[], 0).unwrap();
+    chunked = model.update_batch(chunked, &[], 0).unwrap();
     assert_eq!(chunked, continuous);
     assert_eq!(boundaries, expected_boundaries);
     assert_eq!(boundaries.len(), 3);
@@ -581,7 +601,9 @@ fn fixed_prediction_matches_single_models_for_a_b_and_c() {
         .iter()
         .map(|row| sgd.predict(&sgd_state, row.value()).unwrap())
         .collect();
-    let grouped32 = collect32(2, &rows32, |row| sgd.predict(&sgd_state, row)).unwrap();
+    let grouped32 = sgd
+        .predict_batch(&sgd_state, &rows32, rows32.len())
+        .unwrap();
     for (left, right) in direct32.iter().zip(&grouped32) {
         assert_f32_bits(*left, *right);
     }
@@ -595,8 +617,10 @@ fn fixed_prediction_matches_single_models_for_a_b_and_c() {
         .iter()
         .map(|row| serving.predict(row.value()).unwrap())
         .collect();
-    let b_grouped = collect32(2, &rows32, |row| serving.predict(row)).unwrap();
-    assert_eq!(b_direct, b_grouped);
+    let b_grouped = serving.predict_batch(&rows32, rows32.len()).unwrap();
+    for (left, right) in b_direct.iter().zip(&b_grouped) {
+        assert_f32_bits(*left, *right);
+    }
 
     let rows64 = vec![
         Observation::new(Vector64::from_slice(&[0.5, 0.25])),
@@ -606,7 +630,9 @@ fn fixed_prediction_matches_single_models_for_a_b_and_c() {
         .iter()
         .map(|row| sgd64.predict(&sgd64_state, row.value()).unwrap())
         .collect();
-    let grouped_a = collect64(2, &rows64, |row| sgd64.predict(&sgd64_state, row)).unwrap();
+    let grouped_a = sgd64
+        .predict_batch(&sgd64_state, &rows64, rows64.len())
+        .unwrap();
     for (left, right) in direct_a.iter().zip(&grouped_a) {
         assert_f64_bits(*left, *right);
     }

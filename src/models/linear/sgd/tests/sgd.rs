@@ -1929,3 +1929,1155 @@ mod precision_profiles {
         );
     }
 }
+
+mod public_batch_api {
+    use std::error::Error;
+
+    use seqvex::foundation::numerical::{Vector, Vector64};
+    use seqvex::foundation::observation::Observation;
+    use seqvex::foundation::state::StateModel;
+    use seqvex::models::linear::sgd::{
+        Sgd, Sgd64, SgdError, SgdError64, SgdPredictionError, SgdPredictionError64, SgdSample,
+        SgdSample64, SgdServing32, SgdState, SgdState64, SgdUpdateBatchError,
+        SgdUpdateBatchError64,
+    };
+
+    fn sample(features: &[f32], target: f32) -> Observation<SgdSample> {
+        Observation::new(SgdSample {
+            features: Vector::from_slice(features),
+            target,
+        })
+    }
+
+    fn sample64(features: &[f64], target: f64) -> Observation<SgdSample64> {
+        Observation::new(SgdSample64 {
+            features: Vector64::from_slice(features),
+            target,
+        })
+    }
+
+    fn features(values: &[f32]) -> Observation<Vector> {
+        Observation::new(Vector::from_slice(values))
+    }
+
+    fn features64(values: &[f64]) -> Observation<Vector64> {
+        Observation::new(Vector64::from_slice(values))
+    }
+
+    fn state32(values: &[f32]) -> SgdState {
+        SgdState {
+            w: Vector::from_slice(values),
+        }
+    }
+
+    fn state64(values: &[f64]) -> SgdState64 {
+        SgdState64 {
+            w: Vector64::from_slice(values),
+        }
+    }
+
+    fn bits(vector: &Vector) -> Vec<u32> {
+        vector
+            .as_slice()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect()
+    }
+
+    fn bits64(vector: &Vector64) -> Vec<u64> {
+        vector
+            .as_slice()
+            .iter()
+            .map(|value| value.to_bits())
+            .collect()
+    }
+
+    fn bits32_vec(values: &[f32]) -> Vec<u32> {
+        values.iter().map(|value| value.to_bits()).collect()
+    }
+
+    fn bits64_vec(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|value| value.to_bits()).collect()
+    }
+
+    fn assert_learning_transition_at(
+        model: &Sgd,
+        initial: &SgdState,
+        rows: &[Observation<SgdSample>],
+        expected_index: usize,
+        expected: SgdError,
+    ) {
+        match model.update_batch(initial.clone(), rows, rows.len()) {
+            Err(SgdUpdateBatchError::Transition {
+                failed_index,
+                committed,
+                error,
+                ..
+            }) => {
+                assert_eq!(failed_index, expected_index);
+                assert_eq!(committed, expected_index);
+                assert_eq!(error, expected);
+            }
+            other => panic!("expected learning Transition, got {other:?}"),
+        }
+    }
+
+    fn assert_learning_transition_at64(
+        model: &Sgd64,
+        initial: &SgdState64,
+        rows: &[Observation<SgdSample64>],
+        expected_index: usize,
+        expected: SgdError64,
+    ) {
+        match model.update_batch(initial.clone(), rows, rows.len()) {
+            Err(SgdUpdateBatchError64::Transition {
+                failed_index,
+                committed,
+                error,
+                ..
+            }) => {
+                assert_eq!(failed_index, expected_index);
+                assert_eq!(committed, expected_index);
+                assert_eq!(error, expected);
+            }
+            other => panic!("expected f64 learning Transition, got {other:?}"),
+        }
+    }
+
+    fn assert_prediction_at(
+        model: &Sgd,
+        state: &SgdState,
+        rows: &[Observation<Vector>],
+        expected_index: usize,
+        expected: SgdError,
+    ) {
+        match model.predict_batch(state, rows, rows.len()) {
+            Err(SgdPredictionError::At { index, error }) => {
+                assert_eq!(index, expected_index);
+                assert_eq!(error, expected);
+            }
+            other => panic!("expected prediction At, got {other:?}"),
+        }
+    }
+
+    fn assert_prediction_at64(
+        model: &Sgd64,
+        state: &SgdState64,
+        rows: &[Observation<Vector64>],
+        expected_index: usize,
+        expected: SgdError64,
+    ) {
+        match model.predict_batch(state, rows, rows.len()) {
+            Err(SgdPredictionError64::At { index, error }) => {
+                assert_eq!(index, expected_index);
+                assert_eq!(error, expected);
+            }
+            other => panic!("expected f64 prediction At, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bound_first_rejects_before_any_row_validation() {
+        let model = Sgd::new(2, 0.1).expect("valid configuration");
+        let initial = model.initial_state();
+        let rows = [sample(&[0.5, 0.5], 1.0), sample(&[f32::NAN, 0.0], 1.0)];
+        match model.update_batch(initial.clone(), &rows, 1).unwrap_err() {
+            SgdUpdateBatchError::TooLarge { max, actual, state } => {
+                assert_eq!((max, actual), (1, 2));
+                assert_eq!(bits(&state.w), bits(&initial.w));
+            }
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+        assert!(matches!(
+            model.update_batch(initial.clone(), &rows, 0),
+            Err(SgdUpdateBatchError::TooLarge {
+                max: 0,
+                actual: 2,
+                ..
+            })
+        ));
+
+        let prediction_rows = [features(&[0.5, 0.5]), features(&[f32::NAN, 0.0])];
+        assert!(matches!(
+            model.predict_batch(&initial, &prediction_rows, 1),
+            Err(SgdPredictionError::TooLarge { max: 1, actual: 2 })
+        ));
+
+        let model64 = Sgd64::new(2, 0.1).expect("valid configuration");
+        let initial64 = model64.initial_state();
+        let rows64 = [sample64(&[0.5, 0.5], 1.0), sample64(&[f64::NAN, 0.0], 1.0)];
+        assert!(matches!(
+            model64.update_batch(initial64.clone(), &rows64, 1),
+            Err(SgdUpdateBatchError64::TooLarge {
+                max: 1,
+                actual: 2,
+                ..
+            })
+        ));
+        let prediction_rows64 = [features64(&[0.5, 0.5]), features64(&[f64::NAN, 0.0])];
+        assert!(matches!(
+            model64.predict_batch(&initial64, &prediction_rows64, 1),
+            Err(SgdPredictionError64::TooLarge { max: 1, actual: 2 })
+        ));
+    }
+
+    #[test]
+    fn empty_and_zero_preserve_state_bits() {
+        let model = Sgd::new(3, 0.1).expect("valid configuration");
+        let state = state32(&[f32::NAN, -0.0, 0.0]);
+        let state_bits = bits(&state.w);
+        let empty: [Observation<SgdSample>; 0] = [];
+        let returned = model
+            .update_batch(state.clone(), &empty, 0)
+            .expect("empty update");
+        assert_eq!(bits(&returned.w), state_bits);
+        let returned = model
+            .update_batch(state.clone(), &empty, usize::MAX)
+            .expect("empty update with max");
+        assert_eq!(bits(&returned.w), state_bits);
+        assert!(matches!(
+            model.update_batch(state.clone(), &[sample(&[0.0, 0.0, 0.0], 0.0)], 0),
+            Err(SgdUpdateBatchError::TooLarge {
+                max: 0,
+                actual: 1,
+                ..
+            })
+        ));
+
+        let empty_predictions: [Observation<Vector>; 0] = [];
+        let predicted = model
+            .predict_batch(&state, &empty_predictions, 0)
+            .expect("empty prediction");
+        assert!(predicted.is_empty());
+        let predicted = model
+            .predict_batch(&state, &empty_predictions, usize::MAX)
+            .expect("empty prediction with max");
+        assert!(predicted.is_empty());
+        assert!(matches!(
+            model.predict_batch(&state, &[features(&[0.0, 0.0, 0.0])], 0),
+            Err(SgdPredictionError::TooLarge { max: 0, actual: 1 })
+        ));
+
+        let model64 = Sgd64::new(3, 0.1).expect("valid configuration");
+        let state64 = state64(&[f64::NAN, -0.0, 0.0]);
+        let state64_bits = bits64(&state64.w);
+        let empty64: [Observation<SgdSample64>; 0] = [];
+        let returned = model64
+            .update_batch(state64.clone(), &empty64, 0)
+            .expect("empty f64 update");
+        assert_eq!(bits64(&returned.w), state64_bits);
+        assert!(matches!(
+            model64.update_batch(state64.clone(), &[sample64(&[0.0, 0.0, 0.0], 0.0)], 0),
+            Err(SgdUpdateBatchError64::TooLarge {
+                max: 0,
+                actual: 1,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn exact_limit_and_usize_max_accept() {
+        let model = Sgd::new(2, 0.1).expect("valid configuration");
+        let initial = model.initial_state();
+        let rows = [sample(&[0.5, 0.5], 1.0), sample(&[-0.5, 0.5], 0.0)];
+        let expected = rows.iter().fold(initial.clone(), |state, row| {
+            model.update(&state, row).expect("update")
+        });
+        let exact = model
+            .update_batch(initial.clone(), &rows, rows.len())
+            .expect("exact limit");
+        assert_eq!(bits(&exact.w), bits(&expected.w));
+        let unlimited = model
+            .update_batch(initial.clone(), &rows, usize::MAX)
+            .expect("usize::MAX");
+        assert_eq!(bits(&unlimited.w), bits(&expected.w));
+
+        let invalid = [sample(&[1.0, 1.0], 1.0), sample(&[1.0], 1.0)];
+        assert!(matches!(
+            model.update_batch(initial.clone(), &invalid, usize::MAX),
+            Err(SgdUpdateBatchError::Transition {
+                failed_index: 1,
+                committed: 1,
+                ..
+            })
+        ));
+
+        let prediction_rows = [features(&[0.5, 0.5]), features(&[-0.5, 0.5])];
+        let expected_predictions: Vec<f32> = prediction_rows
+            .iter()
+            .map(|row| model.predict(&initial, row.value()).expect("prediction"))
+            .collect();
+        let exact_predictions = model
+            .predict_batch(&initial, &prediction_rows, prediction_rows.len())
+            .expect("exact prediction limit");
+        assert_eq!(
+            bits32_vec(&exact_predictions),
+            bits32_vec(&expected_predictions)
+        );
+        let unlimited_predictions = model
+            .predict_batch(&initial, &prediction_rows, usize::MAX)
+            .expect("usize::MAX prediction");
+        assert_eq!(
+            bits32_vec(&unlimited_predictions),
+            bits32_vec(&expected_predictions)
+        );
+
+        let invalid_predictions = [features(&[0.5, 0.5]), features(&[f32::NAN, 0.0])];
+        assert!(matches!(
+            model.predict_batch(&initial, &invalid_predictions, usize::MAX),
+            Err(SgdPredictionError::At { index: 1, .. })
+        ));
+
+        let model64 = Sgd64::new(2, 0.1).expect("valid configuration");
+        let initial64 = model64.initial_state();
+        let rows64 = [sample64(&[0.5, 0.5], 1.0), sample64(&[-0.5, 0.5], 0.0)];
+        let expected64 = rows64.iter().fold(initial64.clone(), |state, row| {
+            model64.update(&state, row).expect("update")
+        });
+        let unlimited64 = model64
+            .update_batch(initial64.clone(), &rows64, usize::MAX)
+            .expect("usize::MAX f64");
+        assert_eq!(bits64(&unlimited64.w), bits64(&expected64.w));
+
+        let invalid64 = [sample64(&[0.5, 0.5], 1.0), sample64(&[1.0], 1.0)];
+        assert!(matches!(
+            model64.update_batch(initial64.clone(), &invalid64, usize::MAX),
+            Err(SgdUpdateBatchError64::Transition {
+                failed_index: 1,
+                committed: 1,
+                ..
+            })
+        ));
+
+        let prediction_rows64 = [features64(&[0.5, 0.5]), features64(&[-0.5, 0.5])];
+        let expected_predictions64: Vec<f64> = prediction_rows64
+            .iter()
+            .map(|row| {
+                model64
+                    .predict(&initial64, row.value())
+                    .expect("prediction")
+            })
+            .collect();
+        let exact64 = model64
+            .predict_batch(&initial64, &prediction_rows64, prediction_rows64.len())
+            .expect("exact f64 prediction limit");
+        assert_eq!(bits64_vec(&exact64), bits64_vec(&expected_predictions64));
+        let invalid_predictions64 = [features64(&[0.5, 0.5]), features64(&[f64::NAN, 0.0])];
+        assert!(matches!(
+            model64.predict_batch(&initial64, &invalid_predictions64, usize::MAX),
+            Err(SgdPredictionError64::At { index: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn chunked_and_continuous_folds_match() {
+        let model = Sgd::new(2, 0.1).expect("valid configuration");
+        let initial = model.initial_state();
+        let rows = [
+            sample(&[0.5, 0.5], 1.0),
+            sample(&[-0.5, 0.5], 0.0),
+            sample(&[0.5, -0.5], -1.0),
+            sample(&[-0.5, -0.5], 0.0),
+            sample(&[0.25, 0.75], 0.5),
+            sample(&[-0.25, -0.75], -0.5),
+        ];
+        let continuous = rows.iter().fold(initial.clone(), |state, row| {
+            model.update(&state, row).expect("update")
+        });
+        let single = model
+            .update_batch(initial.clone(), &rows, rows.len())
+            .expect("single group");
+        assert_eq!(bits(&single.w), bits(&continuous.w));
+        let mut chunked = initial.clone();
+        for chunk in [&rows[..1], &rows[1..3], &rows[3..]] {
+            chunked = model
+                .update_batch(chunked, chunk, chunk.len())
+                .expect("chunk");
+        }
+        assert_eq!(bits(&chunked.w), bits(&continuous.w));
+
+        let model64 = Sgd64::new(2, 0.1).expect("valid configuration");
+        let initial64 = model64.initial_state();
+        let rows64: Vec<Observation<SgdSample64>> = (0..6)
+            .map(|index| {
+                let value = index as f64 * 0.125;
+                sample64(&[value, -value], value * 0.5)
+            })
+            .collect();
+        let continuous64 = rows64.iter().fold(initial64.clone(), |state, row| {
+            model64.update(&state, row).expect("update")
+        });
+        let mut chunked64 = initial64.clone();
+        for chunk in [&rows64[..2], &rows64[2..5], &rows64[5..]] {
+            chunked64 = model64
+                .update_batch(chunked64, chunk, chunk.len())
+                .expect("f64 chunk");
+        }
+        assert_eq!(bits64(&chunked64.w), bits64(&continuous64.w));
+    }
+
+    #[test]
+    fn failure_positions_prefix_slice_retry_and_correction() {
+        let model = Sgd::new(2, 0.1).expect("valid configuration");
+        let initial = model.initial_state();
+        let valid = [
+            sample(&[0.5, 0.5], 1.0),
+            sample(&[-0.5, 0.5], 0.0),
+            sample(&[0.5, -0.5], -1.0),
+            sample(&[-0.5, -0.5], 0.0),
+        ];
+        for failure_index in [0, 2, 4] {
+            let mut rows = valid.to_vec();
+            rows.insert(failure_index, sample(&[1.0], 1.0));
+            let err = model
+                .update_batch(initial.clone(), &rows, rows.len())
+                .unwrap_err();
+            let (failed_index, committed, prefix) = match &err {
+                SgdUpdateBatchError::Transition {
+                    failed_index,
+                    committed,
+                    state,
+                    error,
+                } => {
+                    assert_eq!(*failed_index, failure_index);
+                    assert_eq!(*committed, failure_index);
+                    assert_eq!(
+                        *error,
+                        SgdError::DimensionMismatch {
+                            expected: 2,
+                            actual: 1
+                        }
+                    );
+                    (*failed_index, *committed, state.clone())
+                }
+                other => panic!("expected Transition, got {other:?}"),
+            };
+            assert_eq!(failed_index, committed);
+            let expected_prefix = rows[..failure_index]
+                .iter()
+                .fold(initial.clone(), |state, row| {
+                    model.update(&state, row).expect("update")
+                });
+            assert_eq!(bits(&prefix.w), bits(&expected_prefix.w));
+
+            let retry = model
+                .update_batch(
+                    prefix.clone(),
+                    &rows[failure_index..],
+                    rows.len() - failure_index,
+                )
+                .unwrap_err();
+            match retry {
+                SgdUpdateBatchError::Transition {
+                    failed_index: retry_index,
+                    committed: retry_committed,
+                    state,
+                    error,
+                } => {
+                    assert_eq!(retry_index, 0);
+                    assert_eq!(retry_committed, 0);
+                    assert_eq!(bits(&state.w), bits(&prefix.w));
+                    assert_eq!(
+                        error,
+                        SgdError::DimensionMismatch {
+                            expected: 2,
+                            actual: 1
+                        }
+                    );
+                }
+                other => panic!("expected unchanged retry Transition, got {other:?}"),
+            }
+
+            let mut corrected = rows.clone();
+            corrected[failure_index] = sample(&[0.25, -0.25], 0.5);
+            let expected = model
+                .update_batch(initial.clone(), &corrected, corrected.len())
+                .expect("corrected full sequence");
+            let retried = model
+                .update_batch(
+                    prefix,
+                    &corrected[failure_index..],
+                    corrected.len() - failure_index,
+                )
+                .expect("corrected retry");
+            assert_eq!(bits(&retried.w), bits(&expected.w));
+        }
+    }
+
+    #[test]
+    fn f64_failure_positions_prefix_slice_retry_and_correction() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let initial = model.initial_state();
+        let valid = [
+            sample64(&[0.5, 0.5], 1.0),
+            sample64(&[-0.5, 0.5], 0.0),
+            sample64(&[0.5, -0.5], -1.0),
+            sample64(&[-0.5, -0.5], 0.0),
+        ];
+        for failure_index in [0, 2, 4] {
+            let mut rows = valid.to_vec();
+            rows.insert(failure_index, sample64(&[1.0], 1.0));
+            let err = model
+                .update_batch(initial.clone(), &rows, rows.len())
+                .unwrap_err();
+            let (prefix, failed_index) = match &err {
+                SgdUpdateBatchError64::Transition {
+                    failed_index,
+                    committed,
+                    state,
+                    error,
+                } => {
+                    assert_eq!(*failed_index, failure_index);
+                    assert_eq!(*committed, failure_index);
+                    assert_eq!(
+                        *error,
+                        SgdError64::DimensionMismatch {
+                            expected: 2,
+                            actual: 1
+                        }
+                    );
+                    (state.clone(), *failed_index)
+                }
+                other => panic!("expected f64 Transition, got {other:?}"),
+            };
+            let expected_prefix = rows[..failed_index]
+                .iter()
+                .fold(initial.clone(), |state, row| {
+                    model.update(&state, row).expect("update")
+                });
+            assert_eq!(bits64(&prefix.w), bits64(&expected_prefix.w));
+
+            let retry = model
+                .update_batch(
+                    prefix.clone(),
+                    &rows[failed_index..],
+                    rows.len() - failed_index,
+                )
+                .unwrap_err();
+            match retry {
+                SgdUpdateBatchError64::Transition {
+                    failed_index: retry_index,
+                    committed: retry_committed,
+                    state,
+                    error,
+                } => {
+                    assert_eq!(retry_index, 0);
+                    assert_eq!(retry_committed, 0);
+                    assert_eq!(bits64(&state.w), bits64(&prefix.w));
+                    assert_eq!(
+                        error,
+                        SgdError64::DimensionMismatch {
+                            expected: 2,
+                            actual: 1
+                        }
+                    );
+                }
+                other => panic!("expected f64 unchanged retry Transition, got {other:?}"),
+            }
+
+            let mut corrected = rows.clone();
+            corrected[failed_index] = sample64(&[0.25, -0.25], 0.5);
+            let expected = model
+                .update_batch(initial.clone(), &corrected, corrected.len())
+                .expect("corrected f64 full sequence");
+            let retried = model
+                .update_batch(
+                    prefix,
+                    &corrected[failed_index..],
+                    corrected.len() - failed_index,
+                )
+                .expect("corrected f64 retry");
+            assert_eq!(bits64(&retried.w), bits64(&expected.w));
+        }
+    }
+
+    #[test]
+    fn prediction_failure_positions_and_no_partial_vector() {
+        let model = Sgd::new(2, 0.1).expect("valid configuration");
+        let state = state32(&[0.5, -0.5]);
+        let state_bits = bits(&state.w);
+        let valid = [
+            features(&[0.5, 0.5]),
+            features(&[-0.5, 0.5]),
+            features(&[0.5, -0.5]),
+        ];
+        for failure_index in [0, 1, 2] {
+            let mut rows = valid.to_vec();
+            rows.insert(failure_index, features(&[f32::NAN, 0.0]));
+            match model.predict_batch(&state, &rows, rows.len()) {
+                Err(SgdPredictionError::At { index, error }) => {
+                    assert_eq!(index, failure_index);
+                    assert_eq!(error, SgdError::NonFiniteInput);
+                }
+                other => panic!("expected At, got {other:?}"),
+            }
+            assert_eq!(bits(&state.w), state_bits);
+        }
+
+        let model64 = Sgd64::new(2, 0.1).expect("valid configuration");
+        let state64 = state64(&[0.5, -0.5]);
+        let state64_bits = bits64(&state64.w);
+        let rows64 = [features64(&[0.5, 0.5]), features64(&[f64::NAN, 0.0])];
+        match model64.predict_batch(&state64, &rows64, rows64.len()) {
+            Err(SgdPredictionError64::At { index, error }) => {
+                assert_eq!(index, 1);
+                assert_eq!(error, SgdError64::NonFiniteInput);
+            }
+            other => panic!("expected f64 At, got {other:?}"),
+        }
+        assert_eq!(bits64(&state64.w), state64_bits);
+    }
+
+    #[test]
+    fn b_snapshot_prediction_failure_preserves_snapshot() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let snapshot: SgdServing32 = model
+            .to_serving_f32(&state64(&[1.0, -2.0]))
+            .expect("snapshot");
+        let snapshot_bits = bits(snapshot.weights());
+        let rows = [features(&[0.5, 0.5]), features(&[f32::NAN, 0.0])];
+        match snapshot.predict_batch(&rows, rows.len()) {
+            Err(SgdPredictionError::At { index, error }) => {
+                assert_eq!(index, 1);
+                assert_eq!(error, SgdError::NonFiniteInput);
+            }
+            other => panic!("expected B At, got {other:?}"),
+        }
+        assert_eq!(bits(snapshot.weights()), snapshot_bits);
+    }
+
+    #[test]
+    fn prediction_failure_positions_cover_a_b_and_c_at_three_rows() {
+        let model_c = Sgd::new(2, 0.1).expect("valid C configuration");
+        let state_c = state32(&[0.5, -0.5]);
+        let c_bits = bits(&state_c.w);
+        let valid_c = [
+            features(&[0.5, 0.5]),
+            features(&[-0.5, 0.5]),
+            features(&[0.25, -0.75]),
+        ];
+        for failure_index in [0, 1, valid_c.len() - 1] {
+            let mut rows = valid_c.to_vec();
+            rows[failure_index] = features(&[f32::NAN, 0.0]);
+            match model_c.predict_batch(&state_c, &rows, rows.len()) {
+                Err(SgdPredictionError::At { index, error }) => {
+                    assert_eq!(index, failure_index);
+                    assert_eq!(error, SgdError::NonFiniteInput);
+                }
+                other => panic!("expected C At, got {other:?}"),
+            }
+            assert_eq!(bits(&state_c.w), c_bits);
+        }
+
+        let model_a = Sgd64::new(2, 0.1).expect("valid A configuration");
+        let state_a = state64(&[0.5, -0.5]);
+        let a_bits = bits64(&state_a.w);
+        let valid_a = [
+            features64(&[0.5, 0.5]),
+            features64(&[-0.5, 0.5]),
+            features64(&[0.25, -0.75]),
+        ];
+        for failure_index in [0, 1, valid_a.len() - 1] {
+            let mut rows = valid_a.to_vec();
+            rows[failure_index] = features64(&[f64::NAN, 0.0]);
+            match model_a.predict_batch(&state_a, &rows, rows.len()) {
+                Err(SgdPredictionError64::At { index, error }) => {
+                    assert_eq!(index, failure_index);
+                    assert_eq!(error, SgdError64::NonFiniteInput);
+                }
+                other => panic!("expected A At, got {other:?}"),
+            }
+            assert_eq!(bits64(&state_a.w), a_bits);
+        }
+
+        let snapshot = model_a.to_serving_f32(&state_a).expect("B snapshot");
+        let b_bits = bits(snapshot.weights());
+        let valid_b = [
+            features(&[0.5, 0.5]),
+            features(&[-0.5, 0.5]),
+            features(&[0.25, -0.75]),
+        ];
+        for failure_index in [0, 1, valid_b.len() - 1] {
+            let mut rows = valid_b.to_vec();
+            rows[failure_index] = features(&[f32::NAN, 0.0]);
+            match snapshot.predict_batch(&rows, rows.len()) {
+                Err(SgdPredictionError::At { index, error }) => {
+                    assert_eq!(index, failure_index);
+                    assert_eq!(error, SgdError::NonFiniteInput);
+                }
+                other => panic!("expected B At, got {other:?}"),
+            }
+            assert_eq!(bits(snapshot.weights()), b_bits);
+        }
+    }
+
+    #[test]
+    fn b_zero_limit_and_oversize_reject_before_validation() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let snapshot = model
+            .to_serving_f32(&state64(&[1.0, -2.0]))
+            .expect("snapshot");
+        let snapshot_bits = bits(snapshot.weights());
+        let rows = [
+            features(&[f32::NAN, 0.0]),
+            features(&[0.5, 0.5]),
+            features(&[-0.5, 0.5]),
+        ];
+        assert!(matches!(
+            snapshot.predict_batch(&rows, 0),
+            Err(SgdPredictionError::TooLarge { max: 0, actual: 3 })
+        ));
+        assert!(matches!(
+            snapshot.predict_batch(&rows, rows.len() - 1),
+            Err(SgdPredictionError::TooLarge { max: 2, actual: 3 })
+        ));
+        assert!(matches!(
+            snapshot.predict_batch(&rows[..1], 0),
+            Err(SgdPredictionError::TooLarge { max: 0, actual: 1 })
+        ));
+        assert_eq!(bits(snapshot.weights()), snapshot_bits);
+    }
+
+    #[test]
+    fn empty_prediction_with_zero_limit_succeeds_for_a_and_b() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let state = state64(&[0.5, -0.5]);
+        let empty_a: [Observation<Vector64>; 0] = [];
+        assert!(
+            model
+                .predict_batch(&state, &empty_a, 0)
+                .expect("empty A prediction")
+                .is_empty()
+        );
+
+        let snapshot = model.to_serving_f32(&state).expect("snapshot");
+        let empty_b: [Observation<Vector>; 0] = [];
+        assert!(
+            snapshot
+                .predict_batch(&empty_b, 0)
+                .expect("empty B prediction")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn learning_validation_precedence_32() {
+        let model = Sgd::new(2, 0.1).expect("valid configuration");
+        let initial = model.initial_state();
+        let valid = sample(&[0.5, 0.5], 1.0);
+        assert_learning_transition_at(
+            &model,
+            &initial,
+            &[valid.clone(), sample(&[1.0], 1.0)],
+            1,
+            SgdError::DimensionMismatch {
+                expected: 2,
+                actual: 1,
+            },
+        );
+        assert_learning_transition_at(
+            &model,
+            &state32(&[0.0, 0.0, 0.0]),
+            &[valid.clone(), sample(&[1.0, 1.0], 1.0)],
+            0,
+            SgdError::DimensionMismatch {
+                expected: 2,
+                actual: 3,
+            },
+        );
+        assert_learning_transition_at(
+            &model,
+            &initial,
+            &[valid.clone(), sample(&[f32::NAN, 1.0], 1.0)],
+            1,
+            SgdError::NonFiniteInput,
+        );
+        assert_learning_transition_at(
+            &model,
+            &initial,
+            &[valid, sample(&[1.0, 1.0], f32::NAN)],
+            1,
+            SgdError::NonFiniteInput,
+        );
+        let overflow_model = Sgd::new(1, 1.0e38).expect("valid configuration");
+        assert_learning_transition_at(
+            &overflow_model,
+            &state32(&[1.0e38]),
+            &[sample(&[0.0], 0.0), sample(&[1.0e38], 0.0)],
+            1,
+            SgdError::NonFiniteCandidate,
+        );
+    }
+
+    #[test]
+    fn learning_validation_precedence_64() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let initial = model.initial_state();
+        let valid = sample64(&[0.5, 0.5], 1.0);
+        assert_learning_transition_at64(
+            &model,
+            &initial,
+            &[valid.clone(), sample64(&[1.0], 1.0)],
+            1,
+            SgdError64::DimensionMismatch {
+                expected: 2,
+                actual: 1,
+            },
+        );
+        assert_learning_transition_at64(
+            &model,
+            &state64(&[0.0, 0.0, 0.0]),
+            &[valid.clone(), sample64(&[1.0, 1.0], 1.0)],
+            0,
+            SgdError64::DimensionMismatch {
+                expected: 2,
+                actual: 3,
+            },
+        );
+        assert_learning_transition_at64(
+            &model,
+            &initial,
+            &[valid.clone(), sample64(&[f64::NAN, 1.0], 1.0)],
+            1,
+            SgdError64::NonFiniteInput,
+        );
+        assert_learning_transition_at64(
+            &model,
+            &initial,
+            &[valid, sample64(&[1.0, 1.0], f64::NAN)],
+            1,
+            SgdError64::NonFiniteInput,
+        );
+        let overflow_model = Sgd64::new(1, 1.0e308).expect("valid configuration");
+        assert_learning_transition_at64(
+            &overflow_model,
+            &state64(&[1.0e308]),
+            &[sample64(&[0.0], 0.0), sample64(&[1.0e308], 0.0)],
+            1,
+            SgdError64::NonFiniteCandidate,
+        );
+    }
+
+    #[test]
+    fn prediction_validation_precedence_32() {
+        let model = Sgd::new(2, 0.1).expect("valid configuration");
+        let initial = model.initial_state();
+        let valid = features(&[0.5, 0.5]);
+        assert_prediction_at(
+            &model,
+            &initial,
+            &[valid.clone(), features(&[1.0])],
+            1,
+            SgdError::DimensionMismatch {
+                expected: 2,
+                actual: 1,
+            },
+        );
+        assert_prediction_at(
+            &model,
+            &state32(&[0.0, 0.0, 0.0]),
+            &[valid.clone(), features(&[1.0, 1.0])],
+            0,
+            SgdError::DimensionMismatch {
+                expected: 2,
+                actual: 3,
+            },
+        );
+        assert_prediction_at(
+            &model,
+            &initial,
+            &[valid.clone(), features(&[f32::NAN, 0.0])],
+            1,
+            SgdError::NonFiniteInput,
+        );
+        assert_prediction_at(
+            &model,
+            &state32(&[f32::MAX, 0.0]),
+            &[features(&[0.0, 0.0]), features(&[f32::MAX, 0.0])],
+            1,
+            SgdError::NonFiniteOutput,
+        );
+    }
+
+    #[test]
+    fn prediction_validation_precedence_64() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let initial = model.initial_state();
+        let valid = features64(&[0.5, 0.5]);
+        assert_prediction_at64(
+            &model,
+            &initial,
+            &[valid.clone(), features64(&[1.0])],
+            1,
+            SgdError64::DimensionMismatch {
+                expected: 2,
+                actual: 1,
+            },
+        );
+        assert_prediction_at64(
+            &model,
+            &state64(&[0.0, 0.0, 0.0]),
+            &[valid.clone(), features64(&[1.0, 1.0])],
+            0,
+            SgdError64::DimensionMismatch {
+                expected: 2,
+                actual: 3,
+            },
+        );
+        assert_prediction_at64(
+            &model,
+            &initial,
+            &[valid.clone(), features64(&[f64::NAN, 0.0])],
+            1,
+            SgdError64::NonFiniteInput,
+        );
+        assert_prediction_at64(
+            &model,
+            &state64(&[f64::MAX, 0.0]),
+            &[features64(&[0.0, 0.0]), features64(&[f64::MAX, 0.0])],
+            1,
+            SgdError64::NonFiniteOutput,
+        );
+    }
+
+    #[test]
+    fn prediction_validation_precedence_b() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let snapshot = model
+            .to_serving_f32(&state64(&[1.0, -2.0]))
+            .expect("snapshot");
+        let valid = features(&[0.5, 0.5]);
+        match snapshot.predict_batch(&[valid.clone(), features(&[1.0])], 2) {
+            Err(SgdPredictionError::At { index, error }) => {
+                assert_eq!(index, 1);
+                assert_eq!(
+                    error,
+                    SgdError::DimensionMismatch {
+                        expected: 2,
+                        actual: 1
+                    }
+                );
+            }
+            other => panic!("expected B dimension At, got {other:?}"),
+        }
+        match snapshot.predict_batch(&[valid, features(&[f32::NAN, 0.0])], 2) {
+            Err(SgdPredictionError::At { index, error }) => {
+                assert_eq!(index, 1);
+                assert_eq!(error, SgdError::NonFiniteInput);
+            }
+            other => panic!("expected B input At, got {other:?}"),
+        }
+        let overflow_snapshot = model
+            .to_serving_f32(&state64(&[f32::MAX as f64, 0.0]))
+            .expect("overflow-capable snapshot");
+        match overflow_snapshot
+            .predict_batch(&[features(&[0.0, 0.0]), features(&[f32::MAX, 0.0])], 2)
+        {
+            Err(SgdPredictionError::At { index, error }) => {
+                assert_eq!(index, 1);
+                assert_eq!(error, SgdError::NonFiniteOutput);
+            }
+            other => panic!("expected B output At, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_display_and_source_32() {
+        let model = Sgd::new(2, 0.1).expect("valid configuration");
+        let initial = model.initial_state();
+        let too_large = model
+            .update_batch(
+                initial.clone(),
+                &[sample(&[0.0, 0.0], 0.0), sample(&[0.0, 0.0], 0.0)],
+                1,
+            )
+            .unwrap_err();
+        let text = too_large.to_string();
+        assert!(text.contains("max 1"));
+        assert!(text.contains("got 2"));
+        assert!(text.contains("supplied state was returned unchanged"));
+        assert!(too_large.source().is_none());
+
+        let transition = model
+            .update_batch(
+                initial.clone(),
+                &[sample(&[0.0, 0.0], 0.0), sample(&[1.0], 1.0)],
+                2,
+            )
+            .unwrap_err();
+        let text = transition.to_string();
+        let inner = match &transition {
+            SgdUpdateBatchError::Transition { error, .. } => error.to_string(),
+            other => panic!("expected Transition, got {other:?}"),
+        };
+        assert!(text.contains("index 1"));
+        assert!(text.contains("1 committed rows"));
+        assert!(!text.contains(&inner));
+        assert_eq!(
+            transition.source().expect("inner source").to_string(),
+            inner
+        );
+
+        let prediction_too_large = model
+            .predict_batch(&initial, &[features(&[0.0, 0.0]), features(&[0.0, 0.0])], 1)
+            .unwrap_err();
+        let text = prediction_too_large.to_string();
+        assert!(text.contains("max 1"));
+        assert!(text.contains("got 2"));
+        assert!(text.contains("no output was returned"));
+        assert!(prediction_too_large.source().is_none());
+
+        let prediction_at = model
+            .predict_batch(
+                &initial,
+                &[features(&[0.0, 0.0]), features(&[f32::NAN, 0.0])],
+                2,
+            )
+            .unwrap_err();
+        let text = prediction_at.to_string();
+        let inner = match &prediction_at {
+            SgdPredictionError::At { error, .. } => error.to_string(),
+            other => panic!("expected At, got {other:?}"),
+        };
+        assert!(text.contains("index 1"));
+        assert!(text.contains("no partial prediction vector was returned"));
+        assert!(!text.contains(&inner));
+        assert_eq!(
+            prediction_at.source().expect("inner source").to_string(),
+            inner
+        );
+    }
+
+    #[test]
+    fn error_display_and_source_64() {
+        let model = Sgd64::new(2, 0.1).expect("valid configuration");
+        let initial = model.initial_state();
+        let too_large = model
+            .update_batch(
+                initial.clone(),
+                &[sample64(&[0.0, 0.0], 0.0), sample64(&[0.0, 0.0], 0.0)],
+                1,
+            )
+            .unwrap_err();
+        let text = too_large.to_string();
+        assert!(text.contains("max 1"));
+        assert!(text.contains("got 2"));
+        assert!(too_large.source().is_none());
+
+        let transition = model
+            .update_batch(
+                initial.clone(),
+                &[sample64(&[0.0, 0.0], 0.0), sample64(&[1.0], 1.0)],
+                2,
+            )
+            .unwrap_err();
+        let text = transition.to_string();
+        let inner = match &transition {
+            SgdUpdateBatchError64::Transition { error, .. } => error.to_string(),
+            other => panic!("expected f64 Transition, got {other:?}"),
+        };
+        assert!(text.contains("index 1"));
+        assert!(!text.contains(&inner));
+        assert_eq!(
+            transition.source().expect("inner source").to_string(),
+            inner
+        );
+
+        let prediction_too_large = model
+            .predict_batch(
+                &initial,
+                &[features64(&[0.0, 0.0]), features64(&[0.0, 0.0])],
+                1,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            prediction_too_large,
+            SgdPredictionError64::TooLarge { max: 1, actual: 2 }
+        ));
+        assert!(prediction_too_large.source().is_none());
+
+        let prediction_at = model
+            .predict_batch(
+                &initial,
+                &[features64(&[0.0, 0.0]), features64(&[f64::NAN, 0.0])],
+                2,
+            )
+            .unwrap_err();
+        let text = prediction_at.to_string();
+        let inner = match &prediction_at {
+            SgdPredictionError64::At { error, .. } => error.to_string(),
+            other => panic!("expected f64 At, got {other:?}"),
+        };
+        assert!(text.contains("index 1"));
+        assert!(!text.contains(&inner));
+        assert_eq!(
+            prediction_at.source().expect("inner source").to_string(),
+            inner
+        );
+    }
+
+    #[test]
+    fn bitwise_retention_with_nan_and_signed_zero() {
+        let model = Sgd::new(3, 0.1).expect("valid configuration");
+        let state = state32(&[f32::NAN, -0.0, 0.0]);
+        let expected = bits(&state.w);
+        let empty: [Observation<SgdSample>; 0] = [];
+        assert_eq!(
+            bits(
+                &model
+                    .update_batch(state.clone(), &empty, 0)
+                    .expect("empty update")
+                    .w
+            ),
+            expected
+        );
+        assert_eq!(
+            bits(
+                &model
+                    .update_batch(state.clone(), &empty, usize::MAX)
+                    .expect("empty update with max")
+                    .w
+            ),
+            expected
+        );
+        let oversize = [sample(&[0.0, 0.0, 0.0], 0.0), sample(&[0.0, 0.0, 0.0], 0.0)];
+        match model.update_batch(state.clone(), &oversize, 1).unwrap_err() {
+            SgdUpdateBatchError::TooLarge {
+                state: returned, ..
+            } => {
+                assert_eq!(bits(&returned.w), expected);
+            }
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+
+        let model64 = Sgd64::new(3, 0.1).expect("valid configuration");
+        let state64 = state64(&[f64::NAN, -0.0, 0.0]);
+        let expected64 = bits64(&state64.w);
+        let empty64: [Observation<SgdSample64>; 0] = [];
+        assert_eq!(
+            bits64(
+                &model64
+                    .update_batch(state64.clone(), &empty64, 0)
+                    .expect("empty f64 update")
+                    .w
+            ),
+            expected64
+        );
+        let oversize64 = [
+            sample64(&[0.0, 0.0, 0.0], 0.0),
+            sample64(&[0.0, 0.0, 0.0], 0.0),
+        ];
+        match model64
+            .update_batch(state64.clone(), &oversize64, 1)
+            .unwrap_err()
+        {
+            SgdUpdateBatchError64::TooLarge {
+                state: returned, ..
+            } => {
+                assert_eq!(bits64(&returned.w), expected64);
+            }
+            other => panic!("expected f64 TooLarge, got {other:?}"),
+        }
+    }
+}

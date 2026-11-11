@@ -45,11 +45,18 @@
 //! [`SgdServing32`] snapshot for fixed `f32` inference. A and C use the single
 //! output-validating `predict`; there is no bare/checked pair.
 //!
-//! Bounded learning and grouped prediction are caller protocols over the
-//! public single-step APIs, not additional public SGD batch methods. Oversized
-//! groups must return the unchanged supplied state and perform no transition or
-//! observation validation. Fixed prediction calculation is separate from
-//! caller-owned external publication.
+//! # Bounded ordered groups
+//!
+//! Bounded ordered learning is provided by [`Sgd::update_batch`], which applies
+//! the single-step update once per row in increasing order. Grouped prediction
+//! is provided by [`Sgd::predict_batch`], which applies the single-step
+//! prediction once per row from one pinned state. Group-length bounds are
+//! checked before any row validation or transition. Oversized groups return the
+//! unchanged supplied state and perform no transition or observation
+//! validation. Fixed prediction calculation is separate from caller-owned
+//! external publication. Freshness selection, `served_through`/serving-identity
+//! bookkeeping, snapshot replacement and external publication remain
+//! caller-owned; this module adds no freshness API or automatic replacement.
 
 use crate::foundation::numerical::{DimensionMismatch, Vector};
 use crate::foundation::observation::Observation;
@@ -58,7 +65,8 @@ use crate::foundation::state::StateModel;
 mod profiles;
 
 pub use profiles::{
-    Sgd64, SgdError64, SgdSample64, SgdServing32, SgdServingConversionError, SgdState64,
+    Sgd64, SgdError64, SgdPredictionError64, SgdSample64, SgdServing32, SgdServingConversionError,
+    SgdState64, SgdUpdateBatchError64,
 };
 
 /// Failure classes reported by SGD construction, prediction, or update.
@@ -137,6 +145,102 @@ pub struct SgdSample {
     pub target: f32,
 }
 
+/// Failure classes reported by bounded ordered SGD learning.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SgdUpdateBatchError {
+    /// The supplied group exceeds the caller's maximum.
+    TooLarge {
+        /// The caller-supplied maximum group size.
+        max: usize,
+        /// The supplied group length.
+        actual: usize,
+        /// The supplied state, bitwise unchanged and unvalidated.
+        state: SgdState,
+    },
+    /// A row failed; the successful prefix is returned.
+    Transition {
+        /// Zero-based index within the supplied slice.
+        failed_index: usize,
+        /// Number of committed rows; equal to `failed_index`.
+        committed: usize,
+        /// The successful prefix after rows `0..failed_index`.
+        state: SgdState,
+        /// The inner single-step error.
+        error: SgdError,
+    },
+}
+
+impl std::fmt::Display for SgdUpdateBatchError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge { max, actual, .. } => write!(
+                formatter,
+                "SGD update group is too large: max {max}, got {actual}; no observation was validated or processed and the supplied state was returned unchanged"
+            ),
+            Self::Transition {
+                failed_index,
+                committed,
+                ..
+            } => write!(
+                formatter,
+                "SGD update failed at index {failed_index} after {committed} committed rows; the failed candidate was not committed and the successful prefix was returned"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SgdUpdateBatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::TooLarge { .. } => None,
+            Self::Transition { error, .. } => Some(error),
+        }
+    }
+}
+
+/// Failure classes reported by grouped SGD prediction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SgdPredictionError {
+    /// The supplied group exceeds the caller's maximum.
+    TooLarge {
+        /// The caller-supplied maximum prediction count.
+        max: usize,
+        /// The supplied group length.
+        actual: usize,
+    },
+    /// A row failed; no partial vector is returned.
+    At {
+        /// Zero-based index within the supplied slice.
+        index: usize,
+        /// The inner single-step error.
+        error: SgdError,
+    },
+}
+
+impl std::fmt::Display for SgdPredictionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge { max, actual } => write!(
+                formatter,
+                "SGD prediction group is too large: max {max}, got {actual}; no observation was validated or predicted and no output was returned"
+            ),
+            Self::At { index, .. } => write!(
+                formatter,
+                "SGD prediction failed at index {index}; no partial prediction vector was returned"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SgdPredictionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::TooLarge { .. } => None,
+            Self::At { error, .. } => Some(error),
+        }
+    }
+}
+
 /// An immutable SGD linear-regression configuration, shareable across streams.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sgd {
@@ -195,6 +299,73 @@ impl Sgd {
             return Err(SgdError::NonFiniteOutput);
         }
         Ok(value)
+    }
+
+    /// Bounded ordered learning: applies [`Sgd::update`] once per observation in
+    /// increasing order.
+    ///
+    /// The group length is checked against `max_batch` before any row is
+    /// validated or transitioned. `TooLarge` returns the supplied state
+    /// unchanged and unvalidated. On a row failure, `Transition` returns the
+    /// successful prefix, the zero-based failing index and the inner error;
+    /// rows after the failure are not attempted. Empty input succeeds and
+    /// returns the supplied state unchanged.
+    pub fn update_batch(
+        &self,
+        mut state: SgdState,
+        observations: &[Observation<SgdSample>],
+        max_batch: usize,
+    ) -> Result<SgdState, SgdUpdateBatchError> {
+        if observations.len() > max_batch {
+            return Err(SgdUpdateBatchError::TooLarge {
+                max: max_batch,
+                actual: observations.len(),
+                state,
+            });
+        }
+        for (index, observation) in observations.iter().enumerate() {
+            match self.update(&state, observation) {
+                Ok(next) => state = next,
+                Err(error) => {
+                    return Err(SgdUpdateBatchError::Transition {
+                        failed_index: index,
+                        committed: index,
+                        state,
+                        error,
+                    });
+                }
+            }
+        }
+        Ok(state)
+    }
+
+    /// Grouped prediction: applies [`Sgd::predict`] once per observation in
+    /// increasing order from the pinned state.
+    ///
+    /// The group length is checked against `max_predictions` before any row is
+    /// validated or predicted. `TooLarge` returns no vector. On a row failure,
+    /// `At` returns the zero-based failing index and the inner error; no partial
+    /// vector is returned. Empty input returns an empty vector.
+    pub fn predict_batch(
+        &self,
+        state: &SgdState,
+        observations: &[Observation<Vector>],
+        max_predictions: usize,
+    ) -> Result<Vec<f32>, SgdPredictionError> {
+        if observations.len() > max_predictions {
+            return Err(SgdPredictionError::TooLarge {
+                max: max_predictions,
+                actual: observations.len(),
+            });
+        }
+        let mut outputs = Vec::with_capacity(observations.len());
+        for (index, observation) in observations.iter().enumerate() {
+            match self.predict(state, observation.value()) {
+                Ok(value) => outputs.push(value),
+                Err(error) => return Err(SgdPredictionError::At { index, error }),
+            }
+        }
+        Ok(outputs)
     }
 
     /// Validates the feature and state dimensions, in order `x`, then `w`.

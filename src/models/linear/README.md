@@ -34,7 +34,7 @@ the intercept feature and any preprocessing. See the
 
 ## Execution modes and profiles
 
-OLS is a historical dataset fit/refit plus fixed single/stream/group prediction. RLS and SGD are ordered single-step learners; RLS also exposes a public bounded ordered-learning call, while SGD's bounded group is the documented caller protocol. Fixed grouped prediction for RLS/SGD is a caller collector over one selected identity. B reuses A's f64 learner/fit and requires checked f32 conversion; it is not a separate learner. The caller owns event order, pending labels, admission caps, serving replacement, retained outputs and progress identities. A processed count is not learning, serving or publication progress. No generic micro-batch executor, scheduler or version registry is implied.
+OLS is a historical dataset fit/refit plus fixed single/stream/group prediction. RLS and SGD are ordered single-step learners; both expose a public bounded ordered-learning call, and SGD adds ordered grouped prediction for A/B/C. SGD is not the RLS recurrence and is not an averaged mini-batch. Fixed grouped prediction for RLS remains a caller collector over one selected identity. B reuses A's f64 learner/fit and requires checked f32 conversion; it is not a separate learner. The caller owns event order, pending labels, admission caps, serving replacement, retained outputs and progress identities. A processed count is not learning, serving or publication progress. No generic micro-batch executor, scheduler or version registry is implied.
 
 ## Legacy OLS baseline
 

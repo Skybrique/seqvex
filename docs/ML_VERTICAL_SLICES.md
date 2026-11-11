@@ -368,9 +368,10 @@ relabelled strict C.
 ### SGD Linear Regression (#50)
 
 Canonical location: `src/models/linear/sgd/`. `Sgd` is the strict-`f32` C
-profile and remains unchanged: it holds only immutable configuration (`D`, fixed
-`η`) and implements `StateModel` with a `&self` contract; the learned `w` lives
-in per-stream `SgdState`, owned by the execution session. Each update creates
+profile; its existing single-step behavior is preserved and additive grouped
+methods are introduced. It holds only immutable configuration (`D`, fixed `η`)
+and implements `StateModel` with a `&self` contract; the learned `w` lives in
+per-stream `SgdState`, owned by the execution session. Each update creates
 transient delta/candidate `f32` vectors; there is no persistent model-owned
 workspace or RNG. Prediction validates output finiteness; updates compute a
 local candidate and commit only on success. The caller supplies the intercept
@@ -383,18 +384,26 @@ pair.
 
 **Learning, API and test evidence.** `update` performs ordered
 single-observation updates `w' = w + η·e·x`; `predict` computes `ŷ = wᵀx` from
-the learned weights. The historical 2026-10-17 record is preserved: the `sgd`
-test target had **16 passing tests** on default Rust 1.97.1 and MSRV Rust 1.85.1.
-The current target has **33 passing tests** on both toolchains, adding A/B/C
-every-step prediction/state controls, exact-rational trajectories, native-f64
-reduction/grouping and discrimination, conversion boundaries,
+the learned weights. The public bounded workflow adds `update_batch`/
+`predict_batch` for A/C and `SgdServing32::predict_batch` for B, with
+`SgdUpdateBatchError`/`SgdPredictionError` and their `f64` counterparts.
+Group-length bounds are checked before row validation; `TooLarge` returns the
+unchanged supplied state and no prediction vector; `Transition`/`At` report the
+zero-based failing index, retain only the committed prefix and return no partial
+vector. The historical 2026-10-17 record is preserved: the `sgd` test target had
+**16 passing tests** on default Rust 1.97.1 and MSRV Rust 1.85.1. The current
+target has **52 passing tests**, adding the public bounded-API controls plus
+A/B/C every-step prediction/state controls, exact-rational trajectories,
+native-f64 reduction/grouping and discrimination, conversion boundaries,
 output/precedence failures, learned-state failures, continuation, execution
 equivalence, A stream isolation, order/reproducibility and serving replacement to
 the original hand-derived, grouping/reduction, gradient, validation, overflow,
 atomicity, isolation and continuation coverage. `sgd_learn` has 2 embedded
-tests, `sgd_regression` has 13, and `sgd_profiles` has 5. Default and MSRV
-all-target tests and doctests passed; default all-target Clippy passed. The
-documentation build produced only the known unrelated `Matrix`-link warning. `sgd_learn` is a supplied-`f32`
+tests, `sgd_regression` has 13, and `sgd_profiles` has 11. Focused default and
+MSRV `sgd`, `linear_execution` and `sgd_profiles` tests passed; default and
+MSRV doctests passed; default all-target build and Clippy passed; bench targets
+compiled without running. The documentation build produced only the known
+unrelated `Matrix`-link warning. `sgd_learn` is a supplied-`f32`
 model demonstration whose generator computes in `f64`; it is not strict-C
 generation evidence. `sgd_regression` is mixed-precision legacy because its
 standardizer is `f64`; it is not relabelled strict C.
@@ -429,7 +438,10 @@ These are deterministic-fixture results, not general accuracy, convergence,
 performance or production-readiness claims. A/B use f64 data; `SGD-QUALITY800-C`
 generates its features, targets and `η` in f32 and is the strict-C generation
 evidence; B narrows A's serving features explicitly and is scored against A's
-f64 targets. The fixture has no CSV/preprocessing dependency.
+f64 targets. The fixture has no CSV/preprocessing dependency. The frozen run now
+uses the public `update_batch`/`predict_batch` helpers; the counts, thresholds,
+order and accepted values above are unchanged, and the separate behavioral
+controls do not contribute to them.
 
 **Executed examples.** The legacy `sgd_learn` and `sgd_regression` examples were
 executed and independently reproduced before the test-only follow-up; the
@@ -458,8 +470,12 @@ a River benchmark reproduction, and not production readiness. Adaptive SGD beats
 the expanding-mean and raw-feature-mean baselines but not the previous-target
 baseline; results are reported as measured.
 
-**Status.** The original SGD slice is merged through PR #51. The precision-profile
-continuation is tracked under [#71](https://github.com/Skybrique/seqvex/issues/71)
+**Status.** The original SGD slice is merged through PR #51. The public bounded
+delivery (#90/F26) adds `update_batch`/`predict_batch`, group errors and
+public-path controls; it remains pending independent implementation review and
+maintainer acceptance. The frozen `SGD-QUALITY800` results are unchanged. The
+precision-profile continuation is tracked under
+[#71](https://github.com/Skybrique/seqvex/issues/71)
 (parent) and [#72](https://github.com/Skybrique/seqvex/issues/72) (implementation);
 independent numerical and sequential/quality acceptance are
 [#73](https://github.com/Skybrique/seqvex/issues/73) and

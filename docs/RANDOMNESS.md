@@ -110,6 +110,12 @@ weights.
   entropy-free; its values must not change.
 - A fixed-weight inference path needs no runtime randomness.
 
+## 7.1 Fixture equivalence and public randomness are separate claims
+
+Fixture RNG equivalence and public randomness answer different questions. Fixture checks establish that a named test or benchmark stream preserves its seed, state, advance/draw order, extraction, conversion and output bits. They do not establish the quality, distribution, entropy behavior, cross-platform reproducibility or failure handling of the public `RandomGenerator`/OS-entropy path. Conversely, a seeded public-generator test or an entropy success/failure seam test does not establish fixture equivalence.
+
+Keep the evidence records separate: identify the generator, seed and consumer each result covers, and do not substitute one for the other. Fixture consolidation must add exact old-versus-new sequence checks; it must not replace a frozen fixture with the public entropy-based facility or add a production randomness requirement.
+
 ## 8. Verification
 
 Seeded reproducibility and the initializer's shape/finiteness/bounds are covered

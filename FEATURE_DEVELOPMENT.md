@@ -508,6 +508,7 @@ The Code Reviewer independently evaluates the dimensions that are **materially a
 | **Mathematical correctness** | Independent oracle / hand-derived evidence; tie and ordering determinism; numerical envelope; no overfitting to the implementation. |
 | **Statistical / data-regime correctness** | Applied where the claims or regime require it: non-IID/time-series validity, sampling, seed/RNG reproducibility, and what is claimed vs inferred. |
 | **Operational correctness** | Real-world performance characteristics, not memory alone: latency, throughput, allocations, memory, cold-start, warm-start, steady-state, and relevant tail latency. |
+| **Refactor preservation** | Declared contracts are preserved and approved structural changes are accounted for; mappings, intended selection checks and unresolved external compatibility limits are recorded; comparator limits are stated; independent mathematical references are retained. |
 
 Governing principle:
 
@@ -529,6 +530,9 @@ Findings are recorded in the owning issue/PR; the Reviewer does not silently imp
 | Mathematical | independent oracle / hand-derived / invariant tests |
 | Documentation | rustdoc + README updated; links resolve |
 | Git scope | only issue-owned files changed; `git diff --check` clean |
+| Commit prefix (partitioned commits) | For future approved partitions, each exact staged/committed prefix passes its applicable build/test checks in isolation; a later repair does not retroactively validate an earlier failed prefix (`docs/DEVELOPMENT.md` §24.7) |
+| Refactor preservation | Declared contracts preserved and approved structural changes accounted for; mappings, intended selection checks, unresolved external compatibility limits and comparator limits recorded (`docs/DEVELOPMENT.md` §28.1) |
+| Evidence provenance | Evidence proportionate to the change and claim; results bound to the tested revision, command and toolchain; raw logs retained; provenance claims kept distinct (`docs/CORRECTNESS.md` §11) |
 
 Report only what was actually run: `FACT: passed`, `FACT: failed`, `NOT RUN`, or `NOT APPLICABLE`.
 

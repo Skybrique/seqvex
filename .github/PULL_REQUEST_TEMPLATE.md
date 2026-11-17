@@ -22,16 +22,32 @@ Individual test cases are not GitHub issues; do not create one for traceability.
 
 <!-- What was implemented, and which approved contract/workstream does it satisfy? -->
 
+## Refactor preservation
+
+<!-- Behavior-preserving refactor only; otherwise NOT APPLICABLE. See docs/DEVELOPMENT.md §28.1. -->
+
+- [ ] Declared contracts preserved; approved structural changes accounted for
+- [ ] Item/export/attribute/comment/visibility/layout/discovery/qualified-name/filter mappings, intended selection checks, comparator limits and unresolved external compatibility recorded
+
 ## Validation
 
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo test --all-targets --all-features`
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
 - [ ] `git diff --check`
+- [ ] If commits are partitioned, exact prefix checks are reported; earlier failed prefixes and later repairs remain distinct
 
 ## Tests
 
 <!-- Commands run and actual results. State NOT RUN / NOT APPLICABLE explicitly. -->
+
+## Evidence provenance
+
+<!-- Where evidence supports a claim; see docs/CORRECTNESS.md §11. -->
+
+- [ ] Results bound to the tested revision/tree, command and toolchain
+- [ ] Raw logs retained; author execution, independent review, historical snapshots, scoped acceptance and delivered-source verification distinguished
+- [ ] Count units stated; converted totals reconciled to raw records
 
 ## Model lifecycle evidence
 
@@ -41,6 +57,8 @@ Individual test cases are not GitHub issues; do not create one for traceability.
 
 <!-- List errors, numerical/resource boundaries and explicit recovery/continuation policies. Raise unresolved cases to the maintainer; do not assume fallback outputs, retry, skip or reset. -->
 
+- [ ] Failure checks reach the intended phase; platform/privilege/process prerequisites and component-control vs entry-point evidence are stated
+
 ## Mathematical validation
 
 <!-- Independent oracle / hand-derived / invariant evidence. If not applicable, say why. -->
@@ -49,9 +67,15 @@ Individual test cases are not GitHub issues; do not create one for traceability.
 
 <!-- Required only where the claims or data regime require it. If not applicable, say why; determinism alone is not a statistical-validation exemption. -->
 
+## Randomness
+
+<!-- Where a fixture or public RNG is involved; otherwise NOT APPLICABLE. See docs/RANDOMNESS.md §7.1. -->
+
+- [ ] Fixture RNG equivalence and public entropy-based randomness reported separately
+
 ## Benchmark / performance evidence
 
-- [ ] Not applicable (no performance or resource claim, no hot path affected)
+- [ ] Not applicable: no performance/resource objective or claim; applicable measurement requirements have been assessed and the rationale recorded.
 
 Benchmark evidence, where applicable:
 
@@ -62,8 +86,9 @@ Benchmark evidence, where applicable:
 - Scaling:
 - Controls / decomposition: <!-- e.g. a cost-isolating control -->
 - Environment / rustc / release mode:
+- [ ] If applicable, before/after measurement supports the stated performance or resource claim
 
-<!-- No optimization is implied by a descriptive baseline. Do not reduce this to memory alone. -->
+<!-- No optimization is implied by a descriptive baseline or by refactoring alone. Do not reduce this to memory alone. -->
 
 ## Documentation
 

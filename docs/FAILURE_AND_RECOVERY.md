@@ -599,6 +599,10 @@ production failure contract. A deliberate component control that omits productio
 work must be identified as a component control and must not be presented as
 complete-operation evidence or used to claim a complete-operation result.
 
+Failure evidence must be proportionate to the risk and the claim, and must reach the intended phase. A check that first fails at input validation, a precheck, or another earlier guard does not establish the failure behavior of the later commit, persistence, publication or recovery phase it names. Inject the failure at the boundary under test, or record explicitly why that is not possible and what remains unverified.
+
+Declare the platform, filesystem, permission, privilege and process-isolation prerequisites of each failure check. When a check cannot run under the available platform or privileges, record that limitation instead of substituting a different failure. Distinguish component-control evidence — a deliberately isolated component or test seam — from entry-point evidence, the production path through its public entry point, and do not present one as the other. Retain the command and raw output that produced the result.
+
 ---
 
 ## 14. Performance and Recovery

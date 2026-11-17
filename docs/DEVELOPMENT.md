@@ -289,6 +289,12 @@ Do not reject dependencies merely because they are external. Do not add dependen
 
 A module should represent a coherent responsibility.
 
+During design and planning, identify module responsibilities, dependency directions, public entry points, state and failure ownership, and the placement of tests, examples and benchmarks. Consider known extensions before implementation, and revisit boundaries when responsibilities begin to diverge rather than waiting for a large cleanup.
+
+Use approximately 500–800 lines as a review range for growing Rust source files, not a minimum, a target to fill or an automatic split threshold. Mathematical and behavioral correctness, cohesion, usability, locality and reviewability take priority over line count. Prefer smaller focused files where responsibilities naturally separate. Larger cohesive files may remain with a reviewed rationale. Review function complexity separately; moving a large function into another file does not simplify it.
+
+Use reviewed existing implementations and folder structures as references. Reuse their patterns where responsibilities and contracts match; do not impose identical layouts on different algorithms. Keep concrete responsibilities locally owned, share helpers for demonstrated consumers, and avoid speculative abstractions or empty scaffolding.
+
 Do not create a README, crate, abstraction, or helper solely because a folder or function exists.
 
 A shared abstraction should emerge when:
@@ -979,6 +985,10 @@ git push origin issue-XX-short-description
 
 The commit should contain only the work belonging to that Issue/Sub-Issue update.
 
+When an approved plan or maintainer direction partitions one authorized update into several commits, apply these rules prospectively: each commit must respect the module and public-import dependencies of the code it contains, and the exact staged or committed prefix must be validated in isolation with the applicable build/test checks. Do not infer prefix validity from the complete working tree or from a later commit. If a proposed prefix cannot satisfy its checks without a later change, regroup the commits or stop and report the boundary conflict before committing.
+
+A historical prefix that failed remains recorded as failed. A later commit that repairs the dependency is a separate forward repair; it does not retroactively verify the earlier prefix, and the earlier prefix must not be described as passing. Do not rewrite or reorder history without explicit authorization. Preserve the original failure evidence if a later authorized history change is made.
+
 This rule does not authorize combining unrelated work into one commit. If a proposed update spans multiple independent Issues or categories, stop and resolve the scope before committing.
 
 ### 24.8 Separate Authorization Gates
@@ -1260,6 +1270,12 @@ For architecture-sensitive changes, the integration record should identify:
 - the affected issue;
 - the remaining uncertainty.
 
+### 28.1 Behavior-preserving refactor evidence
+
+A refactor presented as behavior-preserving must preserve the declared contracts and account for every approved structural change. Record the change map: top-level items and item bodies, public re-exports and imports, attributes and configuration, comments and module documentation, visibility, module layout, target discovery, qualified names and test-filter selection. Visibility, module layout, qualified names and filter selection need not remain identical when their change is approved; the map must identify the old-to-new relationship, the intended selection checks, and any external compatibility limit that remains unresolved.
+
+Record the limits of any structural comparator: what it extracts, what it compares, what it normalizes, and what it does not prove — for example semantic correctness, comment placement or meaning, nested-item ownership, behavior, or properties outside its hard-coded baseline. Do not extend a comparator PASS beyond the properties it checked. Preserve deliberately independent mathematical references; do not consolidate them merely to reduce duplication.
+
 ---
 
 # 29. Current Development Priority
@@ -1427,6 +1443,8 @@ A local optimization should satisfy all of the following:
 6. the resulting behavior is benchmarked again.
 
 Allocation reduction is not, by itself, evidence of lower latency or higher throughput.
+
+Refactoring or file splitting alone establishes no performance or resource improvement. A refactor may form part of an optimization, but any improvement claim requires the applicable before/after measurement under this gate. Preservation and performance evidence remain separate.
 
 ## 33.4 Evidence Classification
 

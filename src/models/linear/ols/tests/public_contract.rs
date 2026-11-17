@@ -26,3 +26,7 @@ mod e8_long_run;
 mod e9_numerical;
 #[path = "public_contract/support.rs"]
 mod support;
+
+#[cfg(test)]
+#[path = "public_contract/fixture_sequence.rs"]
+mod fixture_sequence;

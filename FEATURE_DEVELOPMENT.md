@@ -193,6 +193,21 @@ Identify explicitly:
 
 Architecture decisions remain evidence-driven.
 
+### Requirements and ownership check before each phase
+
+Before starting or revising design, planning or implementation, re-read the applicable current requirements, governing guidance, accepted decisions and correction findings. Inspect the actual affected definitions and consumers.
+
+Apply [canonical ownership and locality](docs/DEVELOPMENT.md#101-canonical-ownership-and-locality). Record the following in the existing workstream’s design, plan or review, at a depth proportionate to the change:
+
+- Component and its local or shared classification.
+- Concrete consumers and relevant contract differences.
+- Canonical definition/implementation owner.
+- Dependency direction, visibility and compatibility exports.
+- Verification of the requirement against the actual source.
+- Unresolved discrepancies and their disposition.
+
+Surface requirement-to-design or requirement-to-source conflicts before affected work proceeds. Prior approval, an export facade or passing tests does not establish that an unresolved ownership requirement is satisfied. Reviewers verify the actual implementation against the requirements as well as the approved design and plan.
+
 ---
 
 ## 5. Lifecycle

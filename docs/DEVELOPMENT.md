@@ -325,6 +325,72 @@ Similar implementation is not sufficient evidence for a shared abstraction.
 
 Prefer local ownership first, then refactor upward when repeated responsibility and dependency relationships demonstrate that the abstraction is genuinely shared.
 
+### 10.1 Canonical ownership and locality
+
+At design and implementation time, classify components by their actual responsibilities, consumers and required contracts. Code genuinely unique to one component, with no concrete requirement for reuse elsewhere, remains locally owned. Hypothetical future reuse is not sufficient reason to extract it.
+
+When concrete consumers require the same semantic contract, place the shared definition and implementation in one canonical module or folder at the appropriate owning layer. An explicitly approved architectural requirement may also justify shared ownership. Consumers import that implementation or use compatibility re-exports. A forwarding export does not change where the definition is owned.
+
+Choose the lowest appropriate shared layer whose responsibility matches the component, while preserving dependency direction. Family-specific shared components need not become project-wide infrastructure. Keep visibility to the minimum necessary; shared ownership does not automatically require a public API.
+
+Shared error definitions belong in the appropriate error folder of their owning shared layer, together with their error-specific behavior. Algorithm-specific errors and mappings remain local. Numerical operations remain with their numerical owner. Preserve compatible public imports where required; do not introduce a universal error hierarchy.
+
+Similar source text or names do not establish matching contracts. Compare mathematics, precision, validation order, state ownership, failure behavior, randomness, execution and resource requirements where applicable. Retain separate implementations when those contracts differ. Preserve deliberately independent mathematical references.
+
+Revisit locality when a concrete additional consumer emerges. Extract only the matching responsibility and verify its consumers, exports, compatibility and dependency direction. Avoid generic common or utils collections that combine unrelated responsibilities.
+
+This principle does not authorize empty scaffolding, additional crates, speculative infrastructure or deferred architecture decisions. Existing reviewed implementations are references, not mandatory templates.
+
+#### Ownership considerations
+
+| Component | Ownership consideration |
+|---|---|
+| Errors | Shared definitions originate in the owning shared layer’s error folder. Unique component or algorithm errors remain local. Preserve error variants, messages, causes and operation-specific mappings. |
+| Random generators | Share only matching generator contracts. Keep public entropy-based randomness, deterministic fixtures and independent references distinct. Preserve applicable state width, draw order, conversion and reproducibility contracts. |
+| I/O and codecs | Keep application acquisition, dataset schemas and operation-specific policy with their consumers. Share matching mechanics only within the accepted project scope; this principle does not create a general I/O framework. |
+| Validators | Share checks only when their meaning and failure contract match. Keep algorithm-specific validation, precedence and error context local. |
+| Configuration | Keep domain-specific parameters, defaults and constraints with their owner. Similar field names do not establish a shared configuration contract. |
+| Helpers and utilities | Give genuinely shared responsibilities descriptive owners. Keep unique helpers local; do not create catch-all modules merely to remove duplication. |
+| Middleware | Establish the actual cross-cutting responsibility and owning layer first. A middleware label alone does not justify shared infrastructure or execution changes. |
+| Preludes and module facades | Organize imports and exports without confusing the export surface with canonical implementation ownership. Re-exporting a component does not prove it is shared. |
+| Core traits, tensors, backends and layers | Require concrete consumers, defined contracts and applicable architecture review. This guidance does not introduce or settle these abstractions. |
+| Optimizers, regularizers, losses and schedules | Share matching mathematical and operational contracts. Preserve precision, reduction order and state semantics. Learning-rate schedules and execution schedulers are distinct responsibilities. |
+
+#### Illustrative ownership tree
+
+This diagram is an illustrative fragment, not the current repository tree or an approved source-migration plan. Create no directory or abstraction solely because it appears here.
+
+```mermaid
+flowchart TD
+    S["src/"] --> F["foundation/"]
+    S --> M["models/"]
+
+    F --> E["error/"]
+    F --> N["numerical/"]
+    E --> SE["shape.rs"]
+    N --> R["random.rs"]
+
+    M --> MF["example_family/"]
+    MF --> FE["error/"]
+    MF --> A["example_algorithm/"]
+    FE --> SF["shared_failure.rs"]
+    A --> AE["error.rs"]
+    A --> V["validation.rs"]
+    A --> C["config.rs"]
+```
+
+In this illustration:
+
+- error/shape.rs owns a genuinely shared foundation error definition.
+- numerical/random.rs owns the matching numerical randomness operation.
+- example_family/error/shared_failure.rs owns a genuinely family-shared error.
+- example_algorithm/error.rs, validation.rs and config.rs remain local where
+  their contracts are unique.
+- Compatibility re-exports may preserve existing imports without duplicating
+  definitions.
+- Other components receive their own appropriate homes only when concrete
+  responsibilities justify them; their omission here implies no prohibition.
+
 ---
 
 # 11. Crate and Workspace Boundaries

@@ -201,8 +201,12 @@ pub enum ArtifactError {
         actual: [u8; 32],
     },
     /// A resource limit was exceeded.
+    ///
+    /// `limit` carries the configured or requested limit value. The variant does
+    /// not identify which limit (for example `max_features` or `max_bytes`) or
+    /// an allocation-reservation failure produced the error.
     Capacity {
-        /// The limit that was exceeded.
+        /// The limit value that was exceeded.
         limit: usize,
     },
     /// Unexpected trailing bytes after the artifact.

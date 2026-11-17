@@ -13,6 +13,10 @@
 
 pub mod comparison;
 
+mod fixture_rng;
+
+pub use fixture_rng::Lcg64 as Lcg;
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -103,27 +107,6 @@ pub const STRUCTURED_SEED: u64 = 0x5eed_1234_abcd_0001;
 /// are never used for decisions.
 pub fn timed_steps(steps: u32) -> u32 {
     if cfg!(debug_assertions) { 200 } else { steps }
-}
-
-/// Fixed-seed linear congruential generator (mirrors the
-/// `GruParameters::deterministic` generator); deterministic inputs only, no
-/// `rand`.
-pub struct Lcg {
-    state: u64,
-}
-
-impl Lcg {
-    pub fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-
-    pub fn next_f32(&mut self) -> f32 {
-        self.state = self
-            .state
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        ((self.state >> 40) as f32 / (1_u64 << 24) as f32) - 0.5
-    }
 }
 
 /// Deterministic target weights `w*`, fixed across runs.

@@ -412,7 +412,7 @@ When a mismatch is found: identify the exact contract/evidence gap; revise the a
 
 ## 16. Precision profiles A/B/C
 
-The additive typed profiles preserve the accepted legacy `fit`/`FitResult`/`LinearRegression` path, artifact v1, and `check_acceptance` behavior. They are present at current main; the LF-EXEC-D3 execution package adds caller-owned refit/acceptance/cutover and replacement evidence. This is not a new artifact or persistence format. For the separate profile-specific measurement target, see [Profile-specific measurement](#profile-specific-measurement-ols_profiles).
+The additive typed profiles preserve the accepted legacy `fit`/`FitResult`/`LinearRegression` path and artifact v1. They are present at current main and are in-memory only: typed `FitResult64`/`FitResult32` do not provide artifact construction or the legacy `FitResult::check_acceptance` method. That typed non-parity is documented here and is not a promise of a future capability. The LF-EXEC-D3 execution package adds caller-owned refit/acceptance/cutover and replacement evidence for the legacy path. This is not a new artifact or persistence format. For the separate profile-specific measurement target, see [Profile-specific measurement](#profile-specific-measurement-ols_profiles).
 
 | Profile | Fit entry point | Learned result | Serving |
 |---|---|---|---|
@@ -438,7 +438,7 @@ The reviewed technical design retains `faer =0.24.4` with `default-features = fa
 
 ### Bounded CSV comparison
 
-The `ols_ingestion` package compares current record iteration, reusable `StringRecord`, UTF-8-equivalent reusable `ByteRecord` and custom-validated CSV + Serde. The current results are the fresh November 1, 2026 capture set from published source `caf106c671f1af03ec87bd737c327ac8e24c8482`, tree `9c2bf2bff9c2e67efc610d63f12196be69e2b496`; `ingestion.rs` SHA-256 is `976f2622d9e0d220e384a1059b1ae13f3e9f1bfe438b7e7e8f675594bcebf0de`; the design is `a47db7b2353b875a536783a347bb51d23adef8493ab2cc3ab30fd4652fde914d`. Earlier October 30 capture summaries and reviews remain historical; their original logs and derived tables were not recovered. The fresh captures are new measurements, not recovered originals.
+The `ols_ingestion` package compares current record iteration, reusable `StringRecord`, UTF-8-equivalent reusable `ByteRecord` and custom-validated CSV + Serde. The current results are the fresh November 1, 2026 capture set from published source `caf106c671f1af03ec87bd737c327ac8e24c8482`, tree `9c2bf2bff9c2e67efc610d63f12196be69e2b496`; the **historical pre-split** `ingestion.rs` at that captured revision had SHA-256 `976f2622d9e0d220e384a1059b1ae13f3e9f1bfe438b7e7e8f675594bcebf0de` (the current split root has a different identity and is not that file); the design is `a47db7b2353b875a536783a347bb51d23adef8493ab2cc3ab30fd4652fde914d`. Earlier October 30 capture summaries and reviews remain historical; their original logs and derived tables were not recovered. The fresh captures are new measurements, not recovered originals.
 
 Each of the three sequential 1.85.1 captures completed 45 unique timing rows, 20 measured windows per row and 27 registered memory probes. The table below shows complete ingestion of the 256-record fixture; each cell is capture 1 / capture 2 / capture 3 median nanoseconds per record. It includes source acquisition, parsing, validation, the owned model inputs and teardown, not disk I/O.
 

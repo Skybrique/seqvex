@@ -399,8 +399,9 @@ output/precedence failures, learned-state failures, continuation, execution
 equivalence, A stream isolation, order/reproducibility and serving replacement to
 the original hand-derived, grouping/reduction, gradient, validation, overflow,
 atomicity, isolation and continuation coverage. `sgd_learn` has 2 embedded
-tests, `sgd_regression` has 13, and `sgd_profiles` has 11. Focused default and
-MSRV `sgd`, `linear_execution` and `sgd_profiles` tests passed; default and
+tests, `sgd_regression` has 13 embedded tests (the current example target also
+runs the 13 shared support tests, for 26), and `sgd_profiles` has 11. Focused
+default and MSRV `sgd`, `linear_execution` and `sgd_profiles` tests passed; default and
 MSRV doctests passed; default all-target build and Clippy passed; bench targets
 compiled without running. The documentation build produced only the known
 unrelated `Matrix`-link warning. `sgd_learn` is a supplied-`f32`
@@ -472,8 +473,8 @@ baseline; results are reported as measured.
 
 **Status.** The original SGD slice is merged through PR #51. The public bounded
 delivery (#90/F26) adds `update_batch`/`predict_batch`, group errors and
-public-path controls; it remains pending independent implementation review and
-maintainer acceptance. The frozen `SGD-QUALITY800` results are unchanged. The
+public-path controls; it was delivered in PR #95 and its bounded behavior is
+accepted. Broader linear-family acceptance remains open. The frozen `SGD-QUALITY800` results are unchanged. The
 precision-profile continuation is tracked under
 [#71](https://github.com/Skybrique/seqvex/issues/71)
 (parent) and [#72](https://github.com/Skybrique/seqvex/issues/72) (implementation);
@@ -788,7 +789,7 @@ readiness.
 
 The reviewed dependency-applicability design and implementation plan retain `faer =0.24.4` in its existing configuration, all existing public interfaces, historical benchmark targets and the ten-file implementation scope. The applicability checks are not a solver-performance comparison or general numerical certification. The `paste` maintenance advisory and parallel-kernel applicability remain recorded limitations.
 
-The current results are the fresh November 1, 2026 six-process capture set from published source `caf106c671f1af03ec87bd737c327ac8e24c8482`, tree `9c2bf2bff9c2e67efc610d63f12196be69e2b496`, with benchmark sources `ingestion.rs` `976f2622…` and `storage.rs` `d2f96ecc…`, under the design `a47db7b2353b875a536783a347bb51d23adef8493ab2cc3ab30fd4652fde914d`. Three sequential ingestion processes and three sequential SGD-storage processes each completed their full matrices with Rust/Cargo 1.85.1, one pinned logical CPU and a 2 GiB virtual-memory limit; power/thermal state and background contention were uncontrolled. Earlier October 30 summaries and reviews remain historical; their original logs and derived tables were not recovered. These fresh captures are new measurements, not recovered originals.
+The current results are the fresh November 1, 2026 six-process capture set from published source `caf106c671f1af03ec87bd737c327ac8e24c8482`, tree `9c2bf2bff9c2e67efc610d63f12196be69e2b496`, with the historical pre-split benchmark sources `ingestion.rs` `976f2622…` and `storage.rs` `d2f96ecc…` at that capture revision (the current split roots have different identities), under the design `a47db7b2353b875a536783a347bb51d23adef8493ab2cc3ab30fd4652fde914d`. Three sequential ingestion processes and three sequential SGD-storage processes each completed their full matrices with Rust/Cargo 1.85.1, one pinned logical CPU and a 2 GiB virtual-memory limit; power/thermal state and background contention were uncontrolled. Earlier October 30 summaries and reviews remain historical; their original logs and derived tables were not recovered. These fresh captures are new measurements, not recovered originals.
 
 Reusable `StringRecord` is the first bounded production ingestion proposal to consider: it improved the measured 256-record parsing and complete-ingestion cases and reduced allocation traffic using the existing csv dependency. CSV + Serde also improved those cases but has no clear advantage over `StringRecord` that would justify adoption solely for performance. The inspected `ByteRecord` implementation and `tinyvec` are not adopted for these measured consumers. No complete-workflow latency improvement or universal storage winner was established. Direct SGD construction and other alternatives helped some cells but regressed elsewhere, including dimension 128; allocation reduction alone does not establish faster execution, and the regression cause remains unestablished. The fresh storage screen reports 74 improvements and 15 regressions; f64 direct/reuse at dimension 128 are inconclusive under the screen despite higher medians. No four-mode ingestion API or production optimization is implemented. Experimental development dependencies were added for the comparison; no production dependency adoption occurred. The 256-record size is a fixture, not an automatic loader threshold.
 

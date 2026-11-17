@@ -4,13 +4,17 @@
 //! provide concrete `f32` and `f64` containers; the GRU uses the `f32` substrate.
 //! `activations` remain scalar `f32`. `random` provides seeded and
 //! entropy-seeded uniform parameter-value draws (it does not sample or reorder
-//! observations; see `docs/RANDOMNESS.md`). Statistics retain their established
-//! panic/IEEE contracts; container shape errors use `DimensionMismatch`
+//! observations; see `docs/RANDOMNESS.md`). `narrowing` holds the private,
+//! policy-neutral scalar `f64`→`f32` classification used by model serving
+//! conversions; it does not own model-specific failure or underflow policy.
+//! Statistics retain their established panic/IEEE contracts; container shape
+//! errors use `DimensionMismatch`
 //! (`docs/KILO_CONNECTOME_SPRINT_REVISED.md` §9–13).
 
 pub mod activations;
 mod kernels;
 pub mod linalg;
+pub(crate) mod narrowing;
 pub mod random;
 pub mod statistics;
 pub mod vector;

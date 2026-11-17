@@ -62,6 +62,78 @@ use crate::foundation::numerical::{DimensionMismatch, Vector};
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
 
+macro_rules! sgd_error_display {
+    ($type:ident) => {
+        impl std::fmt::Display for $type {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    Self::ZeroDimension => formatter.write_str("SGD dimension must be nonzero"),
+                    Self::DimensionMismatch { expected, actual } => {
+                        write!(
+                            formatter,
+                            "dimension mismatch: expected {expected}, got {actual}"
+                        )
+                    }
+                    Self::InvalidLearningRate => {
+                        formatter.write_str("SGD learning rate must be finite and positive")
+                    }
+                    Self::NonFiniteInput => {
+                        formatter.write_str("SGD observation features and target must be finite")
+                    }
+                    Self::NonFiniteCandidate => {
+                        formatter.write_str("SGD candidate state is not finite")
+                    }
+                    Self::NonFiniteOutput => {
+                        formatter.write_str("SGD prediction produced a non-finite output")
+                    }
+                }
+            }
+        }
+    };
+}
+
+macro_rules! sgd_update_batch_error_display {
+    ($type:ident) => {
+        impl std::fmt::Display for $type {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    Self::TooLarge { max, actual, .. } => write!(
+                        formatter,
+                        "SGD update group is too large: max {max}, got {actual}; no observation was validated or processed and the supplied state was returned unchanged"
+                    ),
+                    Self::Transition {
+                        failed_index,
+                        committed,
+                        ..
+                    } => write!(
+                        formatter,
+                        "SGD update failed at index {failed_index} after {committed} committed rows; the failed candidate was not committed and the successful prefix was returned"
+                    ),
+                }
+            }
+        }
+    };
+}
+
+macro_rules! sgd_prediction_error_display {
+    ($type:ident) => {
+        impl std::fmt::Display for $type {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    Self::TooLarge { max, actual } => write!(
+                        formatter,
+                        "SGD prediction group is too large: max {max}, got {actual}; no observation was validated or predicted and no output was returned"
+                    ),
+                    Self::At { index, .. } => write!(
+                        formatter,
+                        "SGD prediction failed at index {index}; no partial prediction vector was returned"
+                    ),
+                }
+            }
+        }
+    };
+}
+
 mod profiles;
 
 pub use profiles::{
@@ -94,29 +166,7 @@ pub enum SgdError {
     NonFiniteOutput,
 }
 
-impl std::fmt::Display for SgdError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ZeroDimension => formatter.write_str("SGD dimension must be nonzero"),
-            Self::DimensionMismatch { expected, actual } => {
-                write!(
-                    formatter,
-                    "dimension mismatch: expected {expected}, got {actual}"
-                )
-            }
-            Self::InvalidLearningRate => {
-                formatter.write_str("SGD learning rate must be finite and positive")
-            }
-            Self::NonFiniteInput => {
-                formatter.write_str("SGD observation features and target must be finite")
-            }
-            Self::NonFiniteCandidate => formatter.write_str("SGD candidate state is not finite"),
-            Self::NonFiniteOutput => {
-                formatter.write_str("SGD prediction produced a non-finite output")
-            }
-        }
-    }
-}
+sgd_error_display!(SgdError);
 
 impl std::error::Error for SgdError {}
 
@@ -170,24 +220,7 @@ pub enum SgdUpdateBatchError {
     },
 }
 
-impl std::fmt::Display for SgdUpdateBatchError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::TooLarge { max, actual, .. } => write!(
-                formatter,
-                "SGD update group is too large: max {max}, got {actual}; no observation was validated or processed and the supplied state was returned unchanged"
-            ),
-            Self::Transition {
-                failed_index,
-                committed,
-                ..
-            } => write!(
-                formatter,
-                "SGD update failed at index {failed_index} after {committed} committed rows; the failed candidate was not committed and the successful prefix was returned"
-            ),
-        }
-    }
-}
+sgd_update_batch_error_display!(SgdUpdateBatchError);
 
 impl std::error::Error for SgdUpdateBatchError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -217,20 +250,7 @@ pub enum SgdPredictionError {
     },
 }
 
-impl std::fmt::Display for SgdPredictionError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::TooLarge { max, actual } => write!(
-                formatter,
-                "SGD prediction group is too large: max {max}, got {actual}; no observation was validated or predicted and no output was returned"
-            ),
-            Self::At { index, .. } => write!(
-                formatter,
-                "SGD prediction failed at index {index}; no partial prediction vector was returned"
-            ),
-        }
-    }
-}
+sgd_prediction_error_display!(SgdPredictionError);
 
 impl std::error::Error for SgdPredictionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {

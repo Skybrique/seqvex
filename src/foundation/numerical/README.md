@@ -16,6 +16,10 @@ not a general-purpose numerical or scientific-computing ecosystem.
 - `linalg` — dense row-major `f32` and `f64` matrices and the transform `y = W x`.
 - `kernels` — private loop helpers shared only by equivalent f32/f64 operations.
 - `activations` — scalar `sigmoid` and `tanh`.
+- `narrowing` — private, policy-neutral scalar `f64`→`f32` classification:
+  `Narrowing`, `NarrowingError`, and `narrow_f64`. It records value,
+  underflow-to-signed-zero, non-finite source and overflow outcomes; it does not
+  choose an algorithm's underflow policy, serving rule or public error.
 
 ## Error semantics
 
@@ -31,6 +35,11 @@ Two numeric layers with deliberately different contracts:
 - Both typed container families return `Result` with `DimensionMismatch` for
   shape errors. Model-specific failure classes remain model-local; the GRU adds
   `GruError` for its own failure classes.
+- `narrowing` is a private classification layer. `narrow_f64` returns
+  `Narrowing` or `NarrowingError`; `Narrowing` is not an error and has no `Eq`.
+  `NarrowingError` implements `Display`/`Error` with no fabricated source and is
+  immediately mapped by the consuming model. Strict serving conversion and its
+  underflow rejection belong to the linear model, not this module.
 
 The `f32`/`f64` container types remain concrete and separate. Private shared
 kernels do not merge their public APIs, the statistics contract, or algorithm
@@ -39,7 +48,8 @@ training method, preprocessing pipeline, or profile selector.
 
 ## Inside
 
-- `statistics`, `vector`, `linalg`, private `kernels`, `activations`.
+- `statistics`, `vector`, `linalg`, private `kernels`, `activations`, private
+  `narrowing`.
 
 ## Outside
 
@@ -52,7 +62,9 @@ training method, preprocessing pipeline, or profile selector.
 
 `tests/numerical.rs` covers established statistics and f32 compatibility
 controls. `tests/numerical_f64.rs` covers the additive f64 container APIs with
-analytical values and native-precision discrimination.
+analytical values and native-precision discrimination. The private `narrowing`
+unit test covers scalar classification, including signed zero, subnormal and
+underflow outcomes; strict linear serving tests live with the linear model.
 
 ## Major deferred decisions
 

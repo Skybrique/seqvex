@@ -1,8 +1,13 @@
-//! Policy-neutral `f64` to `f32` narrowing for linear serving conversion.
+//! Policy-neutral `f64` to `f32` scalar narrowing.
 //!
 //! The helper classifies only the numerical outcome. Each algorithm applies its
-//! own public error variant and underflow policy.
+//! own public error variant and underflow policy. The shared rejection
+//! classification is defined by the foundation error layer and re-exported here
+//! for existing crate-private imports.
 
+pub(crate) use crate::foundation::error::narrowing::NarrowingError;
+
+/// Classification of one finite-source narrowing attempt.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Narrowing {
     /// Finite in-range source, with ordinary `as f32` rounding.
@@ -11,12 +16,7 @@ pub(crate) enum Narrowing {
     Underflow(f32),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NarrowingError {
-    SourceNonFinite,
-    Overflow,
-}
-
+/// Classifies one `f64` to `f32` narrowing attempt without applying policy.
 pub(crate) fn narrow_f64(value: f64) -> Result<Narrowing, NarrowingError> {
     if !value.is_finite() {
         return Err(NarrowingError::SourceNonFinite);

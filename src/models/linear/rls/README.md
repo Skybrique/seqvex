@@ -601,6 +601,13 @@ batch-size sweep of the RLS-local bounded reference API ([new run], revision
 captures; benchmark file blob `e7d3c39ee5d4dfb7cf76e26b39b7d6a5a4c30408`).
 Historical values below are unchanged.
 
+**Provenance mapping (F15).** The `RLS-QUALITY800` quality run is a candidate
+working-tree run based on `e027eb1…`; the batch-size sweep records run-time
+revision `b63da4f…`. Neither is current-HEAD execution, and candidate-to-delivered
+source mapping is not established locally. Present-tense claims that depend on
+those runs remain historical until that mapping is recorded; missing identities
+are unresolved, not assumed equal.
+
 ### Historical baseline ([historical])
 
 `cargo bench --bench rls`, release, median of 20 runs. The benchmark uses `λ = 1`
@@ -873,7 +880,9 @@ component decompositions.
 
 Candidate working-tree run based on `e027eb13454bf7d429184f37d1581f8c2da1cfbd`
 (uncommitted implementation), verified with default Rust/Cargo `1.97.1` and
-MSRV `1.85.1`, via `cargo run --locked --example rls_profiles -j 1`. The
+MSRV `1.85.1`, via `cargo run --locked --example rls_profiles -j 1`. This is historical/candidate
+evidence, not current-HEAD execution; the candidate tree identity is not
+available locally, so equality with delivered content is unresolved (F15). The
 fixture uses `D=2`, `λ=1`, `δ=1000`, exactly 400 ordered training updates,
 one frozen A state, one
 one-time B conversion, and exactly 400 checked scored rows per profile over
@@ -1023,8 +1032,8 @@ unchanged.
 
 ## Current tests / specification
 
-- [`tests/rls.rs`](tests/rls.rs): integration target `rls`. The
-  `precision_profiles` module adds A/B/C API/visibility, admission precedence,
+- [`tests/rls.rs`](tests/rls.rs): integration target `rls`. The test
+  modules under `tests/rls/` add A/B/C API/visibility, admission precedence,
   independent same-order scalar controls, literal weighted-objective checks for
   every nonempty named prefix, `RLS-ORDER4`, both orders of `RLS-PERM30-A/C`,
   B conversion/serving bounds, failure/prefix/continuation, native-f64

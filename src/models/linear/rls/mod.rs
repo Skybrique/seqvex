@@ -75,6 +75,117 @@ use crate::foundation::numerical::{DimensionMismatch, Matrix, Vector};
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
 
+macro_rules! rls_error_display {
+    ($type:ident) => {
+        impl std::fmt::Display for $type {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    Self::ZeroDimension => formatter.write_str("RLS dimension must be nonzero"),
+                    Self::DimensionMismatch { expected, actual } => {
+                        write!(
+                            formatter,
+                            "dimension mismatch: expected {expected}, got {actual}"
+                        )
+                    }
+                    Self::InvalidForgettingFactor => {
+                        formatter.write_str("RLS forgetting factor must be finite and in (0, 1]")
+                    }
+                    Self::InvalidInitialCovariance => formatter.write_str(
+                        "RLS initial covariance scale must be finite and positive",
+                    ),
+                    Self::NonFiniteInput => {
+                        formatter.write_str("RLS observation features and target must be finite")
+                    }
+                    Self::InvalidDenominator => {
+                        formatter.write_str("RLS update denominator must be finite and positive")
+                    }
+                    Self::NonFiniteCandidate => formatter.write_str(
+                        "RLS candidate state is not finite. The candidate update was not committed; the supplied state is unchanged.",
+                    ),
+                    Self::NonFiniteOutput => {
+                        formatter.write_str("RLS prediction produced a non-finite output")
+                    }
+                }
+            }
+        }
+    };
+}
+
+macro_rules! rls_batch_error_display {
+    ($type:ident) => {
+        impl std::fmt::Display for $type {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    Self::BatchTooLarge { max, actual, .. } => write!(
+                        formatter,
+                        "RLS batch length {actual} exceeds maximum {max}; no observation was processed and the supplied state was returned unchanged"
+                    ),
+                    Self::Transition {
+                        failed_index: 0, ..
+                    } => formatter.write_str(
+                        "RLS batch transition failed at observation 0; no observation was committed and the supplied state was returned unchanged",
+                    ),
+                    Self::Transition {
+                        failed_index,
+                        ..
+                    } => write!(
+                        formatter,
+                        "RLS batch transition failed at observation {failed_index}; {failed_index} observations were committed, the failed candidate update was not committed, and the state before the failed observation was returned (no whole-batch rollback)"
+                    ),
+                }
+            }
+        }
+    };
+}
+
+macro_rules! rls_admit_state {
+    ($weights:ident, $covariance:ident) => {{
+        let dimension = $covariance.rows();
+        if dimension == 0 {
+            return Err(RlsStateAdmissionError::ZeroDimension);
+        }
+        if dimension != $covariance.cols() {
+            return Err(RlsStateAdmissionError::CovarianceNotSquare {
+                rows: dimension,
+                cols: $covariance.cols(),
+            });
+        }
+        if $weights.len() != dimension {
+            return Err(RlsStateAdmissionError::WeightDimensionMismatch {
+                expected: dimension,
+                actual: $weights.len(),
+            });
+        }
+        if let Some(index) = $weights
+            .as_slice()
+            .iter()
+            .position(|value| !value.is_finite())
+        {
+            return Err(RlsStateAdmissionError::NonFiniteWeight { index });
+        }
+        for row in 0..dimension {
+            for column in 0..dimension {
+                if !$covariance.get(row, column).unwrap().is_finite() {
+                    return Err(RlsStateAdmissionError::NonFiniteCovariance { row, column });
+                }
+            }
+        }
+        for row in 0..dimension {
+            for column in 0..dimension {
+                if $covariance.get(row, column).unwrap().to_bits()
+                    != $covariance.get(column, row).unwrap().to_bits()
+                {
+                    return Err(RlsStateAdmissionError::AsymmetricCovariance { row, column });
+                }
+            }
+        }
+        Ok(Self {
+            w: $weights,
+            p: $covariance,
+        })
+    }};
+}
+
 mod profiles;
 
 pub use profiles::{
@@ -112,34 +223,7 @@ pub enum RlsError {
     NonFiniteOutput,
 }
 
-impl std::fmt::Display for RlsError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ZeroDimension => formatter.write_str("RLS dimension must be nonzero"),
-            Self::DimensionMismatch { expected, actual } => {
-                write!(formatter, "dimension mismatch: expected {expected}, got {actual}")
-            }
-            Self::InvalidForgettingFactor => {
-                formatter.write_str("RLS forgetting factor must be finite and in (0, 1]")
-            }
-            Self::InvalidInitialCovariance => {
-                formatter.write_str("RLS initial covariance scale must be finite and positive")
-            }
-            Self::NonFiniteInput => {
-                formatter.write_str("RLS observation features and target must be finite")
-            }
-            Self::InvalidDenominator => {
-                formatter.write_str("RLS update denominator must be finite and positive")
-            }
-            Self::NonFiniteCandidate => formatter.write_str(
-                "RLS candidate state is not finite. The candidate update was not committed; the supplied state is unchanged.",
-            ),
-            Self::NonFiniteOutput => {
-                formatter.write_str("RLS prediction produced a non-finite output")
-            }
-        }
-    }
-}
+rls_error_display!(RlsError);
 
 impl std::error::Error for RlsError {}
 
@@ -188,28 +272,7 @@ pub enum RlsBatchError {
     },
 }
 
-impl std::fmt::Display for RlsBatchError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::BatchTooLarge { max, actual, .. } => write!(
-                formatter,
-                "RLS batch length {actual} exceeds maximum {max}; no observation was processed and the supplied state was returned unchanged"
-            ),
-            Self::Transition {
-                failed_index: 0, ..
-            } => formatter.write_str(
-                "RLS batch transition failed at observation 0; no observation was committed and the supplied state was returned unchanged",
-            ),
-            Self::Transition {
-                failed_index,
-                ..
-            } => write!(
-                formatter,
-                "RLS batch transition failed at observation {failed_index}; {failed_index} observations were committed, the failed candidate update was not committed, and the state before the failed observation was returned (no whole-batch rollback)"
-            ),
-        }
-    }
-}
+rls_batch_error_display!(RlsBatchError);
 
 impl std::error::Error for RlsBatchError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {

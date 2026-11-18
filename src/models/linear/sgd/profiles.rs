@@ -11,7 +11,8 @@
 use crate::foundation::numerical::{DimensionMismatch, Vector, Vector64};
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
-use crate::models::linear::serving::{Narrowing, NarrowingError, narrow_f64};
+use crate::models::linear::error::StrictWeightConversionError;
+use crate::models::linear::strict_serving::convert_strict_weights;
 
 /// Failure classes reported by native-`f64` SGD construction, prediction or
 /// update.
@@ -36,29 +37,7 @@ pub enum SgdError64 {
     NonFiniteOutput,
 }
 
-impl std::fmt::Display for SgdError64 {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ZeroDimension => formatter.write_str("SGD dimension must be nonzero"),
-            Self::DimensionMismatch { expected, actual } => {
-                write!(
-                    formatter,
-                    "dimension mismatch: expected {expected}, got {actual}"
-                )
-            }
-            Self::InvalidLearningRate => {
-                formatter.write_str("SGD learning rate must be finite and positive")
-            }
-            Self::NonFiniteInput => {
-                formatter.write_str("SGD observation features and target must be finite")
-            }
-            Self::NonFiniteCandidate => formatter.write_str("SGD candidate state is not finite"),
-            Self::NonFiniteOutput => {
-                formatter.write_str("SGD prediction produced a non-finite output")
-            }
-        }
-    }
-}
+sgd_error_display!(SgdError64);
 
 impl std::error::Error for SgdError64 {}
 
@@ -112,24 +91,7 @@ pub enum SgdUpdateBatchError64 {
     },
 }
 
-impl std::fmt::Display for SgdUpdateBatchError64 {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::TooLarge { max, actual, .. } => write!(
-                formatter,
-                "SGD update group is too large: max {max}, got {actual}; no observation was validated or processed and the supplied state was returned unchanged"
-            ),
-            Self::Transition {
-                failed_index,
-                committed,
-                ..
-            } => write!(
-                formatter,
-                "SGD update failed at index {failed_index} after {committed} committed rows; the failed candidate was not committed and the successful prefix was returned"
-            ),
-        }
-    }
-}
+sgd_update_batch_error_display!(SgdUpdateBatchError64);
 
 impl std::error::Error for SgdUpdateBatchError64 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -159,20 +121,7 @@ pub enum SgdPredictionError64 {
     },
 }
 
-impl std::fmt::Display for SgdPredictionError64 {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::TooLarge { max, actual } => write!(
-                formatter,
-                "SGD prediction group is too large: max {max}, got {actual}; no observation was validated or predicted and no output was returned"
-            ),
-            Self::At { index, .. } => write!(
-                formatter,
-                "SGD prediction failed at index {index}; no partial prediction vector was returned"
-            ),
-        }
-    }
-}
+sgd_prediction_error_display!(SgdPredictionError64);
 
 impl std::error::Error for SgdPredictionError64 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -325,21 +274,17 @@ impl Sgd64 {
             });
         }
 
-        let mut weights = Vec::with_capacity(self.dimension);
-        for (index, &source) in state.w.as_slice().iter().enumerate() {
-            match narrow_f64(source) {
-                Err(NarrowingError::SourceNonFinite) => {
-                    return Err(SgdServingConversionError::SourceNonFinite { index });
-                }
-                Err(NarrowingError::Overflow) => {
-                    return Err(SgdServingConversionError::Overflow { index });
-                }
-                Ok(Narrowing::Underflow(_)) => {
-                    return Err(SgdServingConversionError::Underflow { index });
-                }
-                Ok(Narrowing::Value(value)) => weights.push(value),
+        let weights = convert_strict_weights(state.w.as_slice()).map_err(|error| match error {
+            StrictWeightConversionError::SourceNonFinite { index } => {
+                SgdServingConversionError::SourceNonFinite { index }
             }
-        }
+            StrictWeightConversionError::Overflow { index } => {
+                SgdServingConversionError::Overflow { index }
+            }
+            StrictWeightConversionError::Underflow { index } => {
+                SgdServingConversionError::Underflow { index }
+            }
+        })?;
         Ok(SgdServing32 {
             weights: Vector::from_vec(weights),
         })

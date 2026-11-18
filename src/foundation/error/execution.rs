@@ -91,3 +91,12 @@ pub struct ExecutorStreamFailure<E> {
     /// Failure classification.
     pub cause: FailureCause<E>,
 }
+
+/// Internal failure returned by the canonical fold.
+///
+/// The fold borrows the state, so this type deliberately carries no state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RunFailure<E> {
+    pub(crate) progress: StreamProgress,
+    pub(crate) cause: FailureCause<E>,
+}

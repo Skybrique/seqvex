@@ -25,6 +25,11 @@ use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::StateModel;
 use seqvex::models::linear::sgd::{Sgd, SgdSample, SgdState};
 
+#[path = "../../../../../benches/common/fixture_rng.rs"]
+mod fixture_rng;
+
+use fixture_rng::Lcg32;
+
 /// Learning-prefix length.
 const PREFIX: usize = 400;
 /// Total number of generated rows.
@@ -52,24 +57,18 @@ struct Row {
     target: f32,
 }
 
-/// Advance-before-draw LCG: advance first, then read `u = s / 2^32`.
-fn unit(state: &mut u32) -> f64 {
-    *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-    f64::from(*state) / 4_294_967_296.0
-}
-
 /// Generates the fixed 1000-row fixture.
 fn generate() -> Vec<Row> {
-    let mut feature_state = FEATURE_SEED;
-    let mut noise_state = NOISE_SEED;
+    let mut feature_rng = Lcg32::new(FEATURE_SEED);
+    let mut noise_rng = Lcg32::new(NOISE_SEED);
     (0..TOTAL)
         .map(|i| {
             let mut features = [0.0f32; DIMENSION];
             for value in features.iter_mut().take(2) {
-                *value = (2.0 * unit(&mut feature_state) - 1.0) as f32;
+                *value = (2.0 * feature_rng.next_unit() - 1.0) as f32;
             }
             features[2] = 1.0;
-            let noise = (0.05 * (2.0 * unit(&mut noise_state) - 1.0)) as f32;
+            let noise = (0.05 * (2.0 * noise_rng.next_unit() - 1.0)) as f32;
             let coefficients = if i < SPLIT { W_A } else { W_B };
             let mut linear = 0.0f64;
             for j in 0..DIMENSION {

@@ -2,27 +2,11 @@
 //!
 //! The concrete types are deliberately not tensors: fixed rank, no broadcasting,
 //! no device memory, and no autodiff (`docs/KILO_CONNECTOME_SPRINT_REVISED.md` §10).
+//!
+//! The shared shape error is defined in `foundation::error::shape` and
+//! re-exported here for the existing `numerical::vector` path.
 
-/// Error returned when operands or parameters have incompatible dimensions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DimensionMismatch {
-    /// The dimension required by the operation.
-    pub expected: usize,
-    /// The dimension actually supplied.
-    pub actual: usize,
-}
-
-impl std::fmt::Display for DimensionMismatch {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "dimension mismatch: expected {}, got {}",
-            self.expected, self.actual
-        )
-    }
-}
-
-impl std::error::Error for DimensionMismatch {}
+pub use crate::foundation::error::shape::DimensionMismatch;
 
 /// A contiguous, fixed-length `f32` vector.
 #[derive(Debug, Clone, PartialEq)]

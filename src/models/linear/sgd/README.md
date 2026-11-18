@@ -513,14 +513,23 @@ production-readiness claim.
 - **Historical 2026-10-17 record:** the `sgd` test target had **16 passed** on
   default Rust 1.97.1 and MSRV Rust 1.85.1. That record is preserved here and is
   not silently rewritten.
-- **Current `sgd` test target:** **33 passed** on default Rust 1.97.1 and MSRV
-  Rust 1.85.1. The original 17 tests remain, plus A/B/C controls for native-f64
+- **Current `sgd` test target:** **52 passed** (PR #95 bounded-delivery record,
+  superseding the earlier 33-test record). The original 16 tests remain, plus
+  A/B/C controls for native-f64
   and strict-f32 every-step predictions/states, exact-rational trajectories,
   native-f64 reduction/grouping and discrimination, conversion boundaries,
   output/precedence failures, learned-state failures, continuation, execution
   equivalence, A stream isolation, order/reproducibility and serving replacement.
-- **Example tests:** `sgd_learn` **2 passed**; `sgd_regression` **13 passed**;
-  `sgd_profiles` **5 passed**.
+- **Example tests:** `sgd_learn` **2 passed**; `sgd_regression` **13 embedded
+  tests passed** (the current example target also runs the shared `trump::tests`
+  support suite, **13 passed**, so the `sgd_regression` target total is **26
+  passed = 13 embedded + 13 shared-support tests**); `sgd_profiles`
+  **11 passed**. Those 2/13/11 example counts are the PR #95 bounded-delivery
+  record; the 13 shared-support tests and 26 `sgd_regression` target total are
+  the 2026-11-17 correction measurement, not a new model-quality claim.
+- **Integration test target:** `linear_execution` has **18 test-target tests**;
+  the separate `linear_execution` example has **1 test**. The 18-test count is
+  not an example-target count.
 - **All-target tests:** default and MSRV `cargo test --locked --all-targets
   --all-features` passed, including the existing harness-free benchmark mains as
   test evidence only. No performance claim is made from those runs.
@@ -610,7 +619,8 @@ implied.
 [PR #51](https://github.com/Skybrique/seqvex/pull/51). The replacement baseline
 was measured and reviewed from an **uncommitted** cyclic-control correction on
 base `67d421cc9afcacd3b3f11c401075e91ee411a11c`; it is **not** part of that base
-commit. Current integration status is tracked in
+commit. It is historical/candidate evidence, not a current-HEAD measurement.
+Current integration status is tracked in
 [#55](https://github.com/Skybrique/seqvex/issues/55). Reviewed source hashes:
 
 - `Cargo.toml` — `caa3dd69c9b2d05793ba14870c2cda429fda8a90aa5e15a1760e7f8de2e029a7`
@@ -756,7 +766,7 @@ issue-linked review records and are not duplicated here.
 
 ## Experimental temporary/storage comparison
 
-`src/models/linear/sgd/benches/storage.rs` is a private, benchmark-only comparison of the unchanged update, direct detached candidate construction, applicable fixed arrays, caller-owned reuse and `tinyvec =1.13.3` with `alloc` only. The current results are the fresh November 1, 2026 capture set from published source `caf106c671f1af03ec87bd737c327ac8e24c8482`, tree `9c2bf2bff9c2e67efc610d63f12196be69e2b496`; `storage.rs` SHA-256 is `d2f96ecc0fa4a62a2d3bb011eca220ab5c623d399c421bdcd9d6d5e8519c665a`; the design is `a47db7b2353b875a536783a347bb51d23adef8493ab2cc3ab30fd4652fde914d`. Earlier October 30 capture summaries and reviews remain historical; their original logs and derived tables were not recovered. The fresh captures are new measurements, not recovered originals.
+`src/models/linear/sgd/benches/storage.rs` is a private, benchmark-only comparison of the unchanged update, direct detached candidate construction, applicable fixed arrays, caller-owned reuse and `tinyvec =1.13.3` with `alloc` only. The current results are the fresh November 1, 2026 capture set from published source `caf106c671f1af03ec87bd737c327ac8e24c8482`, tree `9c2bf2bff9c2e67efc610d63f12196be69e2b496`; the **historical pre-split** `storage.rs` at that captured revision had SHA-256 `d2f96ecc0fa4a62a2d3bb011eca220ab5c623d399c421bdcd9d6d5e8519c665a` (the current split root has a different identity and is not that file); the design is `a47db7b2353b875a536783a347bb51d23adef8493ab2cc3ab30fd4652fde914d`. Earlier October 30 capture summaries and reviews remain historical; their original logs and derived tables were not recovered. The fresh captures are new measurements, not recovered originals.
 
 Each of the three sequential Rust/Cargo 1.85.1 captures completed 156 unique timing rows, 20 measured windows per row and 64 registered memory probes, using the default optimized bench profile. These fresh captures used one Linux x86_64 WSL2 environment (12th Gen Intel Core i7-12700H), a single pinned logical CPU and a 2 GiB virtual-memory limit; power/thermal state and background contention were uncontrolled. These are this fresh capture set's conditions, not the historical SGD benchmark environment; historical tables retain their original conditions. Each figure below is capture 1 / capture 2 / capture 3 median nanoseconds per update for a 256-update sequence. It includes the amortized final prediction from the learned state; it is not isolated update latency.
 
@@ -777,7 +787,7 @@ Allocation traffic is not a latency guarantee. At f32 dimension 8, baseline is a
 
 `tinyvec` avoids a separate temporary allocation within capacity but spills above it, with substantial latency/traffic penalties at dimensions 9, 32 and 128. Simpler direct/array options often outperform it within capacity. Do not adopt `tinyvec` for this measured consumer; arrays remain bounded cases, not a general Vector replacement. No unconditional direct/reuse replacement or dimension-based automatic dispatch is selected. The inspected alternatives are not a universal winner.
 
-Fresh evidence has manifest SHA-256 `10fd5d3c6976ab05d5233b69233ab587d97accfff48bc1b6711040fb336983c6` and a 1,443,332-byte archive at `80b0ab14a0b9f6e58b67746448c5f7e0374b2433f527f5dc67c427af79c53a51`. Primary Linux and Windows-side copies were verified file-by-file; the off-machine archive was independently downloaded, fingerprint-checked and extracted, with all 17 manifest-listed files and the manifest verified. Raw logs are not publicly attached. Public findings are the fresh [#55](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6560385104) record and the shared [#46](https://github.com/Skybrique/seqvex/issues/46#issuecomment-6560378144) provenance record. The known same-byte CSV provenance gap and RLS coupled-state reuse remain unresolved and outside this synthetic experiment. Remaining SGD/RLS audits must precede any production-optimization proposal. Full 1.85.1 all-target Clippy retains the separate pre-existing `sgd/tests/sgd.rs:618` finding; affected targets passed in the supplied review.
+Fresh evidence has manifest SHA-256 `10fd5d3c6976ab05d5233b69233ab587d97accfff48bc1b6711040fb336983c6` and a 1,443,332-byte archive at `80b0ab14a0b9f6e58b67746448c5f7e0374b2433f527f5dc67c427af79c53a51`. Primary Linux and Windows-side copies were verified file-by-file; the off-machine archive was independently downloaded, fingerprint-checked and extracted, with all 17 manifest-listed files and the manifest verified. Raw logs are not publicly attached. Public findings are the fresh [#55](https://github.com/Skybrique/seqvex/issues/55#issuecomment-6560385104) record and the shared [#46](https://github.com/Skybrique/seqvex/issues/46#issuecomment-6560378144) provenance record. The known same-byte CSV provenance gap and the Rust 1.85.1 full all-target Clippy finding in `sgd/tests/sgd.rs` are historical limitations of that package/review, not current-head results. Later shared preparation hashes the bytes consumed during parsing and the final drain, and reporting uses that returned digest; this does not resolve historical dataset provenance, point-in-time availability, RLS coupled-state reuse or F15. Remaining SGD/RLS audits must precede any production-optimization proposal. The earlier line-only locator was removed because it is revision-fragile; affected targets passed in the supplied review.
 
 Debug guards run with `cargo test --locked --bench sgd_storage --all-features`; release compilation is `cargo bench --locked --no-run`.
 

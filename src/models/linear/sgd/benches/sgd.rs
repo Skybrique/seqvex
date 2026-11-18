@@ -26,6 +26,8 @@ use seqvex::models::linear::sgd::{Sgd, SgdSample, SgdState};
 #[allow(dead_code)]
 #[path = "../../../../../benches/common/mod.rs"]
 mod common;
+#[path = "scaled_fixtures.rs"]
+mod scaled_fixtures;
 
 const DIMENSIONS: [usize; 5] = [2, 8, 32, 128, 512];
 const STEPS: [u32; 5] = [400_000, 200_000, 100_000, 25_000, 5_000];
@@ -39,18 +41,7 @@ const PREDICTION_PASSES: usize = 2;
 /// `raw = Lcg::next_f32()`; `inv = (1.0f64 / sqrt(D as f64)) as f32`;
 /// `x_j = (2.0f32 * raw) * inv`.
 fn scaled_features(d: usize, n: usize) -> Vec<Vec<f32>> {
-    let inv = (1.0f64 / (d as f64).sqrt()) as f32;
-    let mut lcg = common::Lcg::new(SEED);
-    (0..n)
-        .map(|_| {
-            (0..d)
-                .map(|_| {
-                    let raw = lcg.next_f32();
-                    (2.0f32 * raw) * inv
-                })
-                .collect()
-        })
-        .collect()
+    scaled_fixtures::scaled_features32(d, n, SEED)
 }
 
 fn observations_for(d: usize) -> Vec<Observation<SgdSample>> {

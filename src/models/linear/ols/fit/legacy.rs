@@ -1,0 +1,899 @@
+//! Legacy mixed-precision OLS compatibility fit.
+
+use super::super::artifact::{self, ArtifactError, TrainedModel, TrainingMeta};
+use super::super::predict::{LinearRegression, RegressionError, predict_borrowed};
+use super::common::{
+    AllocationSource, DEFAULT_MAX_WORKSPACE_BYTES, U64_ROUNDOFF, UnderflowPolicy,
+    allocation_source_name, try_matrix,
+};
+use crate::foundation::numerical::Vector;
+use crate::foundation::numerical::narrowing::{Narrowing, NarrowingError, narrow_f64};
+
+use faer::dyn_stack::{MemBuffer, MemStack, StackReq};
+use faer::linalg::qr::col_pivoting::factor::{
+    ColPivQrParams, qr_in_place, qr_in_place_scratch, recommended_block_size,
+};
+use faer::linalg::qr::col_pivoting::solve::{solve_lstsq_in_place, solve_lstsq_in_place_scratch};
+use faer::{Par, Spec};
+
+/// Why a fitted coefficient could not be deployed to `f32`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversionCause {
+    /// A nonzero feature coefficient became exactly zero when rounded to `f32`.
+    CoefficientUnderflow,
+    /// A nonzero bias became exactly zero when rounded to `f32`.
+    BiasUnderflow,
+    /// A fitted `f64` coefficient is not finite, or overflows `f32`.
+    Overflow,
+}
+
+/// Configuration for a single OLS fit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FitConfig {
+    /// Include an intercept term (leading ones column).
+    pub intercept: bool,
+    /// Requested **workspace** budget in bytes (not a physical-memory ceiling).
+    pub max_workspace_bytes: usize,
+    /// Optional maximum feature count.
+    pub max_features: Option<usize>,
+    /// Rank policy constant `c_rank` in `tau = c_rank · max(N, p) · u64 · |R₀₀|`.
+    pub rank_threshold: f64,
+    /// Policy for a nonzero coefficient/bias that rounds to zero.
+    pub on_underflow: UnderflowPolicy,
+}
+
+impl Default for FitConfig {
+    fn default() -> Self {
+        Self {
+            intercept: true,
+            max_workspace_bytes: DEFAULT_MAX_WORKSPACE_BYTES,
+            max_features: None,
+            rank_threshold: 1.0,
+            on_underflow: UnderflowPolicy::Reject,
+        }
+    }
+}
+
+/// Diagnostics for a completed fit, computed on the selected training rows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FitDiagnostics {
+    /// Number of selected training rows `N`.
+    pub rows: usize,
+    /// Feature count `d`.
+    pub features: usize,
+    /// Whether an intercept column was fitted.
+    pub intercept: bool,
+    /// Numerical rank (count of pivots above the threshold).
+    pub rank: usize,
+    /// Required rank `p = d + intercept`.
+    pub required_rank: usize,
+    /// The absolute rank threshold `tau` applied to the R diagonal.
+    pub rank_threshold: f64,
+    /// Rounded `f64` reference residual sum of squares (fitted `f64`
+    /// coefficients, original `f32` features) on the selected training rows.
+    pub rss_f64_reference: f64,
+    /// Residual sum of squares from the deployed `f32` predictor on the
+    /// selected training rows.
+    pub rss_f32_predictor: f64,
+    /// Requested workspace bytes (budget accounting; not measured memory).
+    pub requested_workspace_bytes: usize,
+}
+
+/// A successful fit: learned `f32` coefficients, intercept, and diagnostics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FitResult {
+    coefficients: Vector,
+    intercept: f32,
+    diagnostics: FitDiagnostics,
+}
+
+impl FitResult {
+    /// The learned feature coefficients (without the intercept).
+    pub fn weights(&self) -> &Vector {
+        &self.coefficients
+    }
+
+    /// The learned intercept (zero when no intercept was fitted).
+    pub fn intercept(&self) -> f32 {
+        self.intercept
+    }
+
+    /// The training diagnostics.
+    pub fn diagnostics(&self) -> &FitDiagnostics {
+        &self.diagnostics
+    }
+
+    /// Moves the learned parameters into an immutable predictor.
+    #[must_use]
+    pub fn into_predictor(self) -> LinearRegression {
+        LinearRegression::new(self.coefficients, self.intercept)
+            .expect("fit produces a validated, non-empty, finite predictor")
+    }
+
+    /// Builds a predictor by cloning the learned parameters.
+    pub fn predictor(&self) -> LinearRegression {
+        LinearRegression::new(self.coefficients.clone(), self.intercept)
+            .expect("fit produces a validated, non-empty, finite predictor")
+    }
+
+    /// Moves the learned parameters into an immutable [`TrainedModel`] carrying
+    /// the derived [`super::super::artifact::ArtifactMetadata`].
+    ///
+    /// Returned as [`ArtifactError`] because the checked `u32` conversions of
+    /// `N`/`d` occur here; parameter finiteness was guaranteed by [`fit`].
+    pub fn into_trained(self, meta: &TrainingMeta) -> Result<TrainedModel, ArtifactError> {
+        let limit = u32::MAX as usize;
+        let rows =
+            u32::try_from(self.diagnostics.rows).map_err(|_| ArtifactError::Capacity { limit })?;
+        let features = u32::try_from(self.diagnostics.features)
+            .map_err(|_| ArtifactError::Capacity { limit })?;
+        let intercept_present = self.diagnostics.intercept;
+        let coefficients = self.coefficients;
+        let bias = self.intercept;
+        artifact::build_trained(meta, coefficients, bias, rows, features, intercept_present)
+    }
+}
+
+/// Failure classes reported by [`fit`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum FitError {
+    /// `features.len() != targets.len()`.
+    RowTargetMismatch {
+        /// Number of feature rows.
+        features: usize,
+        /// Number of targets.
+        targets: usize,
+    },
+    /// No training rows were selected.
+    TooFewRows,
+    /// A training index is out of range.
+    IndexOutOfRange {
+        /// The offending index.
+        index: usize,
+        /// The number of available rows.
+        rows: usize,
+    },
+    /// The selected rows have zero feature width.
+    ZeroFeatures,
+    /// The feature width exceeds the configured maximum.
+    TooManyFeatures {
+        /// Observed feature width.
+        features: usize,
+        /// Configured maximum.
+        max: usize,
+    },
+    /// Selected feature rows do not all share one width.
+    RaggedFeatures {
+        /// Original row position of the offending observation.
+        row: usize,
+        /// Expected width.
+        expected: usize,
+        /// Observed width.
+        actual: usize,
+    },
+    /// The rank-policy multiplier is negative or not finite.
+    ///
+    /// A configuration error, not a `RankDeficient` outcome: the supplied
+    /// `rank_threshold` cannot define a supported rank policy. Zero remains a
+    /// valid multiplier (it still rejects exact zero pivots).
+    InvalidRankThreshold {
+        /// The rejected `rank_threshold` value.
+        value: f64,
+    },
+    /// A checked size calculation overflowed `usize`.
+    SizeOverflow {
+        /// Row count.
+        rows: usize,
+        /// Column count.
+        features: usize,
+    },
+    /// The solver scratch layout is invalid (`StackReq` overflow/invalid).
+    ScratchLayout,
+    /// The requested workspace exceeds the configured budget.
+    Capacity {
+        /// Requested workspace bytes.
+        requested: usize,
+        /// Configured limit.
+        limit: usize,
+    },
+    /// A fallible reservation failed.
+    AllocationFailed {
+        /// Buffer label.
+        buffer: &'static str,
+        /// Requested bytes.
+        requested_bytes: usize,
+        /// Reservation source.
+        source: AllocationSource,
+    },
+    /// Duplicate training indices were supplied.
+    DuplicateIndex {
+        /// The repeated index.
+        index: usize,
+    },
+    /// A selected training feature or target is not finite.
+    NonFiniteTrainingValue {
+        /// Original row position.
+        row: usize,
+        /// Feature column, or `features` for the target.
+        column: usize,
+    },
+    /// The numerical rank is below the required rank.
+    RankDeficient {
+        /// Computed rank.
+        rank: usize,
+        /// Required rank.
+        required: usize,
+    },
+    /// The solver produced a non-finite coefficient, or failed internally.
+    NumericalFailure,
+    /// A legacy diagnostic RSS value is not finite.
+    NonFiniteRss,
+    /// A raw diagnostic prediction failed an internal invariant check.
+    Diagnostic(RegressionError),
+    /// A fitted coefficient could not be converted to the `f32` predictor.
+    ConversionRejected(ConversionCause),
+}
+
+impl std::fmt::Display for FitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RowTargetMismatch { features, targets } => write!(
+                formatter,
+                "feature row count {features} does not match target count {targets}"
+            ),
+            Self::TooFewRows => formatter.write_str("no training rows were selected"),
+            Self::IndexOutOfRange { index, rows } => {
+                write!(
+                    formatter,
+                    "training index {index} is out of range for {rows} rows"
+                )
+            }
+            Self::ZeroFeatures => {
+                formatter.write_str("selected training rows have zero feature columns")
+            }
+            Self::TooManyFeatures { features, max } => write!(
+                formatter,
+                "feature count {features} exceeds configured maximum {max}"
+            ),
+            Self::RaggedFeatures {
+                row,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "feature row {row} has width {actual}; expected {expected}"
+            ),
+            Self::InvalidRankThreshold { value } => {
+                write!(formatter, "invalid OLS rank threshold {value}")
+            }
+            Self::SizeOverflow { rows, features } => write!(
+                formatter,
+                "OLS size calculation overflowed for {rows} rows and {features} design-matrix columns"
+            ),
+            Self::ScratchLayout => formatter.write_str("OLS solver scratch layout is invalid"),
+            Self::Capacity { requested, limit } => write!(
+                formatter,
+                "requested OLS workspace {requested} bytes exceeds limit {limit} bytes"
+            ),
+            Self::AllocationFailed {
+                buffer,
+                requested_bytes,
+                source,
+            } => write!(
+                formatter,
+                "could not reserve {requested_bytes} bytes for OLS buffer {buffer} ({})",
+                allocation_source_name(*source)
+            ),
+            Self::DuplicateIndex { index } => {
+                write!(
+                    formatter,
+                    "training index {index} was supplied more than once"
+                )
+            }
+            Self::NonFiniteTrainingValue { row, column } => write!(
+                formatter,
+                "non-finite training value at row {row}, column {column}"
+            ),
+            Self::RankDeficient { rank, required } => {
+                write!(
+                    formatter,
+                    "OLS numerical rank {rank} is below required rank {required}"
+                )
+            }
+            Self::NumericalFailure => formatter.write_str("OLS numerical calculation failed"),
+            Self::NonFiniteRss => {
+                formatter.write_str("legacy OLS fit produced a non-finite RSS diagnostic")
+            }
+            Self::Diagnostic(error) => {
+                write!(
+                    formatter,
+                    "legacy OLS diagnostic prediction failed: {error}"
+                )
+            }
+            Self::ConversionRejected(cause) => write!(
+                formatter,
+                "OLS coefficient conversion rejected: {}",
+                conversion_cause_name(*cause)
+            ),
+        }
+    }
+}
+
+fn conversion_cause_name(cause: ConversionCause) -> &'static str {
+    match cause {
+        ConversionCause::CoefficientUnderflow => "coefficient underflow",
+        ConversionCause::BiasUnderflow => "bias underflow",
+        ConversionCause::Overflow => "overflow",
+    }
+}
+
+impl std::error::Error for FitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Diagnostic(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<RegressionError> for FitError {
+    fn from(error: RegressionError) -> Self {
+        Self::Diagnostic(error)
+    }
+}
+
+/// Fits dense, unweighted OLS with one scalar target over the selected training
+/// rows.
+///
+/// Row `k` for `k in 0..train.len()` uses `features[train[k]]` and
+/// `targets[train[k]]`; held-out rows and their targets are never read.
+pub fn fit(
+    features: &[Vector],
+    targets: &[f32],
+    train: &[usize],
+    config: &FitConfig,
+) -> Result<FitResult, FitError> {
+    // 0. Full-array length equality, from lengths alone.
+    if features.len() != targets.len() {
+        return Err(FitError::RowTargetMismatch {
+            features: features.len(),
+            targets: targets.len(),
+        });
+    }
+    let rows = train.len();
+    if rows == 0 {
+        return Err(FitError::TooFewRows);
+    }
+    // 1. Selected-index range.
+    for &index in train {
+        if index >= features.len() {
+            return Err(FitError::IndexOutOfRange {
+                index,
+                rows: features.len(),
+            });
+        }
+    }
+    // 2. Feature width and optional maximum.
+    let d = features[train[0]].len();
+    if d == 0 {
+        return Err(FitError::ZeroFeatures);
+    }
+    if let Some(max) = config.max_features {
+        if d > max {
+            return Err(FitError::TooManyFeatures { features: d, max });
+        }
+    }
+    // 3. Rectangularity across selected rows (lengths only).
+    for &index in train {
+        let actual = features[index].len();
+        if actual != d {
+            return Err(FitError::RaggedFeatures {
+                row: index,
+                expected: d,
+                actual,
+            });
+        }
+    }
+
+    // 4. Rank-policy configuration. A negative or non-finite multiplier cannot
+    //    define a supported policy and is rejected as a configuration error
+    //    (never reported as `RankDeficient`). This follows the length/range/
+    //    feature-shape checks above and precedes size/layout, budget and
+    //    allocation failures below. Zero is permitted and still rejects exact
+    //    zero pivots; the threshold is a numerical indicator, not certified
+    //    algebraic rank.
+    if !config.rank_threshold.is_finite() || config.rank_threshold < 0.0 {
+        return Err(FitError::InvalidRankThreshold {
+            value: config.rank_threshold,
+        });
+    }
+
+    let p = d + usize::from(config.intercept);
+    let size = rows.min(p);
+    let block = recommended_block_size::<f64>(rows, p);
+
+    // 5. Checked size products and scratch layout, before any allocation.
+    //
+    // Requested-workspace accounting: the sum of every **distinct owned backing
+    // buffer** whose lifetime overlaps the fit peak. `d <= p`, so parameter
+    // buffers are conservatively budgeted at `p` elements. This is a logical
+    // request, distinct from allocator traffic, physical resident memory and
+    // allocator padding.
+    let f64_bytes = std::mem::size_of::<f64>();
+    let f32_bytes = std::mem::size_of::<f32>();
+    let usize_bytes = std::mem::size_of::<usize>();
+    let size_overflow = || FitError::SizeOverflow { rows, features: p };
+    let a_bytes = rows
+        .checked_mul(p)
+        .and_then(|cells| cells.checked_mul(f64_bytes))
+        .ok_or_else(size_overflow)?;
+    let q_bytes = block
+        .checked_mul(size)
+        .and_then(|cells| cells.checked_mul(f64_bytes))
+        .ok_or_else(size_overflow)?;
+    let rhs_bytes = rows.checked_mul(f64_bytes).ok_or_else(size_overflow)?;
+    // Two permutation vectors (`col_perm_fwd` + `col_perm_inv`).
+    let perm_bytes = p
+        .checked_mul(2)
+        .and_then(|n| n.checked_mul(usize_bytes))
+        .ok_or_else(size_overflow)?;
+    // `f64` solution vector, live through solve and diagnostics.
+    let solution_bytes = p.checked_mul(f64_bytes).ok_or_else(size_overflow)?;
+    // Converted-parameter buffer (`weights32` push storage).
+    let converted_bytes = p.checked_mul(f32_bytes).ok_or_else(size_overflow)?;
+    // Retained coefficient `Vector` moved into `FitResult` (one distinct copy).
+    let retained_bytes = p.checked_mul(f32_bytes).ok_or_else(size_overflow)?;
+    // Transient diagnostics predictor coefficient `Vector` (a second copy).
+    let diagnostics_bytes = p.checked_mul(f32_bytes).ok_or_else(size_overflow)?;
+    let uniq_bytes = features.len().div_ceil(8);
+
+    let scratch = StackReq::any_of(&[
+        qr_in_place_scratch::<usize, f64>(rows, p, block, Par::Seq, Spec::default()),
+        solve_lstsq_in_place_scratch::<usize, f64>(rows, p, block, 1, Par::Seq),
+    ]);
+    if scratch.layout().is_err() || scratch.align_bytes() == 0 {
+        return Err(FitError::ScratchLayout);
+    }
+    let scratch_bytes = scratch.unaligned_bytes_required();
+
+    let requested = a_bytes
+        .checked_add(q_bytes)
+        .and_then(|v| v.checked_add(rhs_bytes))
+        .and_then(|v| v.checked_add(perm_bytes))
+        .and_then(|v| v.checked_add(solution_bytes))
+        .and_then(|v| v.checked_add(converted_bytes))
+        .and_then(|v| v.checked_add(retained_bytes))
+        .and_then(|v| v.checked_add(diagnostics_bytes))
+        .and_then(|v| v.checked_add(uniq_bytes))
+        .and_then(|v| v.checked_add(scratch_bytes))
+        .ok_or_else(size_overflow)?;
+
+    // 6. Requested-workspace budget.
+    if requested > config.max_workspace_bytes {
+        return Err(FitError::Capacity {
+            requested,
+            limit: config.max_workspace_bytes,
+        });
+    }
+
+    // 7. Fallible allocation phase. Matrix, scratch, permutation, solution and
+    //    bitset reservations are fallible and share the requested accounting.
+    //    The retained/diagnostics `Vector` copies in step 12 remain infallible
+    //    (disclosed there and in the response).
+    let mut a = try_matrix(rows, p).map_err(|_| FitError::AllocationFailed {
+        buffer: "design matrix A",
+        requested_bytes: a_bytes,
+        source: AllocationSource::Faer,
+    })?;
+    let mut q_coeff = try_matrix(block, size).map_err(|_| FitError::AllocationFailed {
+        buffer: "Householder coefficients",
+        requested_bytes: q_bytes,
+        source: AllocationSource::Faer,
+    })?;
+    let mut rhs = try_matrix(rows, 1).map_err(|_| FitError::AllocationFailed {
+        buffer: "right-hand side",
+        requested_bytes: rhs_bytes,
+        source: AllocationSource::Faer,
+    })?;
+    let mut col_perm_fwd = try_vec_filled(p, 0usize, "col_perm_fwd")?;
+    let mut col_perm_inv = try_vec_filled(p, 0usize, "col_perm_inv")?;
+    let mut solution = try_vec_filled(p, 0.0f64, "f64 solution")?;
+    let mut mem = MemBuffer::try_new(scratch).map_err(|_| FitError::AllocationFailed {
+        buffer: "solver scratch",
+        requested_bytes: scratch_bytes,
+        source: AllocationSource::DynStack,
+    })?;
+    let mut seen: Vec<u8> = Vec::new();
+    seen.try_reserve_exact(uniq_bytes)
+        .map_err(|_| FitError::AllocationFailed {
+            buffer: "uniqueness bitset",
+            requested_bytes: uniq_bytes,
+            source: AllocationSource::Std,
+        })?;
+    seen.resize(uniq_bytes, 0u8);
+
+    // 8. Duplicate selected indices, via the budgeted bitset.
+    for &index in train {
+        let byte = index / 8;
+        let bit = 1u8 << (index % 8);
+        if seen[byte] & bit != 0 {
+            return Err(FitError::DuplicateIndex { index });
+        }
+        seen[byte] |= bit;
+    }
+
+    // 9. Finiteness of selected feature values and targets only.
+    for &index in train {
+        let row = features[index].as_slice();
+        for (column, &value) in row.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(FitError::NonFiniteTrainingValue { row: index, column });
+            }
+        }
+        if !targets[index].is_finite() {
+            return Err(FitError::NonFiniteTrainingValue {
+                row: index,
+                column: d,
+            });
+        }
+    }
+
+    // 10. Fill the design matrix (leading ones column when fitting an intercept).
+    for (k, &index) in train.iter().enumerate() {
+        let row = features[index].as_slice();
+        if config.intercept {
+            a[(k, 0)] = 1.0;
+            for (j, &value) in row.iter().enumerate() {
+                a[(k, j + 1)] = f64::from(value);
+            }
+        } else {
+            for (j, &value) in row.iter().enumerate() {
+                a[(k, j)] = f64::from(value);
+            }
+        }
+        rhs[(k, 0)] = f64::from(targets[index]);
+    }
+
+    // 11. Factor (sequential), rank from the R diagonal, then solve.
+    let applied_tau: f64;
+    {
+        let (_info, col_perm) = qr_in_place(
+            a.as_mut(),
+            q_coeff.as_mut(),
+            &mut col_perm_fwd,
+            &mut col_perm_inv,
+            Par::Seq,
+            MemStack::new(&mut mem),
+            Spec::<ColPivQrParams, f64>::default(),
+        );
+
+        let first = a[(0, 0)].abs();
+        let tau = config.rank_threshold * (rows.max(p) as f64) * U64_ROUNDOFF * first;
+        applied_tau = tau;
+        let mut rank = 0usize;
+        for k in 0..size {
+            if a[(k, k)].abs() > tau {
+                rank += 1;
+            }
+        }
+        if rank < p {
+            return Err(FitError::RankDeficient { rank, required: p });
+        }
+
+        solve_lstsq_in_place(
+            a.as_ref(),
+            q_coeff.as_ref(),
+            a.as_ref(),
+            col_perm,
+            rhs.as_mut(),
+            Par::Seq,
+            MemStack::new(&mut mem),
+        );
+        for (i, value) in solution.iter_mut().enumerate() {
+            *value = rhs[(i, 0)];
+        }
+    }
+
+    // Transient solver buffers are released here (scratch, A, Q_coeff, rhs).
+    drop(mem);
+    drop(a);
+    drop(q_coeff);
+    drop(rhs);
+    drop(seen);
+    drop(col_perm_fwd);
+    drop(col_perm_inv);
+
+    // 12. Checked conversion into the f32 predictor parameters.
+    let (bias64, weights64) = if config.intercept {
+        (solution[0], &solution[1..])
+    } else {
+        (0.0f64, &solution[..])
+    };
+    if !solution.iter().all(|value| value.is_finite()) {
+        return Err(FitError::NumericalFailure);
+    }
+
+    let bias32 = convert_checked(bias64, config.intercept, config)?;
+    let mut weights32: Vec<f32> = Vec::new();
+    weights32
+        .try_reserve_exact(d)
+        .map_err(|_| FitError::AllocationFailed {
+            buffer: "converted coefficients",
+            requested_bytes: converted_bytes,
+            source: AllocationSource::Std,
+        })?;
+    for &value in weights64 {
+        weights32.push(convert_checked(value, false, config)?);
+    }
+
+    // 13. Training diagnostics on the selected rows only.
+    //
+    // The retained result coefficients are an **infallible** allocation. They
+    // are budgeted (`retained_bytes`) but are not allocation-failure
+    // recoverable. Raw diagnostic prediction borrows these coefficients rather
+    // than constructing a second predictor. Universal OOM recovery is not
+    // claimed.
+    let mut rss64 = 0.0f64;
+    let mut rss32 = 0.0f64;
+    let coefficients32 = Vector::from_slice(&weights32);
+    for &index in train {
+        let row = features[index].as_slice();
+        let target = f64::from(targets[index]);
+
+        let mut acc = 0.0f64;
+        for (j, &value) in row.iter().enumerate() {
+            acc += f64::from(value) * weights64[j];
+        }
+        acc += bias64;
+        let residual64 = acc - target;
+        rss64 += residual64 * residual64;
+
+        let prediction = predict_borrowed(&coefficients32, bias32, &features[index])
+            .map_err(FitError::Diagnostic)?;
+        let residual32 = f64::from(prediction) - target;
+        rss32 += residual32 * residual32;
+    }
+
+    if !rss64.is_finite() || !rss32.is_finite() {
+        return Err(FitError::NonFiniteRss);
+    }
+
+    let diagnostics = FitDiagnostics {
+        rows,
+        features: d,
+        intercept: config.intercept,
+        rank: p,
+        required_rank: p,
+        rank_threshold: applied_tau,
+        rss_f64_reference: rss64,
+        rss_f32_predictor: rss32,
+        requested_workspace_bytes: requested,
+    };
+
+    Ok(FitResult {
+        coefficients: coefficients32,
+        intercept: bias32,
+        diagnostics,
+    })
+}
+
+/// Converts one fitted `f64` parameter with checked `f64→f32` conversion.
+fn convert_checked(value: f64, is_bias: bool, config: &FitConfig) -> Result<f32, FitError> {
+    match narrow_f64(value) {
+        Err(NarrowingError::SourceNonFinite | NarrowingError::Overflow) => {
+            Err(FitError::ConversionRejected(ConversionCause::Overflow))
+        }
+        Ok(Narrowing::Underflow(converted)) => {
+            if config.on_underflow == UnderflowPolicy::Reject {
+                Err(FitError::ConversionRejected(if is_bias {
+                    ConversionCause::BiasUnderflow
+                } else {
+                    ConversionCause::CoefficientUnderflow
+                }))
+            } else {
+                Ok(converted)
+            }
+        }
+        Ok(Narrowing::Value(converted)) => Ok(converted),
+    }
+}
+
+/// Fallible standard `Vec` reservation followed by in-capacity initialization.
+fn try_vec_filled<T: Clone>(
+    len: usize,
+    value: T,
+    buffer: &'static str,
+) -> Result<Vec<T>, FitError> {
+    let mut values: Vec<T> = Vec::new();
+    values
+        .try_reserve_exact(len)
+        .map_err(|_| FitError::AllocationFailed {
+            buffer,
+            requested_bytes: len.saturating_mul(std::mem::size_of::<T>()),
+            source: AllocationSource::Std,
+        })?;
+    values.resize(len, value);
+    Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::acceptance::{AcceptanceCheckError, StoredDiagnostic};
+    use super::*;
+
+    fn diagnostics() -> FitDiagnostics {
+        FitDiagnostics {
+            rows: 1,
+            features: 1,
+            intercept: true,
+            rank: 2,
+            required_rank: 2,
+            rank_threshold: 0.0,
+            rss_f64_reference: 0.0,
+            rss_f32_predictor: 0.0,
+            requested_workspace_bytes: 0,
+        }
+    }
+
+    fn result(weights: &[f32], intercept: f32, diagnostics: FitDiagnostics) -> FitResult {
+        FitResult {
+            coefficients: Vector::from_slice(weights),
+            intercept,
+            diagnostics,
+        }
+    }
+
+    #[test]
+    fn parameter_errors_precede_selection_metadata() {
+        let candidate = result(&[f32::NAN], f32::NAN, diagnostics());
+        assert_eq!(
+            candidate.check_acceptance(&[], &[1.0], &[]),
+            Err(AcceptanceCheckError::NonFiniteWeight { index: 0 })
+        );
+
+        let candidate = result(&[1.0], f32::NAN, diagnostics());
+        assert_eq!(
+            candidate.check_acceptance(&[], &[1.0], &[0]),
+            Err(AcceptanceCheckError::NonFiniteBias)
+        );
+    }
+
+    #[test]
+    fn f32_rss_diagnostic_rejection_is_preserved() {
+        let mut stored = diagnostics();
+        stored.rss_f32_predictor = f64::INFINITY;
+        let candidate = result(&[1.0], 0.0, stored);
+
+        assert_eq!(
+            candidate.check_acceptance(&[Vector::from_slice(&[1.0])], &[1.0], &[0]),
+            Err(AcceptanceCheckError::NonFiniteStoredDiagnostic {
+                diagnostic: StoredDiagnostic::RssF32Predictor,
+            })
+        );
+    }
+
+    #[test]
+    fn regression_error_conversion_preserves_diagnostic_cause() {
+        let error = FitError::from(RegressionError::NonFiniteInput);
+        assert!(matches!(
+            error,
+            FitError::Diagnostic(RegressionError::NonFiniteInput)
+        ));
+        assert!(std::error::Error::source(&error).is_some());
+    }
+
+    #[test]
+    fn stored_rss_diagnostics_are_checked_in_declared_order() {
+        let mut stored = diagnostics();
+        stored.rss_f64_reference = f64::NAN;
+        stored.rss_f32_predictor = f64::INFINITY;
+        let candidate = result(&[1.0], 0.0, stored);
+
+        assert_eq!(
+            candidate.check_acceptance(&[Vector::from_slice(&[1.0])], &[1.0], &[0]),
+            Err(AcceptanceCheckError::NonFiniteStoredDiagnostic {
+                diagnostic: StoredDiagnostic::RssF64Reference,
+            })
+        );
+    }
+
+    #[test]
+    fn acceptance_does_not_revalidate_fit_rank_policy() {
+        let mut stored = diagnostics();
+        stored.rank = 0;
+        stored.required_rank = 2;
+        stored.rank_threshold = f64::NAN;
+        let candidate = result(&[1.0], 0.0, stored);
+
+        let report = candidate
+            .check_acceptance(&[Vector::from_slice(&[1.0])], &[1.0], &[0])
+            .unwrap();
+        assert_eq!(report.observations_checked, 1);
+        assert_eq!(report.rss_of_checked_predictions_f64, 0.0);
+    }
+
+    #[test]
+    fn extreme_finite_f32_residual_produces_finite_f64_rss() {
+        let candidate = result(&[f32::MAX], 0.0, diagnostics());
+        let report = candidate
+            .check_acceptance(&[Vector::from_slice(&[1.0])], &[-f32::MAX], &[0])
+            .unwrap();
+
+        let residual = f64::from(f32::MAX) - f64::from(-f32::MAX);
+        assert_eq!(report.observations_checked, 1);
+        assert_eq!(report.rss_of_checked_predictions_f64, residual * residual);
+        assert!(report.rss_of_checked_predictions_f64.is_finite());
+        assert!(report.rss_of_checked_predictions_f64 > 4.0e77);
+    }
+
+    #[test]
+    fn legacy_conversion_rejects_non_finite_and_preserves_signed_zero_bits() {
+        let config = FitConfig::default();
+        for is_bias in [true, false] {
+            for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                assert_eq!(
+                    convert_checked(value, is_bias, &config),
+                    Err(FitError::ConversionRejected(ConversionCause::Overflow)),
+                    "non-finite source {value:?} (is_bias = {is_bias}) must map to Overflow"
+                );
+            }
+        }
+
+        let positive_zero = convert_checked(0.0, true, &config).expect("positive zero converts");
+        let negative_zero = convert_checked(-0.0, false, &config).expect("negative zero converts");
+        assert_eq!(positive_zero.to_bits(), 0.0_f32.to_bits());
+        assert_eq!(negative_zero.to_bits(), (-0.0_f32).to_bits());
+    }
+
+    #[test]
+    fn bias_conversion_precedes_an_independently_failing_weight() {
+        // With an intercept, x = [1, 5] and y = [0, u], the exact affine
+        // solution is b + w = 0 and b + 5w = u, so w = u/4 and b = -u/4.
+        // Both are nonzero f64 values below half the smallest positive f32
+        // subnormal, so each independently converts to f32 zero.
+        let smallest_subnormal = f32::from_bits(1);
+        assert_eq!(smallest_subnormal.to_bits(), 1);
+        let u = f64::from(smallest_subnormal);
+        let expected = u / 4.0;
+        assert_eq!(expected * 4.0, u, "the fixture solution is exact in f64");
+        assert!(
+            expected > 0.0 && expected < u / 2.0,
+            "the exact parameter must round to f32 zero"
+        );
+
+        let reject = FitConfig::default();
+        // Independent controls: the expected bias and weight each fail alone.
+        assert_eq!(
+            convert_checked(-expected, true, &reject),
+            Err(FitError::ConversionRejected(ConversionCause::BiasUnderflow))
+        );
+        assert_eq!(
+            convert_checked(expected, false, &reject),
+            Err(FitError::ConversionRejected(
+                ConversionCause::CoefficientUnderflow
+            ))
+        );
+
+        let features = [Vector::from_slice(&[1.0]), Vector::from_slice(&[5.0])];
+        let targets = [0.0_f32, smallest_subnormal];
+        assert_eq!(
+            fit(&features, &targets, &[0, 1], &reject),
+            Err(FitError::ConversionRejected(ConversionCause::BiasUnderflow)),
+            "the bias is converted before the independently failing weight"
+        );
+
+        // Control: relaxing only the underflow policy lets the same fixture pass
+        // the earlier rank/numerical checks and deploy both zeros.
+        let allow = FitConfig {
+            on_underflow: UnderflowPolicy::AllowLoss,
+            ..FitConfig::default()
+        };
+        let fitted = fit(&features, &targets, &[0, 1], &allow)
+            .expect("fixture must reach conversion, not an earlier rank/numerical failure");
+        assert_eq!(fitted.intercept().to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(
+            fitted.weights().get(0).unwrap().to_bits(),
+            0.0_f32.to_bits()
+        );
+    }
+}

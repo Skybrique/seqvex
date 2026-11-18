@@ -1,7 +1,7 @@
 //! Linear regression prediction: `ŷ = w · x + b`.
 //!
 //! This module contains immutable f32 [`LinearRegression`] and native-f64
-//! [`LinearRegression64`] predictors. OLS fitting lives separately in `fit.rs`;
+//! [`LinearRegression64`] predictors. OLS fitting lives separately in `fit/`;
 //! a prediction call never learns from the observation. In particular, streaming
 //! delivery does not make batch OLS an incremental estimator.
 //!

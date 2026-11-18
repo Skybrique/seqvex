@@ -193,6 +193,21 @@ Identify explicitly:
 
 Architecture decisions remain evidence-driven.
 
+### Requirements and ownership check before each phase
+
+Before starting or revising design, planning or implementation, re-read the applicable current requirements, governing guidance, accepted decisions and correction findings. Inspect the actual affected definitions and consumers.
+
+Apply [canonical ownership and locality](docs/DEVELOPMENT.md#101-canonical-ownership-and-locality). Record the following in the existing workstream’s design, plan or review, at a depth proportionate to the change:
+
+- Component and its local or shared classification.
+- Concrete consumers and relevant contract differences.
+- Canonical definition/implementation owner.
+- Dependency direction, visibility and compatibility exports.
+- Verification of the requirement against the actual source.
+- Unresolved discrepancies and their disposition.
+
+Surface requirement-to-design or requirement-to-source conflicts before affected work proceeds. Prior approval, an export facade or passing tests does not establish that an unresolved ownership requirement is satisfied. Reviewers verify the actual implementation against the requirements as well as the approved design and plan.
+
 ---
 
 ## 5. Lifecycle
@@ -508,6 +523,7 @@ The Code Reviewer independently evaluates the dimensions that are **materially a
 | **Mathematical correctness** | Independent oracle / hand-derived evidence; tie and ordering determinism; numerical envelope; no overfitting to the implementation. |
 | **Statistical / data-regime correctness** | Applied where the claims or regime require it: non-IID/time-series validity, sampling, seed/RNG reproducibility, and what is claimed vs inferred. |
 | **Operational correctness** | Real-world performance characteristics, not memory alone: latency, throughput, allocations, memory, cold-start, warm-start, steady-state, and relevant tail latency. |
+| **Refactor preservation** | Declared contracts are preserved and approved structural changes are accounted for; mappings, intended selection checks and unresolved external compatibility limits are recorded; comparator limits are stated; independent mathematical references are retained. |
 
 Governing principle:
 
@@ -529,6 +545,9 @@ Findings are recorded in the owning issue/PR; the Reviewer does not silently imp
 | Mathematical | independent oracle / hand-derived / invariant tests |
 | Documentation | rustdoc + README updated; links resolve |
 | Git scope | only issue-owned files changed; `git diff --check` clean |
+| Commit prefix (partitioned commits) | For future approved partitions, each exact staged/committed prefix passes its applicable build/test checks in isolation; a later repair does not retroactively validate an earlier failed prefix (`docs/DEVELOPMENT.md` §24.7) |
+| Refactor preservation | Declared contracts preserved and approved structural changes accounted for; mappings, intended selection checks, unresolved external compatibility limits and comparator limits recorded (`docs/DEVELOPMENT.md` §28.1) |
+| Evidence provenance | Evidence proportionate to the change and claim; results bound to the tested revision, command and toolchain; raw logs retained; provenance claims kept distinct (`docs/CORRECTNESS.md` §11) |
 
 Report only what was actually run: `FACT: passed`, `FACT: failed`, `NOT RUN`, or `NOT APPLICABLE`.
 

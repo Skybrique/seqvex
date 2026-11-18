@@ -186,6 +186,10 @@ Use the runbook's validation matrix and required Rust checks. Compilation, fmt a
 
 Mark evidence as EXECUTED, REUSED WITH APPLICABILITY VERIFIED, NOT RUN or NOT APPLICABLE with reasons. Distinguish reviewer-inspected evidence from execution facts recorded by others. Name exact revisions and source changes that limit reuse.
 
+**Counting units and reconciliation.** State the unit each count uses — files, targets, top-level items, test functions, discovered cases, executed assertions, committed records or another named unit — and do not compare or total different units. Reconcile every reported total against its underlying records and preserve the per-record mapping. When a total converts between units or denominators, explain the conversion and reconcile the converted result to the source records. A count, hash or checksum shows that a particular representation is consistent; it does not by itself establish semantic completeness, correct placement or that every required item was preserved.
+
+**Evidence binding and provenance.** Bind each execution result to the exact source revision, tree state, command, toolchain, platform and target that produced it, and retain the original raw log. A normalized or summarized view is derived evidence, not a replacement for the raw record. Keep these claims distinct: the author's execution, independent review of that execution or the source, a historical snapshot, scoped acceptance of a checkpoint, and verification of the delivered source. None implies the next; a documentation-only change does not renew execution evidence, and an acceptance decision does not verify unexecuted or delivered code. Keep the required evidence proportionate to the change and the claim.
+
 Choose meaningful tests that can fail for plausible defects. Avoid tests that simply restate the implementation. No single count of passing cases is a universal acceptance threshold.
 
 ## 12. Evidence record template
@@ -199,7 +203,8 @@ Embed this record in the owning issue-linked design/review; do not file a separa
 | Mathematical oracle | Independent derivation/implementation, shared components and comparison criteria |
 | Inputs/regime | Shapes, sequence/groups, availability, labels, seeds, conditioning and capacity |
 | Expected behavior | Equation/property, ordering, state and failure boundary |
-| Validation | Commands/tests, actual execution status, toolchain/platform and raw evidence |
+| Validation | Commands/tests, actual execution status, toolchain/platform and raw-log path |
+| Provenance and counting | Tested revision/tree; author execution, independent review, historical snapshot, scoped acceptance and delivered-source verification kept distinct; unit of each count and any converted-total reconciliation |
 | Observed behavior | Values/errors/states, comparison result and reproducible failures |
 | Performance | Release region, equivalent work, latency/throughput/memory, variability and provenance |
 | Limitations | Unchecked conditions, supported envelope and deferred choices |

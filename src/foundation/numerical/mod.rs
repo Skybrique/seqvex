@@ -7,6 +7,9 @@
 //! observations; see `docs/RANDOMNESS.md`). `narrowing` holds the private,
 //! policy-neutral scalar `f64`→`f32` classification used by model serving
 //! conversions; it does not own model-specific failure or underflow policy.
+//! NarrowingError is defined in foundation::error::narrowing and re-exported
+//! through numerical::narrowing; the scalar operation and successful outcome
+//! classification remain numerical.
 //! Statistics retain their established panic/IEEE contracts; container shape
 //! errors use `DimensionMismatch`
 //! (`docs/KILO_CONNECTOME_SPRINT_REVISED.md` §9–13).
@@ -23,4 +26,6 @@ pub use activations::{sigmoid, tanh};
 pub use linalg::{Matrix, Matrix64};
 pub use random::{RandomError, RandomGenerator, UniformRange};
 pub use statistics::{dot, mean, norm, online_mean, online_variance, sum, variance};
-pub use vector::{DimensionMismatch, Vector, Vector64};
+pub use vector::{Vector, Vector64};
+
+pub use crate::foundation::error::shape::DimensionMismatch;

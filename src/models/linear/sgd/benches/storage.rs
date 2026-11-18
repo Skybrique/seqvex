@@ -6,6 +6,8 @@ use common::comparison::capture_from_env;
 #[allow(dead_code)]
 #[path = "../../../../../benches/common/mod.rs"]
 mod common;
+#[path = "scaled_fixtures.rs"]
+mod scaled_fixtures;
 
 #[path = "storage/candidates.rs"]
 mod candidates;

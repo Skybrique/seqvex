@@ -8,38 +8,13 @@
 //! returned.
 //!
 //! This is the linear-family strict serving policy. The policy-neutral scalar
-//! classification lives in the foundation numerical `narrowing` module. Public
+//! narrowing operation lives in the foundation numerical `narrowing` module; the
+//! shared rejection classification is owned by `models::linear::error`. Public
 //! RLS/SGD errors, dimension checks and source-state ownership remain with their
 //! algorithms.
 
-use std::fmt;
-
 use crate::foundation::numerical::narrowing::{Narrowing, NarrowingError, narrow_f64};
-
-/// First rejection encountered while converting a strict weight slice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StrictWeightConversionError {
-    /// A weight source was non-finite.
-    SourceNonFinite { index: usize },
-    /// A finite weight source overflowed `f32`.
-    Overflow { index: usize },
-    /// A nonzero weight source rounded to zero.
-    Underflow { index: usize },
-}
-
-impl fmt::Display for StrictWeightConversionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::SourceNonFinite { index } => {
-                write!(formatter, "non-finite weight source at index {index}")
-            }
-            Self::Overflow { index } => write!(formatter, "weight overflow at index {index}"),
-            Self::Underflow { index } => write!(formatter, "weight underflow at index {index}"),
-        }
-    }
-}
-
-impl std::error::Error for StrictWeightConversionError {}
+use crate::models::linear::error::StrictWeightConversionError;
 
 /// Converts every weight in ascending index order, stopping at the first
 /// rejection.

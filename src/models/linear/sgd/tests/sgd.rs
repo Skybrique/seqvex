@@ -18,31 +18,20 @@ use num_rational::BigRational;
 use num_traits::{ToPrimitive, Zero};
 
 use seqvex::foundation::numerical::Vector;
-use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::StateModel;
-use seqvex::models::linear::sgd::{Sgd, SgdError, SgdSample, SgdState};
+use seqvex::models::linear::sgd::{Sgd, SgdError, SgdState};
 
 #[path = "../../../../../benches/common/fixture_rng.rs"]
 mod fixture_rng;
 
 use fixture_rng::Lcg32;
 
+#[path = "sgd/support.rs"]
+mod support;
+
+use self::support::{bits, sample};
+
 // --- helpers ---------------------------------------------------------------
-
-fn sample(features: &[f32], target: f32) -> Observation<SgdSample> {
-    Observation::new(SgdSample {
-        features: Vector::from_slice(features),
-        target,
-    })
-}
-
-fn bits(vector: &Vector) -> Vec<u32> {
-    vector
-        .as_slice()
-        .iter()
-        .map(|value| value.to_bits())
-        .collect()
-}
 
 fn rat(value: f32) -> BigRational {
     BigRational::from_float(f64::from(value)).expect("finite fixture")

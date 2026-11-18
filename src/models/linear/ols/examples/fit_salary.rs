@@ -29,6 +29,11 @@ use seqvex::models::linear::ols::{
     PublicationId, TrainedModel, TrainingMeta, fit,
 };
 
+#[path = "../../../../../benches/common/hex.rs"]
+mod hex_format;
+
+use self::hex_format::encode as hex;
+
 /// Deterministic split: every fifth row by position is held out.
 fn is_held_out(position: usize) -> bool {
     position % 5 == 4
@@ -36,15 +41,6 @@ fn is_held_out(position: usize) -> bool {
 
 fn observation(row: &[f32]) -> Observation<Vector> {
     Observation::new(Vector::from_slice(row))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut text = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(text, "{byte:02x}");
-    }
-    text
 }
 
 fn main() -> ExitCode {

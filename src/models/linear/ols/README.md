@@ -28,7 +28,7 @@ OLS learns a linear predictor from a declared training dataset. For a new featur
 |---|---|---|
 | Existing supplied-parameter prediction primitive | Implemented and preserved; fitting now supplies learned parameters | Preserved alongside the additive fitter. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
 | Streaming and caller-bounded grouped prediction | Implemented for fitted models; ordinary prediction validates output and grouped errors retain the observation index | Demonstrated by checked-serving tests and the Salary example. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
-| Fit weights/intercept from labelled rows | Implemented: `fit`, multi-feature scalar response, optional intercept; faer column-pivoted QR, `Par::Seq` | Implemented in `fit.rs`; `tests/fitting.rs`. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
+| Fit weights/intercept from labelled rows | Implemented: `fit`, multi-feature scalar response, optional intercept; faer column-pivoted QR, `Par::Seq` | Implemented in the `fit/` module (`fit/mod.rs`); `tests/fitting.rs`. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
 | Rank/numerical diagnostics | Implemented: relative-pivot rank indicator and rounded-f64/f32 RSS diagnostics; formal certification deferred | Independent references, fitter tests and cross-solver comparison. ([#44](https://github.com/Skybrique/seqvex/issues/44)) |
 | Causal periodic refitting | Explicit training indices supported; temporal tests construct eligible/purged windows; automatic eligibility and transforms remain caller-owned | Selection isolation and regime-window tests; no automatic leakage detection. ([#45](https://github.com/Skybrique/seqvex/issues/45)) |
 | Artifact import/export and replacement boundary | Implemented: artifact v1, metadata/content identity, rejection and handover through a new executor | `artifact.rs`, artifact tests and Salary refit demonstration. ([#43](https://github.com/Skybrique/seqvex/issues/43)) |
@@ -383,7 +383,7 @@ Run the applicable critical architecture review before choices affecting ownersh
 | `src/models/linear/mod.rs` and family README | Family namespace and orientation | #43 |
 | `src/models/linear/ols/mod.rs` | Canonical public exports | #43 |
 | `src/models/linear/ols/predict.rs` | Immutable finite-or-error prediction, grouped index, compatibility checked aliases | #43 |
-| `src/models/linear/ols/fit.rs` | Selected-row fitting, rank/conversion checks and diagnostics | #43; verification #44 |
+| `src/models/linear/ols/fit/{mod,common,legacy,native64,native32,acceptance}.rs` | Selected-row fitting, rank/conversion checks and diagnostics, split by responsibility | #43; verification #44 |
 | `src/models/linear/ols/artifact.rs` | Metadata, identity and binary artifact v1 | #43 |
 | `src/models/linear/ols/tests/oracle.rs` | Independent exact references; Cargo target `ols_oracle` | #44 |
 | `src/models/linear/ols/tests/fitting.rs` | Fitter tests; Cargo target `ols_fit` | #43; #44 |
@@ -471,7 +471,7 @@ The pre-migration `classic` README recorded the fixed-coefficient prediction ben
 - [Failure and recovery](../../../../docs/FAILURE_AND_RECOVERY.md)
 - [Streaming ML programme draft](../../../../docs/STREAMING_ML_DESIGN.md)
 - [Correctness methodology draft](../../../../docs/CORRECTNESS.md)
-- [Fitter](fit.rs), [artifact implementation](artifact.rs), [predictor and checked serving](predict.rs)
+- [Fitter](fit/mod.rs), [artifact implementation](artifact.rs), [predictor and checked serving](predict.rs)
 - [Independent references](tests/oracle.rs), [fitter tests](tests/fitting.rs), [artifact tests](tests/ols_artifact.rs), [checked-serving tests](tests/checked_serving.rs) and [temporal-selection tests](tests/ols_temporal.rs)
 - [CSV workflow example](examples/fit_salary.rs), [fitting/resource benchmark](benches/fit.rs), [public-contract tests](tests/public_contract.rs) and [prediction benchmark](benches/execution.rs)
 - [Historical algorithm correctness audit](../../../../docs/ALGORITHM_CORRECTNESS_AUDIT.md) — historical evidence, not fitter acceptance

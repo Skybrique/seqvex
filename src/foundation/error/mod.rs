@@ -5,6 +5,7 @@
 //! their algorithm modules.
 
 pub mod execution;
+pub(crate) mod narrowing;
 pub mod shape;
 
 pub use execution::{

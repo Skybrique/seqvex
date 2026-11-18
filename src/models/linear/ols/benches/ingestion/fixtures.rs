@@ -75,13 +75,7 @@ pub(super) fn fixtures() -> Vec<Fixture> {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        write!(&mut out, "{byte:02x}").expect("writing to String");
-    }
-    out
+    super::common::hex::encode(Sha256::digest(bytes).as_slice())
 }
 
 pub(super) fn guard_fixtures() {

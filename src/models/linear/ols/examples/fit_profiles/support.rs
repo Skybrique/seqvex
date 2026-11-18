@@ -4,6 +4,16 @@ use std::path::PathBuf;
 
 use seqvex::foundation::numerical::{Vector, Vector64};
 
+// This support file is compiled both for the `fit_profiles` example and, as
+// `fit_profiles_support`, for the `ols_ingestion` bench. That bench crate also
+// includes `benches/common/mod.rs`, so the same dependency-free `hex.rs` is
+// intentionally loaded twice; suppress the resulting duplicate-module lint.
+#[allow(clippy::duplicate_mod)]
+#[path = "../../../../../../benches/common/hex.rs"]
+mod hex_format;
+
+pub(super) use self::hex_format::encode as hex;
+
 pub(crate) const CANONICAL_CSV: &[u8] =
     include_bytes!("../../../../../../examples/data/displacement_time_offset.csv");
 pub(crate) const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -219,13 +229,4 @@ pub(super) fn metrics(predictions: &[f64], targets: &[f64]) -> Metrics {
         mae,
         rmse: (rss / targets.len() as f64).sqrt(),
     }
-}
-
-pub(super) fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(output, "{byte:02x}");
-    }
-    output
 }

@@ -47,7 +47,7 @@ baseline now includes:
   `StateModel` contract (state = most recent prediction).
 
 - Dense unweighted fitting with selected training indices, multi-feature scalar
-  targets and an optional intercept: [`ols/fit.rs`](ols/fit.rs). Inputs are `f32`,
+  targets and an optional intercept: [`ols/fit`](ols/fit/mod.rs). Inputs are `f32`,
   the QR solve is `f64`, and learned parameters/serving remain `f32`.
 - Metadata/content identity and binary artifact v1:
   [`ols/artifact.rs`](ols/artifact.rs); deliberate refit handover uses a new

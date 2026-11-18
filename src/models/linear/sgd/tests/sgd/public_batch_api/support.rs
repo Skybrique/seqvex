@@ -7,19 +7,7 @@ use seqvex::models::linear::sgd::{
     SgdSample64, SgdState, SgdState64, SgdUpdateBatchError, SgdUpdateBatchError64,
 };
 
-pub(super) fn sample(features: &[f32], target: f32) -> Observation<SgdSample> {
-    Observation::new(SgdSample {
-        features: Vector::from_slice(features),
-        target,
-    })
-}
-
-pub(super) fn sample64(features: &[f64], target: f64) -> Observation<SgdSample64> {
-    Observation::new(SgdSample64 {
-        features: Vector64::from_slice(features),
-        target,
-    })
-}
+pub(super) use crate::support::{bits, bits64, sample, sample64};
 
 pub(super) fn features(values: &[f32]) -> Observation<Vector> {
     Observation::new(Vector::from_slice(values))
@@ -39,22 +27,6 @@ pub(super) fn state64(values: &[f64]) -> SgdState64 {
     SgdState64 {
         w: Vector64::from_slice(values),
     }
-}
-
-pub(super) fn bits(vector: &Vector) -> Vec<u32> {
-    vector
-        .as_slice()
-        .iter()
-        .map(|value| value.to_bits())
-        .collect()
-}
-
-pub(super) fn bits64(vector: &Vector64) -> Vec<u64> {
-    vector
-        .as_slice()
-        .iter()
-        .map(|value| value.to_bits())
-        .collect()
 }
 
 pub(super) fn bits32_vec(values: &[f32]) -> Vec<u32> {

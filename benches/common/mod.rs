@@ -13,6 +13,8 @@
 
 pub mod comparison;
 
+pub(crate) mod hex;
+
 mod fixture_rng;
 
 pub use fixture_rng::Lcg64 as Lcg;

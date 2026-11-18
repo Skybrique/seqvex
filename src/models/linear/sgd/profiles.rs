@@ -11,7 +11,8 @@
 use crate::foundation::numerical::{DimensionMismatch, Vector, Vector64};
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
-use crate::models::linear::strict_serving::{StrictWeightConversionError, convert_strict_weights};
+use crate::models::linear::error::StrictWeightConversionError;
+use crate::models::linear::strict_serving::convert_strict_weights;
 
 /// Failure classes reported by native-`f64` SGD construction, prediction or
 /// update.

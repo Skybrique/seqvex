@@ -57,6 +57,10 @@ mod trump;
 #[path = "../../../../../benches/common/fixture_rng.rs"]
 mod fixture_rng;
 
+#[cfg(test)]
+#[path = "../../../../../examples/support/trump_fixtures.rs"]
+mod trump_fixtures;
+
 /// Fixed learning rate for this example's standardized prefix.
 const ETA: f32 = 0.01;
 /// Ordered passes over the learning prefix.
@@ -91,55 +95,7 @@ mod tests {
     use super::reporting::run_with_path;
     use super::trump::PREFIX;
 
-    use super::fixture_rng::Lcg64;
-
-    const HEADER: &str =
-        "ordinal_date,five_thirty_eight,gallup,ipsos,morning_consult,rasmussen,you_gov";
-
-    /// Deterministic fixture row in original units.
-    struct Fixture {
-        date: i64,
-        features: [f64; 5],
-        target: f64,
-    }
-
-    fn fixtures(count: usize, seed: u64) -> Vec<Fixture> {
-        let mut rng = Lcg64::new(seed);
-        (0..count)
-            .map(|i| {
-                let mut features = [0.0f64; 5];
-                for value in &mut features {
-                    *value = 30.0 + 20.0 * rng.next_unit();
-                }
-                let target =
-                    1.0 + 2.0 * features[0] - 1.5 * features[1] + 0.5 * features[2] + features[3]
-                        - features[4];
-                Fixture {
-                    date: 736_389 + i as i64,
-                    features,
-                    target,
-                }
-            })
-            .collect()
-    }
-
-    fn to_csv(rows: &[Fixture]) -> String {
-        let mut content = String::from(HEADER);
-        content.push('\n');
-        for row in rows {
-            content.push_str(&format!(
-                "{},{},{},{},{},{},{}\n",
-                row.date,
-                row.target,
-                row.features[0],
-                row.features[1],
-                row.features[2],
-                row.features[3],
-                row.features[4]
-            ));
-        }
-        content
-    }
+    use super::trump_fixtures::{fixtures, to_csv};
 
     fn temp_path(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();

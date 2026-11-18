@@ -1032,8 +1032,8 @@ unchanged.
 
 ## Current tests / specification
 
-- [`tests/rls.rs`](tests/rls.rs): integration target `rls`. The
-  `precision_profiles` module adds A/B/C API/visibility, admission precedence,
+- [`tests/rls.rs`](tests/rls.rs): integration target `rls`. The test
+  modules under `tests/rls/` add A/B/C API/visibility, admission precedence,
   independent same-order scalar controls, literal weighted-objective checks for
   every nonempty named prefix, `RLS-ORDER4`, both orders of `RLS-PERM30-A/C`,
   B conversion/serving bounds, failure/prefix/continuation, native-f64

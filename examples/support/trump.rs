@@ -14,6 +14,11 @@ use sha2::{Digest, Sha256};
 
 use seqvex::foundation::numerical::Vector;
 
+#[path = "../../benches/common/hex.rs"]
+mod hex_format;
+
+use self::hex_format::encode as hex;
+
 /// Date column (metadata only; never a model input).
 pub(crate) const DATE_COLUMN: &str = "ordinal_date";
 /// Target column.
@@ -154,16 +159,6 @@ impl<R: Read> Read for HashingReader<R> {
         self.hasher.update(&buffer[..read]);
         Ok(read)
     }
-}
-
-/// Lowercase hexadecimal encoding of `bytes`.
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut text = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(text, "{byte:02x}");
-    }
-    text
 }
 
 /// Reads and validates a dataset through a hashing reader.

@@ -9,18 +9,7 @@ use sha2::{Digest, Sha256};
 use super::{FIXTURE_LEN, SEED32, SEED64, WARM_START, common};
 
 fn scaled_features32(d: usize, n: usize) -> Vec<Vec<f32>> {
-    let inv = (1.0f64 / (d as f64).sqrt()) as f32;
-    let mut lcg = common::Lcg::new(SEED32);
-    (0..n)
-        .map(|_| {
-            (0..d)
-                .map(|_| {
-                    let raw = lcg.next_f32();
-                    (2.0f32 * raw) * inv
-                })
-                .collect()
-        })
-        .collect()
+    super::scaled_fixtures::scaled_features32(d, n, SEED32)
 }
 
 struct SplitMix64 {
@@ -133,14 +122,7 @@ pub(super) fn expected_manifest64(d: usize) -> &'static str {
     }
 }
 
-pub(super) fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut out, "{byte:02x}").expect("writing to String");
-    }
-    out
-}
+pub(super) use super::common::hex::encode as hex;
 
 pub(super) fn manifest32(
     d: usize,

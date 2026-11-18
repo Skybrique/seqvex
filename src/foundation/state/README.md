@@ -16,6 +16,7 @@ transitions, and failure atomicity.
   stop-on-first-failure. This is **not** a bounded micro-batch strategy; a
   bounded micro-batch is introduced per algorithm (`docs/ML_VERTICAL_SLICES.md`).
 - Streaming execution with failure preservation (`process_stream`).
+- Explicit continuation reporting (`process_stream_continuing`).
 
 ## Relationship to Seqvex
 
@@ -26,10 +27,13 @@ subsequent observations. See `docs/DEVELOPMENT.md` §3.3/§10 and
 
 ## Inside
 
-- `transition` — the `StateModel` contract, single-observation execution, and
-  the reference ordered fold.
-- `atomicity` — streaming replay that preserves the last valid state and
-  reports failures.
+- `transition` — the `StateModel` contract and single-observation execution
+  (`process_one`).
+- `atomicity` — the canonical ordered fold, strict `process_batch` and
+  `process_stream`, explicit `process_stream_continuing`, `StreamSummary`, and
+  failure-preserving progress mapping. `RunMode` and the fold remain here; the
+  internal `RunFailure` type is canonically defined in
+  `foundation::error::execution`.
 
 ## Outside
 

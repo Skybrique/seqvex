@@ -5,6 +5,7 @@
 //! failures to a callback and stops only on counter overflow. No wrapper retains
 //! per-failure states or automatically replays observations.
 
+use crate::foundation::error::execution::RunFailure;
 use crate::foundation::error::{BatchFailure, FailureCause, StreamFailure, StreamProgress};
 use crate::foundation::state::transition::StateModel;
 
@@ -13,15 +14,6 @@ use crate::foundation::state::transition::StateModel;
 pub(crate) enum RunMode {
     Strict,
     Continuing,
-}
-
-/// Internal failure returned by the canonical fold.
-///
-/// The fold borrows the state, so this type deliberately carries no state.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RunFailure<E> {
-    pub(crate) progress: StreamProgress,
-    pub(crate) cause: FailureCause<E>,
 }
 
 /// A successful continuation run.

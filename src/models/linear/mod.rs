@@ -11,6 +11,7 @@
 //! See [`ols`] and [`rls`] for the algorithm modules and their canonical
 //! READMEs; [`sgd`] holds the SGD-trained linear-regression slice.
 
+pub(crate) mod error;
 pub mod ols;
 pub mod rls;
 pub mod sgd;

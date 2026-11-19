@@ -10,6 +10,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::num::NonZeroU64;
 
 use rand::SeedableRng;
 use rand::TryRng;
@@ -105,6 +106,20 @@ impl RandomGenerator {
     /// Draws one value from a previously validated range.
     pub fn draw_f32(&mut self, range: &UniformRange) -> f32 {
         range.distribution.sample(&mut self.rng)
+    }
+
+    /// Draws one uniformly distributed index in `[0, upper)`.
+    ///
+    /// Data-agnostic: this primitive serves any caller that needs a uniform
+    /// integer. It does not sample, reorder, or interpret observations; the
+    /// data-selection policy belongs to `preprocessing::sampling`.
+    ///
+    /// The distribution is constructed up front so the dependency's unbiased
+    /// integer sampler is used, rather than the one-off range shortcut.
+    pub fn draw_u64_below(&mut self, upper: NonZeroU64) -> u64 {
+        let distribution = Uniform::new(0_u64, upper.get())
+            .expect("a non-zero upper bound forms a non-empty range");
+        distribution.sample(&mut self.rng)
     }
 
     fn from_entropy_source(

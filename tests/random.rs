@@ -71,3 +71,36 @@ fn invalid_ranges_are_rejected() {
         Err(RandomError::InvalidRange)
     ));
 }
+
+const KAT_U64_BOUNDS: [u64; 5] = [1, 2, 3, 1 << 53, (1 << 63) + 1];
+const KAT_U64_VALUES: [u64; 15] = [
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    1,
+    2,
+    3_983_747_634_605_040,
+    8_145_224_125_137_271,
+    8_303_390_446_523_346,
+    1_148_991_139_499_910_279,
+    1_877_847_795_317_891_071,
+    4_426_926_430_244_945_454,
+];
+
+#[test]
+fn draw_u64_below_matches_frozen_vector() {
+    let mut generator = RandomGenerator::from_seed(KAT_SEED);
+    let mut index = 0;
+    for bound in KAT_U64_BOUNDS {
+        for _ in 0..3 {
+            let value = generator.draw_u64_below(std::num::NonZeroU64::new(bound).unwrap());
+            assert!(value < bound, "index {index}: {value} outside [0, {bound})");
+            assert_eq!(value, KAT_U64_VALUES[index], "index {index}");
+            index += 1;
+        }
+    }
+}

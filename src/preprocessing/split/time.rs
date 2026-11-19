@@ -335,8 +335,8 @@ impl Iterator for TimeFolds<'_> {
             ..ExclusionCounts::default()
         };
         let mut train_ranges: Vec<Range<usize>> = Vec::new();
-        for row_index in train_lo..train_hi {
-            let row = &self.rows[row_index];
+        for (offset, row) in self.rows[train_lo..train_hi].iter().enumerate() {
+            let row_index = train_lo + offset;
             if row.features_available_at >= row.decision_at {
                 counts.train_feature_unavailable += 1;
                 continue;
@@ -361,8 +361,8 @@ impl Iterator for TimeFolds<'_> {
 
         counts.test_candidates = test_hi - test_lo;
         let mut first_test_failure = None;
-        for row_index in test_lo..test_hi {
-            let row = &self.rows[row_index];
+        for (offset, row) in self.rows[test_lo..test_hi].iter().enumerate() {
+            let row_index = test_lo + offset;
             if row.features_available_at >= row.decision_at {
                 counts.test_feature_unavailable += 1;
                 if first_test_failure.is_none() {

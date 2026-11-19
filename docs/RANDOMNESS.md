@@ -275,8 +275,6 @@ These rules apply to new and changed workflows.
 - [DEVELOPMENT.md](DEVELOPMENT.md) — ownership, naming and errors, testing, and the mandatory training and failure contracts.
 - [CORRECTNESS.md](CORRECTNESS.md) — evidence boundaries and the sampling/randomness validation questions.
 - [STREAMING_ML_DESIGN.md](STREAMING_ML_DESIGN.md) — streaming and ensemble context.
-- `.kilo/plans/1795086208396-training-fold-sampling-technical-design.md` — DS-TD-0.10, the sampling design.
-- `.kilo/plans/1795086208396-sampling-first-slice-implementation-plan.md` — IS-IP-1.1, the implementation plan.
 - `src/preprocessing/sampling/README.md` — the sampling contract.
 - `src/foundation/numerical/random.rs` — the shared draw foundation.
 

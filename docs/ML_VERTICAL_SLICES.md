@@ -67,7 +67,7 @@ this matrix does not create or close Issues.
 | Algorithm | Issue | Goal | State profile | Workspace / scratch | Execution strategy | Status |
 |---|---|---|---|---|---|---|
 | **Linear Regression** | #23 | Dense unweighted OLS fitting and learned-result prediction `ŷ = w · x + b` | None during prediction (immutable learned weights) | Transient fitting buffers; no prediction scratch | Batch fitting on explicit selected rows; streaming/grouped inference | OLS baseline accepted: fitting, diagnostics, artifact v1, checked serving and refit handover; preparation/ordering helpers and formal numerical certification explicitly deferred |
-| **Decision Tree** | #24 | Read-only traversal from a trained tree | None (immutable at inference) | None, or a small traversal path | Streaming per-observation traversal; independent observations may micro-batch | Inference component implemented; full learned-data model acceptance not established |
+| **Decision Tree** | #24 | Standalone regression fitting and traversal from a trained tree | None (immutable at inference) | Transient selected-row scorer/partition scratch; no prediction scratch | Streaming per-observation traversal; independent observations may micro-batch | Regression A/B/C implemented with selected-row repeat multiplicity, WALK24 eligibility, pinned 2K A/C replay, and held-out metrics; classification, persistence, and bagging deferred |
 | **K-Nearest Neighbors** | #25 | Brute-force distance + neighbor selection | Stored reference observations + `k` | Per-query distance scratch `O(N)`; neighbor set `O(k)` | Streaming per-query; independent queries may micro-batch | Reference-data ingestion and query paths implemented; full lifecycle acceptance not established; regression only |
 | **GRU bounded micro-batch** | #34 | Bounded, ordered micro-batch over existing GRU semantics | Hidden state `h` per stream | Reference path only; do not touch the executor-owned workspace | Ordered fold; **not** independent; unchanged failure semantics | Recurrence/execution components implemented; training missing; historical bounded batch-size sweep recorded |
 | **Recursive Least Squares** | #26 | Ordered online adaptation of `(w, P)` | Adaptive `w` and covariance `P` per stream | `d`-vectors and `d×d` rank-1 update scratch | Ordered, state-dependent; **not** independent | Supervised learning updates and execution paths implemented; fitted-readiness and full lifecycle acceptance require evidence; historical batch-size sweep recorded |
@@ -187,7 +187,36 @@ future independent algorithms, not as a performance claim.
 
 ### Decision Tree (#24)
 
-Historical evidence covers read-only regression traversal, not training. Training is mandatory for complete Decision Tree delivery; classification remains a separate task.
+The standalone regression milestone now covers ingested selected-row fitting,
+validation, and learned-result prediction. Profiles A (native `f64` fit and
+serving), B (checked `f64`→`f32` conversion into the existing `DecisionTree`
+with explicit caller replacement), and C (strict `f32` fit into the existing
+`DecisionTree`) share the reviewed scorer and confidence-gated growth rule.
+The caller-supplied `f32` node API and traversal/error contracts are unchanged.
+Classification, persistence, and bagging remain separate work.
+
+Design evidence (DT-REG-DR-0.5) records WALK24 fixed-fold eligibility and a
+pinned 2K A/C replay. The Rust integration replay records A 521 leaves /
+167,008 candidate boundaries and C 518 leaves / 166,976 boundaries, zero
+numerical failures. Production counted C `24` positive computed gains below
+confidence across `3` leaves; the independent reference oracle also found `24`
+missed positive reference candidates across `3` affected leaves, and A `0`
+across `0`. On held-out rows `1536..2048`, A and C both record fitted-tree MAE
+`0.029107` and RMSE `0.035452`; the separate constant training-mean prediction
+(`9.733636`) records MAE `6.791845`, RMSE `7.093493`. WALK24 fitted-tree MAE is
+`1.000000`, RMSE `1.224745`; the separate constant training-mean prediction
+(`20.066667`) records MAE `14.683333333333`, RMSE `15.436572734185`. The independent reference audit identifies eligible leaves by stop reason
+(confidence-rule stops only; pure, depth-limit, and leaf-budget stops excluded),
+counts missed candidates from positive exact reference gains separately from
+production positive-gain diagnostics, and applies the DR-0.5 rounded margin
+verifier. Integer-valued fixtures use exact integer gain arithmetic; non-integer
+fixtures use the direct child-sum form rather than subtracting rounded SSEs.
+The Profile A `x=[0,0,1,1]`, `y=[0,2^30,1,2^30+1]` fixture preserves exact gain
+`1` and one missed candidate across one leaf. Baseline metrics are labeled separately; improvement is descriptive,
+not a statistical/non-IID claim. Conservative
+requested-payload bounds for the pinned layout are 156,176 bytes (f32) and
+180,776 bytes (f64), including reserved output nodes. Historical inference
+measurements below predate training and remain descriptive.
 
 **[historical]** Reference and streaming inference allocate nothing (`0.000`
 allocations, `0` bytes per observation). The measured streaming median differed

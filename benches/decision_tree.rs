@@ -9,11 +9,14 @@
 
 use std::hint::black_box;
 use std::mem::size_of;
+use std::time::Instant;
 
 use seqvex::execution::streaming::StreamingExecutor;
-use seqvex::foundation::numerical::Vector;
+use seqvex::foundation::numerical::{Vector, Vector64};
 use seqvex::foundation::observation::Observation;
-use seqvex::models::trees::decision_tree::{DecisionTree, DecisionTreeNode};
+use seqvex::models::trees::decision_tree::{
+    DecisionTree, DecisionTreeNode, TreeFitConfig, fit_tree_f32, fit_tree_f64,
+};
 
 #[allow(dead_code)]
 mod common;
@@ -124,6 +127,53 @@ fn verify_sweep_batch(
     batched.capacity()
 }
 
+/// Bounded fit case: tiny fixture in debug, 2K-size synthetic fixture in release.
+///
+/// No `common::measure` here because its warm-up loop is sized for cheap
+/// prediction calls; one fit per measurement keeps the debug all-target run
+/// bounded and leaves release numbers descriptive.
+fn fit_benchmark() {
+    let rows = if cfg!(debug_assertions) { 64 } else { 2048 };
+    let features_count = if cfg!(debug_assertions) { 4 } else { 8 };
+    let mut features32 = Vec::with_capacity(rows);
+    let mut features64 = Vec::with_capacity(rows);
+    let mut targets32 = Vec::with_capacity(rows);
+    let mut targets64 = Vec::with_capacity(rows);
+    for index in 0..rows {
+        let row32: Vec<f32> = (0..features_count)
+            .map(|feature| ((index * 131 + feature * 977) % 1009) as f32 / 1008.0)
+            .collect();
+        let target32 = row32[0] * 2.0 + row32.get(1).copied().unwrap_or(0.0);
+        features64.push(Vector64::from_slice(
+            &row32.iter().map(|value| *value as f64).collect::<Vec<_>>(),
+        ));
+        targets64.push(target32 as f64);
+        features32.push(Vector::from_slice(&row32));
+        targets32.push(target32);
+    }
+    let selected: Vec<usize> = (0..rows).collect();
+    let config = TreeFitConfig::default();
+
+    let start = Instant::now();
+    let a = fit_tree_f64(&features64, &targets64, &selected, &config).expect("f64 fit");
+    let a_elapsed = start.elapsed();
+    let start = Instant::now();
+    let c = fit_tree_f32(&features32, &targets32, &selected, &config).expect("f32 fit");
+    let c_elapsed = start.elapsed();
+
+    println!(
+        "fit rows={rows} features={features_count} A={:.3} ms leaves={} boundaries={} C={:.3} ms leaves={} boundaries={}",
+        a_elapsed.as_secs_f64() * 1000.0,
+        a.diagnostics().leaves,
+        a.diagnostics().split_evaluations,
+        c_elapsed.as_secs_f64() * 1000.0,
+        c.diagnostics().leaves,
+        c.diagnostics().split_evaluations,
+    );
+    black_box(a);
+    black_box(c);
+}
+
 fn main() {
     println!(
         "Decision-tree prediction benchmark ({} runs/measurement)",
@@ -201,4 +251,6 @@ fn main() {
             }
         }
     }
+
+    fit_benchmark();
 }

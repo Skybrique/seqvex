@@ -1,10 +1,12 @@
-//! Decision tree prediction: read-only traversal of a trained tree.
+//! Decision tree regression: caller-supplied and fit-produced tree traversal.
 //!
-//! This is the Decision Tree model in the trees family. It implements **inference only** on a
-//! tree the caller supplies; training/fitting is deliberately out of scope (see
-//! `docs/ML_VERTICAL_SLICES.md` and `docs/KILO_CONNECTOME_SPRINT_REVISED.md`
-//! §17). The first task variant is regression: each leaf stores a finite `f32`.
-//! Classification is deferred until it is explicitly approved.
+//! This is the Decision Tree model in the trees family. It implements prediction
+//! over a tree the caller supplies and over fitted regression trees from the
+//! `fit` module. Profile A fits and serves in native `f64`; Profile C fits in
+//! strict `f32`; Profile B narrows an A tree to the existing `f32` serving type.
+//! The first task variant is regression: each leaf stores a finite value.
+//! Classification, persistence, and bagging are deferred until explicitly
+//! approved.
 //!
 //! # Representation
 //!
@@ -60,6 +62,16 @@
 use crate::foundation::numerical::Vector;
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
+
+mod fit;
+mod native64;
+
+pub use fit::{
+    TreeFitConfig, TreeFitDiagnostics32, TreeFitDiagnostics64, TreeFitError, TreeFitResult32,
+    TreeFitResult64, TreeServingConversionError, TreeServingField, TreeUnderflowPolicy,
+    fit_tree_f32, fit_tree_f64,
+};
+pub use native64::{DecisionTree64, DecisionTreeNode64};
 
 /// A node of a trained regression tree.
 ///
@@ -227,6 +239,21 @@ impl DecisionTree {
             feature_dimension,
             nodes,
         })
+    }
+
+    /// Builds a serving tree from fit-produced, already-validated parts.
+    ///
+    /// Crate-private: the caller-supplied node API remains [`DecisionTree::new`].
+    pub(crate) fn from_validated_parts(
+        feature_dimension: usize,
+        nodes: Vec<DecisionTreeNode>,
+    ) -> Self {
+        debug_assert!(feature_dimension > 0);
+        debug_assert!(!nodes.is_empty());
+        Self {
+            feature_dimension,
+            nodes,
+        }
     }
 
     /// The number of features each observation must contain.

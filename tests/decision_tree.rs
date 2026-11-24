@@ -1,8 +1,14 @@
 use seqvex::execution::streaming::StreamingExecutor;
-use seqvex::foundation::numerical::Vector;
+use seqvex::foundation::numerical::{Vector, Vector64};
 use seqvex::foundation::observation::Observation;
 use seqvex::foundation::state::StateModel;
-use seqvex::models::trees::decision_tree::{DecisionTree, DecisionTreeError, DecisionTreeNode};
+use seqvex::models::trees::decision_tree::{
+    DecisionTree, DecisionTreeError, DecisionTreeNode, TreeFitConfig, TreeFitError,
+    TreeServingConversionError, TreeUnderflowPolicy, fit_tree_f32, fit_tree_f64,
+};
+use seqvex::preprocessing::split::{
+    TimeCoverage, TimeFoldOutcome, TimeRow, TimeWindowSpec, expanding_time,
+};
 
 fn split(feature_index: usize, threshold: f32, left: usize, right: usize) -> DecisionTreeNode {
     DecisionTreeNode::Split {
@@ -605,4 +611,565 @@ fn multi_level_chain_uses_negative_threshold_boundary() {
     assert_bits_eq(model.predict(&vector(&[equal_neg, 0.0])).unwrap(), 5.0);
     assert_bits_eq(model.predict(&vector(&[below_neg, 0.0])).unwrap(), 5.0);
     assert_bits_eq(model.predict(&vector(&[above_neg, 0.0])).unwrap(), 6.0);
+}
+
+// ---------------------------------------------------------------------------
+// Fitted regression tree: public fit/serving/replacement contracts.
+// ---------------------------------------------------------------------------
+
+fn vector64(values: &[f64]) -> Vector64 {
+    Vector64::from_slice(values)
+}
+
+fn features32(values: &[&[f32]]) -> Vec<Vector> {
+    values.iter().map(|row| Vector::from_slice(row)).collect()
+}
+
+fn features64(values: &[&[f64]]) -> Vec<Vector64> {
+    values.iter().map(|row| Vector64::from_slice(row)).collect()
+}
+
+fn assert_bits_eq64(left: f64, right: f64) {
+    assert_eq!(left.to_bits(), right.to_bits(), "expected bitwise equality");
+}
+
+#[test]
+fn profile_a_fits_and_serves_native_f64() {
+    let features = features64(&[&[0.0], &[1.0], &[2.0], &[3.0]]);
+    let targets = [0.0, 0.0, 10.0, 10.0];
+    let fit = fit_tree_f64(
+        &features,
+        &targets,
+        &[0, 1, 2, 3],
+        &TreeFitConfig::default(),
+    )
+    .expect("f64 fit");
+    assert_eq!(fit.diagnostics().leaves, 2);
+    assert_eq!(fit.diagnostics().depth, 1);
+    let model = fit.into_predictor();
+    assert_eq!(model.feature_dimension(), 1);
+    assert_bits_eq64(model.predict(&vector64(&[0.5])).unwrap(), 0.0);
+    assert_bits_eq64(model.predict(&vector64(&[1.0])).unwrap(), 0.0);
+    assert_bits_eq64(model.predict(&vector64(&[1.5])).unwrap(), 10.0);
+    let batch = [
+        Observation::new(vector64(&[0.0])),
+        Observation::new(vector64(&[3.0])),
+    ];
+    assert_eq!(model.predict_batch(&batch).unwrap(), vec![0.0, 10.0]);
+    assert_eq!(
+        model.predict(&vector64(&[1.0, 2.0])),
+        Err(DecisionTreeError::DimensionMismatch {
+            expected: 1,
+            actual: 2,
+        })
+    );
+}
+
+#[test]
+fn profile_c_fits_and_forced_root_leaf_uses_mean() {
+    let features = features32(&[&[0.0], &[1.0], &[2.0], &[3.0]]);
+    let targets = [0.0, 0.0, 10.0, 10.0];
+    let fit = fit_tree_f32(
+        &features,
+        &targets,
+        &[0, 1, 2, 3],
+        &TreeFitConfig::default(),
+    )
+    .expect("f32 fit");
+    let model = fit.into_predictor();
+    assert_bits_eq(model.predict(&vector(&[0.0])).unwrap(), 0.0);
+    assert_bits_eq(model.predict(&vector(&[1.0])).unwrap(), 0.0);
+    assert_bits_eq(model.predict(&vector(&[1.5])).unwrap(), 10.0);
+
+    let forced = fit_tree_f32(
+        &features,
+        &targets,
+        &[0, 1, 2, 3],
+        &TreeFitConfig {
+            max_depth: 0,
+            ..TreeFitConfig::default()
+        },
+    )
+    .expect("forced leaf fit");
+    assert_eq!(forced.diagnostics().leaves, 1);
+    assert_bits_eq(
+        forced.into_predictor().predict(&vector(&[99.0])).unwrap(),
+        5.0,
+    );
+}
+
+#[test]
+fn selected_rows_preserve_repeats_and_source_order() {
+    let features = features32(&[&[0.0], &[1.0], &[2.0]]);
+    let targets = [0.0, 10.0, 20.0];
+    let forward = fit_tree_f32(
+        &features,
+        &targets,
+        &[0, 2, 2, 0],
+        &TreeFitConfig::default(),
+    )
+    .expect("repeated fit");
+    assert_eq!(forward.diagnostics().rows, 4);
+    let reversed = fit_tree_f32(
+        &features,
+        &targets,
+        &[2, 0, 0, 2],
+        &TreeFitConfig::default(),
+    )
+    .expect("permuted fit");
+    assert_eq!(forward.nodes(), reversed.nodes());
+}
+
+#[test]
+fn fit_validation_and_typed_limits() {
+    let features = features32(&[&[0.0], &[1.0], &[2.0]]);
+    let targets = [0.0, 10.0, 20.0];
+    assert!(matches!(
+        fit_tree_f32(&features, &targets[..2], &[0], &TreeFitConfig::default()),
+        Err(TreeFitError::RowTargetMismatch { .. })
+    ));
+    assert!(matches!(
+        fit_tree_f32(&features, &targets, &[], &TreeFitConfig::default()),
+        Err(TreeFitError::TooFewRows)
+    ));
+    assert!(matches!(
+        fit_tree_f32(&features, &targets, &[3], &TreeFitConfig::default()),
+        Err(TreeFitError::IndexOutOfRange { .. })
+    ));
+    assert!(matches!(
+        fit_tree_f32(
+            &features,
+            &targets,
+            &[0],
+            &TreeFitConfig {
+                min_samples_leaf: 0,
+                ..TreeFitConfig::default()
+            }
+        ),
+        Err(TreeFitError::InvalidConfig)
+    ));
+    assert!(matches!(
+        fit_tree_f32(
+            &features,
+            &[0.0, f32::NAN, 20.0],
+            &[0, 1, 2],
+            &TreeFitConfig::default()
+        ),
+        Err(TreeFitError::NonFiniteTrainingValue { row: 1 })
+    ));
+    assert!(matches!(
+        fit_tree_f32(
+            &features,
+            &targets,
+            &[0, 1, 2],
+            &TreeFitConfig {
+                max_workspace_bytes: 1,
+                ..TreeFitConfig::default()
+            }
+        ),
+        Err(TreeFitError::Capacity { .. })
+    ));
+    assert!(matches!(
+        fit_tree_f32(
+            &features,
+            &targets,
+            &[0, 1, 2],
+            &TreeFitConfig {
+                max_split_evaluations: 1,
+                ..TreeFitConfig::default()
+            }
+        ),
+        Err(TreeFitError::WorkBudgetExceeded { .. })
+    ));
+}
+
+#[test]
+fn profile_b_route_change_through_public_prediction() {
+    let threshold = 1.0_f64 + 2.0_f64.powi(-25);
+    let query = 1.0_f64 + 2.0_f64.powi(-24);
+    let features = [
+        Vector64::from_slice(&[threshold]),
+        Vector64::from_slice(&[2.0]),
+    ];
+    let fit = fit_tree_f64(&features, &[0.0, 10.0], &[0, 1], &TreeFitConfig::default())
+        .expect("route-change fit");
+    let a = fit.predictor();
+    assert_eq!(a.predict(&vector64(&[query])).unwrap(), 10.0);
+
+    let b = fit
+        .to_serving_f32(TreeUnderflowPolicy::Reject)
+        .expect("checked conversion");
+    assert_eq!(b.predict(&vector(&[query as f32])).unwrap(), 0.0);
+    assert_eq!(
+        b.predict(&vector(&[f32::from_bits(0x3F80_0001)])).unwrap(),
+        10.0
+    );
+    assert_eq!(
+        b.predict(&vector(&[f32::from_bits(0x3F7F_FFFF)])).unwrap(),
+        0.0
+    );
+}
+
+#[test]
+fn profile_b_failures_preserve_source_and_active_model() {
+    let old = two_leaf_tree();
+    let old_left = old.predict(&vector(&[-1.0])).unwrap();
+    let old_right = old.predict(&vector(&[1.0])).unwrap();
+
+    let overflow = fit_tree_f64(
+        &features64(&[&[0.0]]),
+        &[1.0e40],
+        &[0],
+        &TreeFitConfig {
+            max_depth: 0,
+            ..TreeFitConfig::default()
+        },
+    )
+    .expect("overflow source fit");
+    assert_eq!(
+        overflow.to_serving_f32(TreeUnderflowPolicy::Reject),
+        Err(TreeServingConversionError::Overflow {
+            node: 0,
+            field: seqvex::models::trees::decision_tree::TreeServingField::Leaf,
+        })
+    );
+    assert_eq!(
+        overflow.predictor().predict(&vector64(&[0.0])).unwrap(),
+        1.0e40
+    );
+    assert_eq!(old.predict(&vector(&[-1.0])).unwrap(), old_left);
+    assert_eq!(old.predict(&vector(&[1.0])).unwrap(), old_right);
+
+    let threshold_overflow = fit_tree_f64(
+        &features64(&[&[1.0e40], &[2.0e40]]),
+        &[0.0, 10.0],
+        &[0, 1],
+        &TreeFitConfig::default(),
+    )
+    .expect("threshold-overflow source fit");
+    assert_eq!(
+        threshold_overflow.to_serving_f32(TreeUnderflowPolicy::Reject),
+        Err(TreeServingConversionError::Overflow {
+            node: 0,
+            field: seqvex::models::trees::decision_tree::TreeServingField::Threshold,
+        })
+    );
+
+    let underflow = fit_tree_f64(
+        &features64(&[&[0.0]]),
+        &[1.0e-50],
+        &[0],
+        &TreeFitConfig {
+            max_depth: 0,
+            ..TreeFitConfig::default()
+        },
+    )
+    .expect("underflow source fit");
+    assert_eq!(
+        underflow.to_serving_f32(TreeUnderflowPolicy::Reject),
+        Err(TreeServingConversionError::Underflow {
+            node: 0,
+            field: seqvex::models::trees::decision_tree::TreeServingField::Leaf,
+        })
+    );
+    let allowed = underflow
+        .to_serving_f32(TreeUnderflowPolicy::AllowLoss)
+        .expect("allow-loss conversion");
+    assert_bits_eq(allowed.predict(&vector(&[0.0])).unwrap(), 0.0);
+    assert_eq!(
+        underflow.predictor().predict(&vector64(&[0.0])).unwrap(),
+        1.0e-50
+    );
+
+    let replacement = fit_tree_f64(
+        &features64(&[&[0.0]]),
+        &[42.0],
+        &[0],
+        &TreeFitConfig {
+            max_depth: 0,
+            ..TreeFitConfig::default()
+        },
+    )
+    .expect("replacement source fit");
+    let candidate = replacement
+        .to_serving_f32(TreeUnderflowPolicy::Reject)
+        .expect("replacement conversion");
+    assert_eq!(old.predict(&vector(&[-1.0])).unwrap(), old_left);
+    assert_eq!(candidate.predict(&vector(&[0.0])).unwrap(), 42.0);
+    assert_eq!(
+        replacement.predictor().predict(&vector64(&[0.0])).unwrap(),
+        42.0
+    );
+}
+
+#[test]
+fn non_finite_leaf_statistics_are_rejected_for_a_and_c() {
+    let features32 = features32(&[&[0.0], &[1.0]]);
+    let targets32 = [f32::MAX, -f32::MAX];
+    for config in [
+        TreeFitConfig {
+            max_depth: 0,
+            ..TreeFitConfig::default()
+        },
+        TreeFitConfig {
+            max_leaves: 1,
+            ..TreeFitConfig::default()
+        },
+    ] {
+        assert_eq!(
+            fit_tree_f32(&features32, &targets32, &[0, 1], &config),
+            Err(TreeFitError::NumericalFailure { node: 0 })
+        );
+    }
+
+    let features64 = features64(&[&[0.0], &[1.0]]);
+    let targets64 = [f64::MAX, -f64::MAX];
+    for config in [
+        TreeFitConfig {
+            max_depth: 0,
+            ..TreeFitConfig::default()
+        },
+        TreeFitConfig {
+            max_leaves: 1,
+            ..TreeFitConfig::default()
+        },
+    ] {
+        assert_eq!(
+            fit_tree_f64(&features64, &targets64, &[0, 1], &config),
+            Err(TreeFitError::NumericalFailure { node: 0 })
+        );
+    }
+}
+
+fn walk24_fixture() -> (Vec<Vector>, Vec<f32>) {
+    let mut features = Vec::with_capacity(24);
+    let mut targets = Vec::with_capacity(24);
+    for index in 0..24usize {
+        let x0 = (index % 6) as f32;
+        let x1 = (index / 6) as f32;
+        features.push(Vector::from_slice(&[x0, x1]));
+        let base = if x0 <= 2.0 {
+            if x1 <= 1.0 { 10.0 } else { 30.0 }
+        } else if x1 <= 1.0 {
+            20.0
+        } else {
+            40.0
+        };
+        let delta = match index {
+            3 | 10 | 15 | 20 => 1.0,
+            5 | 12 | 17 | 22 => -1.0,
+            _ => 0.0,
+        };
+        targets.push(base + delta);
+    }
+    (features, targets)
+}
+
+#[test]
+fn walk24_fixed_fold_eligibility_and_held_out_prediction() {
+    let rows: Vec<TimeRow> = (0..24usize)
+        .map(|index| TimeRow {
+            decision_at: index as i64,
+            features_available_at: -1,
+            label_available_at: if index == 7 { None } else { Some(index as i64) },
+        })
+        .collect();
+    let folds: Vec<_> = expanding_time(
+        24,
+        &rows,
+        TimeCoverage::new(0, 24, 0),
+        TimeWindowSpec::new(16, 4, 4, 0, 2),
+    )
+    .expect("WALK24 schedule")
+    .collect();
+    assert_eq!(folds.len(), 2);
+    let fold = &folds[0];
+    assert_eq!(fold.outcome(), TimeFoldOutcome::Usable);
+    assert_eq!(fold.test_range(), 16..20);
+    assert_eq!(fold.train_ranges(), &[0..7, 8..16]);
+
+    let (features, targets) = walk24_fixture();
+    let selected: Vec<usize> = fold
+        .train_ranges()
+        .iter()
+        .flat_map(|range| range.clone())
+        .collect();
+    assert_eq!(selected.len(), 15);
+    assert!(!selected.contains(&7));
+
+    let fit32 = fit_tree_f32(&features, &targets, &selected, &TreeFitConfig::default())
+        .expect("WALK24 f32 fit");
+    let tree32 = fit32.predictor();
+    let fit64 = fit_tree_f64(
+        &features
+            .iter()
+            .map(|row| {
+                Vector64::from_slice(&row.iter().map(|value| *value as f64).collect::<Vec<_>>())
+            })
+            .collect::<Vec<_>>(),
+        &targets
+            .iter()
+            .map(|value| *value as f64)
+            .collect::<Vec<_>>(),
+        &selected,
+        &TreeFitConfig::default(),
+    )
+    .expect("WALK24 f64 fit");
+    let tree64 = fit64.predictor();
+    let tree_b = fit64
+        .to_serving_f32(TreeUnderflowPolicy::Reject)
+        .expect("WALK24 B conversion");
+
+    let baseline =
+        selected.iter().map(|&row| targets[row] as f64).sum::<f64>() / selected.len() as f64;
+    let mut abs32 = 0.0;
+    let mut sq32 = 0.0;
+    let mut abs64 = 0.0;
+    let mut sq64 = 0.0;
+    let mut abs_b = 0.0;
+    let mut sq_b = 0.0;
+    for row in fold.test_range() {
+        let actual = targets[row] as f64;
+        let p32 = tree32.predict(&features[row]).unwrap() as f64;
+        let p64 = tree64
+            .predict(&Vector64::from_slice(&[
+                features[row].as_slice()[0] as f64,
+                features[row].as_slice()[1] as f64,
+            ]))
+            .unwrap();
+        let pb = tree_b.predict(&features[row]).unwrap() as f64;
+        abs32 += (p32 - actual).abs();
+        sq32 += (p32 - actual) * (p32 - actual);
+        abs64 += (p64 - actual).abs();
+        sq64 += (p64 - actual) * (p64 - actual);
+        abs_b += (pb - actual).abs();
+        sq_b += (pb - actual) * (pb - actual);
+    }
+    let n = fold.test_range().len() as f64;
+    println!(
+        "WALK24 baseline={baseline:.6} C mae={:.6} rmse={:.6} A mae={:.6} rmse={:.6} B mae={:.6} rmse={:.6}",
+        abs32 / n,
+        (sq32 / n).sqrt(),
+        abs64 / n,
+        (sq64 / n).sqrt(),
+        abs_b / n,
+        (sq_b / n).sqrt(),
+    );
+    assert!((abs32 / n).is_finite() && (sq32 / n).sqrt().is_finite());
+    assert!((abs64 / n).is_finite() && (sq64 / n).sqrt().is_finite());
+    assert!((abs_b / n).is_finite() && (sq_b / n).sqrt().is_finite());
+}
+
+fn splitmix64(mut value: u64) -> u64 {
+    value = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^ (value >> 31)
+}
+
+fn workload_2k() -> (Vec<Vector>, Vec<f32>, Vec<Vector64>, Vec<f64>) {
+    let mut features32 = Vec::with_capacity(2048);
+    let mut targets32 = Vec::with_capacity(2048);
+    let mut features64 = Vec::with_capacity(2048);
+    let mut targets64 = Vec::with_capacity(2048);
+    for index in 0..2048usize {
+        let mut row = [0.0_f32; 8];
+        for (feature, value) in row.iter_mut().enumerate() {
+            *value = (((index as u64 * 131 + feature as u64 * 977) % 1009) as f32) / 1008.0;
+        }
+        let noise = (((splitmix64(index as u64) % 2001) as f32 / 1000.0) - 1.0) * 0.05;
+        let target = 10.0 * f32::from(row[0] > 0.5)
+            + 5.0 * f32::from(row[1] > 0.25)
+            + 2.0 * f32::from(row[2] > 0.75)
+            + 1.0 * f32::from(row[3] > 0.5)
+            + noise;
+        features32.push(Vector::from_slice(&row));
+        targets32.push(target);
+        features64.push(Vector64::from_slice(
+            &row.iter().map(|value| *value as f64).collect::<Vec<_>>(),
+        ));
+        targets64.push(target as f64);
+    }
+    (features32, targets32, features64, targets64)
+}
+
+#[test]
+#[ignore = "pinned 2K design replay; run explicitly"]
+fn dt_reg_workload_2k_replay() {
+    let selected: Vec<usize> = (0..1536).collect();
+    let (features32, targets32, features64, targets64) = workload_2k();
+    let a = fit_tree_f64(
+        &features64,
+        &targets64,
+        &selected,
+        &TreeFitConfig::default(),
+    )
+    .expect("2K A fit");
+    let c = fit_tree_f32(
+        &features32,
+        &targets32,
+        &selected,
+        &TreeFitConfig::default(),
+    )
+    .expect("2K C fit");
+    let a_model = a.predictor();
+    let c_model = c.predictor();
+    assert_eq!(a.diagnostics().leaves, 521);
+    assert_eq!(a.diagnostics().split_evaluations, 167_008);
+    assert_eq!(
+        a.diagnostics()
+            .computed_positive_gain_candidates_below_confidence,
+        0
+    );
+    assert_eq!(c.diagnostics().leaves, 518);
+    assert_eq!(c.diagnostics().split_evaluations, 166_976);
+    assert_eq!(
+        c.diagnostics()
+            .computed_positive_gain_below_confidence_leaves,
+        3
+    );
+    assert_eq!(
+        c.diagnostics()
+            .computed_positive_gain_candidates_below_confidence,
+        24
+    );
+    assert!(a.diagnostics().requested_workspace_bytes <= 180_776);
+    assert!(c.diagnostics().requested_workspace_bytes <= 156_176);
+
+    let baseline = selected
+        .iter()
+        .map(|&row| targets32[row] as f64)
+        .sum::<f64>()
+        / selected.len() as f64;
+    let mut abs_a = 0.0;
+    let mut sq_a = 0.0;
+    let mut abs_c = 0.0;
+    let mut sq_c = 0.0;
+    for row in 1536..2048 {
+        let actual = targets32[row] as f64;
+        let pa = a_model.predict(&features64[row]).unwrap();
+        let pc = c_model.predict(&features32[row]).unwrap() as f64;
+        abs_a += (pa - actual).abs();
+        sq_a += (pa - actual) * (pa - actual);
+        abs_c += (pc - actual).abs();
+        sq_c += (pc - actual) * (pc - actual);
+    }
+    let n = 512.0;
+    println!(
+        "2K A leaves={} boundaries={} mae={:.6} rmse={:.6}; C leaves={} boundaries={} mae={:.6} rmse={:.6}; baseline={baseline:.6}; C production_positive_candidates={} production_affected_leaves={}",
+        a.diagnostics().leaves,
+        a.diagnostics().split_evaluations,
+        abs_a / n,
+        (sq_a / n).sqrt(),
+        c.diagnostics().leaves,
+        c.diagnostics().split_evaluations,
+        abs_c / n,
+        (sq_c / n).sqrt(),
+        c.diagnostics()
+            .computed_positive_gain_candidates_below_confidence,
+        c.diagnostics()
+            .computed_positive_gain_below_confidence_leaves,
+    );
+    assert!((abs_a / n).is_finite() && (sq_a / n).sqrt().is_finite());
+    assert!((abs_c / n).is_finite() && (sq_c / n).sqrt().is_finite());
 }

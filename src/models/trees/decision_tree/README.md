@@ -1,18 +1,19 @@
 # Decision Tree
 
-> **Completeness:** this document covers the implemented read-only Decision Tree
-> inference component. It does not satisfy complete-model acceptance by itself:
-> training/fitting from data remains required. Every model must ingest data,
-> fit/learn, validate and predict from the learned result under the
+> **Completeness:** this document covers the implemented standalone regression
+> Decision Tree: caller-supplied `f32` inference, fit-produced A/C trees, checked
+> B deployment, selected-row repeat multiplicity, validation, and held-out
+> evidence. Classification, persistence, and bagging remain deferred. Every
+> model must ingest data, fit/learn, validate and predict from the learned result
+> under the
 > [mandatory training-to-inference contract](../../../../docs/DEVELOPMENT.md#model-training-and-valid-inference--mandatory).
-> Classification is deferred. Report missing capabilities before proceeding.
 
 ## Purpose
 
-The Decision Tree model provides read-only traversal of a caller-supplied
-trained regression tree, its reference prediction, and a bounded micro-batch
-prediction over independent observations. The canonical public path is
-`models::trees::decision_tree`.
+The Decision Tree model provides read-only traversal of a caller-supplied or
+fit-produced regression tree, its reference prediction, a bounded micro-batch
+prediction, and standalone fitting from borrowed selected-row indices. The
+canonical public path is `models::trees::decision_tree`.
 
 ## Ownership and state
 
@@ -24,16 +25,47 @@ most recent prediction, matching the other prediction-only models.
 
 ## Contract
 
-The current primitive traverses a tree supplied by the caller; it does not
-implement fitting from data. The first task variant is **regression** (finite
-`f32` leaves); classification is deferred. A split routes **left** when
-`feature <= threshold` and right otherwise. Construction validates the graph
-(empty/zero-dimension, feature index, child range, finite threshold and leaf,
-cycle, shared child, unreachable node), and traversal is iterative with a step
-bound. Because a prediction returns a validated leaf value with no arithmetic,
-its output is always finite. `predict_batch` preserves input order; the first
-element failure makes the entire call return `Err` and no partial output vector
-is returned.
+The first task variant is **regression**; classification is deferred. A split
+routes **left** when `feature <= threshold` and right otherwise. The existing
+caller-supplied `f32` constructor validates the graph (empty/zero-dimension,
+feature index, child range, finite threshold and leaf, cycle, shared child,
+unreachable node), and traversal is iterative with a step bound. Because a
+prediction returns a validated leaf value with no arithmetic, its output is
+always finite. `predict_batch` preserves input order; the first element failure
+makes the entire call return `Err` and no partial output vector is returned.
+
+### Fitting and precision profiles
+
+- **Profile A:** `fit_tree_f64(&[Vector64], &[f64], &[usize], &TreeFitConfig)`
+  fits with native `f64` arithmetic and produces a public `DecisionTree64`
+  serving type. `DecisionTree64` construction is crate-private; the fitted
+  serving type is public.
+- **Profile B:** `TreeFitResult64::to_serving_f32(policy)` checks thresholds and
+  leaves while narrowing to the existing `DecisionTree`. The caller explicitly
+  replaces its active serving model; conversion or replacement failure leaves
+  the source A model and the active f32 model unchanged.
+- **Profile C:** `fit_tree_f32(&[Vector], &[f32], &[usize], &TreeFitConfig)`
+  performs all fitting arithmetic in strict `f32` and produces the existing
+  `DecisionTree`.
+
+The fitter borrows selected row indices; repeats are preserved and meaningful.
+`TrainingSample::unit_counts()` remains sampler metadata and is not a fit input.
+Reductions run in ascending source-row order, split candidates in
+`(feature value, source row)` order, and the fitted tree is invariant to a
+permutation of the selected multiset.
+
+### Growth and numerical policy
+
+Splits use the lower observed feature value (`<=` left), the endpoint-centered
+Neumaier-compensated SSE scorer, and the `16u` uncertainty interval. Growth is
+confidence-gated: it chooses the maximum production lower-bound gain, or stops
+at a leaf when no candidate has a positive computed lower bound. A leaf value is
+`c_parent + P/n`. Depth and leaf limits are successful stops; invalid config,
+capacity, allocation, and work-budget breaches are typed errors. Defaults are
+`min_samples_leaf=1`, `max_depth=16`, `max_leaves=1024`,
+`max_workspace_bytes=8 MiB`, and `max_split_evaluations=10_000_000`. The
+conservative requested-payload bounds for the pinned 2K layout are 156,176 bytes
+(f32) and 180,776 bytes (f64), including reserved output nodes.
 
 ## Micro-batch
 
@@ -45,30 +77,65 @@ order.
 
 ## Numerical envelope
 
-Feature vectors use the existing `f32` substrate. Construction rejects
-non-finite thresholds and leaves, an out-of-range feature index, out-of-range
-children, cycles, shared children, and unreachable nodes. Prediction validates
-the feature dimension first, then feature finiteness, and does not re-validate
-the output. Because prediction returns a validated leaf directly, it performs no
-arithmetic and is always finite.
+Caller-supplied prediction uses the existing `f32` substrate. Construction
+rejects non-finite thresholds and leaves, an out-of-range feature index,
+out-of-range children, cycles, shared children, and unreachable nodes.
+Prediction validates the feature dimension first, then feature finiteness, and
+does not re-validate the output. Because prediction returns a validated leaf
+directly, it performs no arithmetic and is always finite.
 
-## Missing capabilities
+Profile A uses native `f64` throughout. Profile C uses only `f32` learning
+arithmetic; it has no hidden `f64` promotion. Profile B narrows A to `f32` with
+checked overflow/underflow and serves the converted tree, not A's partition on
+all inputs. Cross-profile tree equality and universal accuracy are not claimed.
 
-- Decision Tree training/fitting is missing from the read-only component and is
-  required for complete model delivery. Classification is a separate task;
-  neither this note nor historical evidence approves implementation.
-- A generic tree/arena/storage abstraction or a micro-batch executor is out of
-  scope.
-- This namespace migration changes no training, precision, optimization or
-  performance behavior.
+## Deferred capabilities
+
+- Classification (including Gini/Shannon and held-out probability checks),
+  persistence, artifacts, and bagging remain separate designs. The selected-row
+  boundary is the future bagger integration point.
+- A generic tree/arena/storage abstraction, public estimator trait, or
+  micro-batch executor is out of scope.
+- No optimization or production-readiness claim is made.
 
 ## Tests and benchmark
 
-- `tests/decision_tree.rs` — public-contract integration tests.
-- `benches/decision_tree.rs` — prediction benchmark, Cargo target
-  `decision_tree`.
-- No benchmark measurement is performed by the namespace migration; benchmark
-  verification is compilation-only.
+- `tests/decision_tree.rs` — public fit, serving, replacement, WALK24, and
+  explicitly run 2K replay integration tests.
+- `src/models/trees/decision_tree/fit/tests.rs` — library unit tests for the
+  private candidate trace and scorer.
+- `examples/decision_tree_regression.rs` — runnable A/C fit, B conversion,
+  validation, explicit replacement, and prediction.
+- `benches/decision_tree.rs` — existing `decision_tree` target with prediction
+  control cases and a bounded fit case. Compile-only, bounded debug execution,
+  and authorized release measurement are distinct.
+- The locked all-target CI command executes `harness = false` benchmark
+  binaries; the fit/prediction debug path is bounded.
+
+### Rust acceptance replay evidence
+
+- WALK24 fixed fold (row 7 ineligible, test `16..20`): fitted-tree C/A/B MAE
+  `1.000000`, RMSE `1.224745`. The separate constant training-mean prediction
+  (`20.066667`) records MAE `14.683333333333`, RMSE `15.436572734185`.
+- Pinned 2K (fit rows `0..1536`, held-out `1536..2048`): A 521 leaves /
+  `167,008` candidate boundaries; C 518 leaves / `166,976` boundaries; zero
+  numerical failures. Production counted C `24` positive computed gains below
+  confidence across `3` leaves; the independent reference oracle also found
+  `24` missed positive reference candidates across `3` affected leaves, and A
+  `0` across `0`. The separate constant training-mean prediction (`9.733636`)
+  records MAE `6.791845`, RMSE `7.093493`; A and C fitted-tree MAE `0.029107`,
+  RMSE `0.035452`.
+- The independent reference audit identifies eligible leaves by stop reason
+  (confidence-rule stops only; pure, depth-limit, and leaf-budget stops are
+  excluded). It counts missed candidates from positive exact reference gains,
+  separately from production positive-gain diagnostics, and applies the DR-0.5
+  rounded margin verifier for traced split and leaf decisions. Integer-valued
+  fixtures use exact integer gain arithmetic; non-integer fixtures use the
+  direct child-sum form rather than subtracting rounded SSEs. The Profile A
+  `x=[0,0,1,1]`, `y=[0,2^30,1,2^30+1]` fixture preserves its exact gain `1`
+  and counts one missed candidate across one leaf.
+- Baseline metrics are labeled separately from tree metrics. Improvement is
+  descriptive, not a statistical/non-IID or production-readiness claim.
 
 ## Measured evidence (#24)
 
@@ -192,7 +259,7 @@ speedup, or production readiness.
 - The numerical policy (`f32` substrate versus the `f64` statistics layer): the
   model uses the existing `f32` substrate because observations are already
   `Observation<Vector>`; a switch requires a measured requirement.
-- Training/fitting and classification remain separate work.
+- Classification, persistence, and bagging remain separate work.
 - No optimization or production-readiness claim is made.
 
 ## References

@@ -150,3 +150,7 @@ harness = false
 [[bench]]
 name = "knn"
 harness = false
+
+[[bench]]
+name = "bagging"
+harness = false

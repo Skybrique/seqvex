@@ -10,6 +10,7 @@ Seqvex model-family index. The canonical public paths are:
 | `trees` | Decision Tree | `seqvex::models::trees::decision_tree` | [Decision Tree](trees/decision_tree/README.md) |
 | `neighbors` | KNN | `seqvex::models::neighbors::knn` | [KNN](neighbors/knn/README.md) |
 | `recurrent` | GRU | `seqvex::models::recurrent::gru` | [Recurrent](recurrent/README.md) |
+| `ensemble` | Regression bagging | `seqvex::models::ensemble::bagging` | [Bagging](ensemble/bagging/README.md) |
 
 ## Namespace migration (#27)
 

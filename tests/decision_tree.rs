@@ -352,6 +352,15 @@ fn micro_batch_propagates_element_failure() {
 }
 
 #[test]
+fn dimension_mismatch_display_reports_feature_counts() {
+    let error = DecisionTreeError::DimensionMismatch {
+        expected: 3,
+        actual: 1,
+    };
+    assert_eq!(error.to_string(), "expected 3 features, got 1");
+}
+
+#[test]
 fn failed_streaming_prediction_preserves_last_prediction() {
     let streaming_model = two_leaf_tree();
     let mut executor = StreamingExecutor::new(&streaming_model, 0.0);

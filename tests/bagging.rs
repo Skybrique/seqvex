@@ -4,11 +4,15 @@ use seqvex::foundation::numerical::{Vector, Vector64};
 use seqvex::foundation::observation::Observation;
 use seqvex::models::ensemble::bagging::{
     BaggingError, BaggingLimits, BaggingSpec, DecisionTreeBag, DecisionTreeBag64,
-    DecisionTreeBagError, OlsBag, OlsBag64, OlsBagError,
+    DecisionTreeBagError, MeanError, MemberPredictCause, OlsBag, OlsBag64, OlsBagError,
+    PredictionError,
 };
-use seqvex::models::linear::ols::{FitConfig32, FitConfig64, FitError64, UnderflowPolicy};
+use seqvex::models::linear::ols::{
+    FitConfig32, FitConfig64, FitError64, RegressionError, UnderflowPolicy,
+};
 use seqvex::models::trees::decision_tree::{
-    TreeFitConfig, TreeServingConversionError, TreeServingField, TreeUnderflowPolicy,
+    DecisionTreeError, TreeFitConfig, TreeServingConversionError, TreeServingField,
+    TreeUnderflowPolicy,
 };
 use seqvex::preprocessing::sampling::{OutcomeInterval, SampleUnit, SamplingMode};
 
@@ -306,15 +310,34 @@ fn real_ols_predictor_error_is_indexed() {
             Observation::new(Vector64::from_slice(&[1.0])),
             Observation::new(Vector64::from_slice(&[1e200])),
         ];
-        if let Err(OlsBagError::Predict(PredictionError::MemberPredict {
-            row_index: 3,
-            member_index: 1,
-            cause: MemberPredictCause::Predictor(RegressionError::NonFiniteOutput { .. }),
-            evaluated_rows: 3,
-        })) = bag.predict_batch(&batch, 8)
-        {
-            found = true;
-            break;
+        if let Err(error) = bag.predict_batch(&batch, 8) {
+            let matches = matches!(
+                &error,
+                OlsBagError::Predict(PredictionError::MemberPredict {
+                    row_index: 3,
+                    member_index: 1,
+                    cause: MemberPredictCause::Predictor(RegressionError::NonFiniteOutput { .. }),
+                    evaluated_rows: 3,
+                })
+            );
+            if matches {
+                use std::error::Error;
+                let prediction = error.source().expect("prediction source");
+                assert!(
+                    prediction
+                        .downcast_ref::<PredictionError<RegressionError>>()
+                        .is_some()
+                );
+                assert!(
+                    prediction
+                        .source()
+                        .expect("predictor source")
+                        .downcast_ref::<RegressionError>()
+                        .is_some()
+                );
+                found = true;
+                break;
+            }
         }
     }
     assert!(
@@ -525,5 +548,70 @@ fn integer_draw_does_not_consume_sequential_work_budget() {
             &TreeFitConfig::default(),
         )
         .is_ok()
+    );
+}
+
+#[test]
+fn public_error_sources_expose_typed_causes() {
+    use std::error::Error;
+
+    let tree = DecisionTreeBagError::Predict(PredictionError::MemberPredict {
+        row_index: 2,
+        member_index: 1,
+        cause: MemberPredictCause::Predictor(DecisionTreeError::DimensionMismatch {
+            expected: 1,
+            actual: 2,
+        }),
+        evaluated_rows: 2,
+    });
+    let prediction = tree.source().expect("prediction source");
+    assert!(
+        prediction
+            .downcast_ref::<PredictionError<DecisionTreeError>>()
+            .is_some()
+    );
+    assert!(
+        prediction
+            .source()
+            .expect("predictor source")
+            .downcast_ref::<DecisionTreeError>()
+            .is_some()
+    );
+
+    let mean = DecisionTreeBagError::Predict(PredictionError::Aggregation {
+        row_index: 3,
+        stage: seqvex::models::ensemble::bagging::AggregationStage::Mean,
+        cause: MeanError::MeanCancellation,
+        evaluated_rows: 3,
+    });
+    assert!(
+        mean.source()
+            .expect("aggregation source")
+            .source()
+            .expect("mean source")
+            .downcast_ref::<MeanError>()
+            .is_some()
+    );
+
+    let ols = OlsBagError::Predict(PredictionError::MemberPredict {
+        row_index: 2,
+        member_index: 1,
+        cause: MemberPredictCause::Predictor(RegressionError::NonFiniteOutput {
+            observation: None,
+        }),
+        evaluated_rows: 2,
+    });
+    let prediction = ols.source().expect("OLS prediction source");
+    assert!(
+        prediction
+            .downcast_ref::<PredictionError<RegressionError>>()
+            .is_some()
+    );
+    assert!(
+        prediction
+            .source()
+            .expect("OLS predictor source")
+            .downcast_ref::<RegressionError>()
+            .is_some()
     );
 }

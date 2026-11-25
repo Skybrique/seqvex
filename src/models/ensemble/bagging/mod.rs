@@ -480,7 +480,23 @@ impl<PE: fmt::Debug> fmt::Display for PredictionError<PE> {
     }
 }
 
-impl<PE: fmt::Debug> std::error::Error for PredictionError<PE> {}
+impl<PE: std::error::Error + 'static> std::error::Error for PredictionError<PE> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MemberPredict {
+                cause: MemberPredictCause::Predictor(source),
+                ..
+            } => Some(source),
+            Self::Aggregation { cause, .. } => Some(cause),
+            Self::BatchTooLarge { .. }
+            | Self::RowValidation { .. }
+            | Self::MemberPredict {
+                cause: MemberPredictCause::NonFiniteOutput,
+                ..
+            } => None,
+        }
+    }
+}
 
 pub(crate) fn checked_logical_bytes(
     element_count: usize,

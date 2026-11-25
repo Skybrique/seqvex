@@ -62,6 +62,7 @@
 use crate::foundation::numerical::Vector;
 use crate::foundation::observation::Observation;
 use crate::foundation::state::StateModel;
+use std::fmt;
 
 mod fit;
 mod native64;
@@ -162,6 +163,56 @@ pub enum DecisionTreeError {
     /// traversal loop has a total return type instead of a panic.
     MalformedTraversal,
 }
+
+impl fmt::Display for DecisionTreeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyTree => formatter.write_str("decision tree has no nodes"),
+            Self::ZeroDimension => formatter.write_str("decision tree feature dimension is zero"),
+            Self::FeatureIndexOutOfRange {
+                node,
+                feature_index,
+                dimension,
+            } => write!(
+                formatter,
+                "node {node} uses feature index {feature_index}, but the feature dimension is {dimension}"
+            ),
+            Self::ChildOutOfRange { node, child, len } => write!(
+                formatter,
+                "node {node} references child index {child}, but the tree has {len} nodes"
+            ),
+            Self::NonFiniteThreshold { node } => {
+                write!(formatter, "node {node} has a non-finite split threshold")
+            }
+            Self::NonFiniteLeaf { node } => {
+                write!(formatter, "node {node} has a non-finite leaf value")
+            }
+            Self::Cycle { node } => {
+                write!(formatter, "node {node} is its own ancestor (cycle)")
+            }
+            Self::SharedNode { node } => {
+                write!(
+                    formatter,
+                    "node {node} is referenced by more than one parent"
+                )
+            }
+            Self::UnreachableNode { node } => {
+                write!(formatter, "node {node} is unreachable from the root")
+            }
+            Self::DimensionMismatch { expected, actual } => {
+                write!(formatter, "expected {expected} features, got {actual}")
+            }
+            Self::NonFiniteInput => {
+                formatter.write_str("observation contains a non-finite feature")
+            }
+            Self::MalformedTraversal => {
+                formatter.write_str("validated tree traversal failed to terminate at a leaf")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DecisionTreeError {}
 
 #[derive(Clone, Copy)]
 enum Visit {

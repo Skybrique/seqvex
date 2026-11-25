@@ -52,7 +52,7 @@ impl std::error::Error for DecisionTreeBagError {
             Self::Bagging(error) => Some(error),
             Self::MemberFit { source, .. } => Some(source),
             Self::MemberConversion { source, .. } => Some(source),
-            Self::Predict(_) => None,
+            Self::Predict(error) => Some(error),
         }
     }
 }

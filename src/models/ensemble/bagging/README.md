@@ -58,6 +58,13 @@ with `BAGGING_MEMBER_DOMAIN = 0x1060_0000_0000_0001`. Fold IDs use
 same-executable; cross-release, cross-toolchain, and cross-precision equality
 are not promised.
 
+## Member order and sampler use
+
+Members are fitted in ascending member index order. Each member starts a fresh
+shared-sampler generator from its derived P9 seed, selects units before any
+rows are expanded, and uses shuffle disabled. Repeats selected by the sampler
+are passed to the fitter intact.
+
 ## Example
 
 `cargo run --locked --example bagging_regression` fits a Profile B candidate on

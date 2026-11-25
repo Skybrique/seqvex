@@ -60,7 +60,7 @@ impl std::error::Error for OlsBagError {
             Self::MemberFit64 { source, .. } => Some(source),
             Self::MemberFit32 { source, .. } => Some(source),
             Self::MemberConversion { source, .. } => Some(source),
-            Self::Predict(_) => None,
+            Self::Predict(error) => Some(error),
         }
     }
 }

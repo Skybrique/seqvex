@@ -9,6 +9,7 @@
 //! `neighbors` holds the K-Nearest Neighbors model. See
 //! `docs/ML_VERTICAL_SLICES.md`.
 
+pub mod ensemble;
 pub mod linear;
 pub mod neighbors;
 pub mod recurrent;

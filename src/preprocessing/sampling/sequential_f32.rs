@@ -800,13 +800,7 @@ fn ticket_for_weight(weight: f32, maximum: f32) -> Option<u64> {
     let twice_numerator = numerator.checked_mul(2)?;
     let rounded_numerator = twice_numerator.checked_add(denominator)?;
     let twice_denominator = denominator.checked_mul(2)?;
-    let mut ticket = rounded_numerator / twice_denominator;
-    if ticket > TICKET_SCALE {
-        ticket = TICKET_SCALE;
-    }
-    if ticket == 0 {
-        ticket = 1;
-    }
+    let ticket = (rounded_numerator / twice_denominator).clamp(1, TICKET_SCALE);
     Some(ticket as u64)
 }
 

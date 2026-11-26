@@ -16,7 +16,8 @@ use std::process::ExitCode;
 use seqvex::foundation::numerical::Vector;
 use seqvex::models::linear::ols::{FitConfig, fit};
 use seqvex::preprocessing::sampling::{
-    OutcomeInterval, SampleMethod, SampleUnit, SamplingMode, SamplingSpec, sample_training,
+    OutcomeInterval, SampleMethod, SampleUnit, SamplingMode, SamplingSpec, SequentialLimits,
+    sample_training, sample_training_sequential_f32,
 };
 use seqvex::preprocessing::split::{
     RowWindowSpec, TailPolicy, TimeCoverage, TimeFold, TimeFoldOutcome, TimeRow, TimeWindowSpec,
@@ -284,6 +285,48 @@ fn run() -> Result<(), String> {
         mutated.unit_counts(),
     )?;
 
+    let strict_spec = SamplingSpec::new(SamplingMode::Default, 4, 21);
+    let strict_limits = SequentialLimits::default();
+    let strict = sample_training_sequential_f32(&units, strict_spec, &strict_limits)
+        .map_err(|error| format!("strict cutoff-24 sampling failed: {error}"))?;
+    let strict_replay = sample_training_sequential_f32(&units, strict_spec, &strict_limits)
+        .map_err(|error| format!("strict cutoff-24 replay failed: {error}"))?;
+    check_eq(
+        "strict cutoff-24 replay rows",
+        strict.row_indices(),
+        strict_replay.row_indices(),
+    )?;
+    check_eq(
+        "strict cutoff-24 replay counts",
+        strict.unit_counts(),
+        strict_replay.unit_counts(),
+    )?;
+    check_eq(
+        "strict cutoff-24 draw count",
+        &strict.unit_counts().iter().sum::<usize>(),
+        &4,
+    )?;
+    for &row in strict.row_indices() {
+        if !matches!(row, 0 | 1 | 2 | 4 | 6) {
+            return Err(format!(
+                "strict cutoff-24 sample contains ineligible row {row}"
+            ));
+        }
+    }
+    let strict_mutated =
+        sample_training_sequential_f32(&mutated_units, strict_spec, &strict_limits)
+            .map_err(|error| format!("strict mutated sampling failed: {error}"))?;
+    check_eq(
+        "strict mutation rows",
+        strict.row_indices(),
+        strict_mutated.row_indices(),
+    )?;
+    check_eq(
+        "strict mutation counts",
+        strict.unit_counts(),
+        strict_mutated.unit_counts(),
+    )?;
+
     let snapshot = [
         TimeRow {
             decision_at: 4,
@@ -395,6 +438,11 @@ fn run() -> Result<(), String> {
     println!("row 5 label = unknown; scored = false");
     println!("cutoff 24 units = 4; supports = [1,4) [4,7) [12,15) [17,20)");
     println!("cutoff 24 seeded counts = {:?}", baseline.unit_counts());
+    println!(
+        "cutoff 24 strict rows = {:?}; counts = {:?}",
+        strict.row_indices(),
+        strict.unit_counts()
+    );
     println!("excluded-support mutation parity = true");
     println!(
         "fragmented group rows = [0, 2]; repeated rows = {:?}",

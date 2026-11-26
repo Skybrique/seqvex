@@ -1,10 +1,12 @@
-use seqvex::foundation::numerical::Vector64;
+use seqvex::foundation::numerical::{Vector, Vector64};
 use seqvex::models::ensemble::bagging::{
-    BAGGING_MEMBER_DOMAIN, BaggingError, BaggingSpec, DecisionTreeBag64, DecisionTreeBagError,
+    BAGGING_MEMBER_DOMAIN, BaggingError, BaggingSpec, DecisionTreeBag, DecisionTreeBag64,
+    DecisionTreeBagError,
 };
-use seqvex::models::trees::decision_tree::TreeFitConfig;
+use seqvex::models::trees::decision_tree::{TreeFitConfig, fit_tree_f32};
 use seqvex::preprocessing::sampling::{
-    OutcomeInterval, SampleMethod, SampleUnit, SamplingMode, SamplingSpec, sample_training,
+    OutcomeInterval, SampleMethod, SampleUnit, SamplingMode, SamplingSpec, SequentialLimits,
+    sample_training, sample_training_sequential_f32,
 };
 
 #[allow(clippy::single_range_in_vec_init)]
@@ -100,5 +102,43 @@ fn p9_without_replacement_subsets_are_fixed() {
 }
 
 #[test]
-#[ignore = "#103 strict-f32 sequential sampler pending delivery and validation"]
-fn strict_f32_sequential_ticket_trace_pending() {}
+fn tree_c_sequential_member_matches_direct_strict_sample() {
+    let features: Vec<Vector> = (0..4)
+        .map(|row| Vector::from_slice(&[row as f32]))
+        .collect();
+    let targets = vec![0.0_f32, 10.0, 3.0, 7.0];
+    let sample_units = units(4);
+    let config = TreeFitConfig::default();
+    let spec = BaggingSpec::new(3, SamplingMode::Default, 5, 0, 0);
+
+    let bag = DecisionTreeBag::fit_f32(&features, &targets, &sample_units, &spec, &config).unwrap();
+    assert_eq!(bag.members().len(), 3);
+
+    for member in 0..spec.members() {
+        let seed = spec.member_seed(member);
+        let direct = sample_training_sequential_f32(
+            &sample_units,
+            SamplingSpec::new(spec.mode(), spec.sample_size(), seed),
+            &SequentialLimits::default(),
+        )
+        .unwrap();
+        let reference = fit_tree_f32(&features, &targets, direct.row_indices(), &config)
+            .unwrap()
+            .into_predictor();
+        assert_eq!(bag.members()[member], reference, "member {member}");
+
+        if member == 0 {
+            assert_eq!(seed, 0x1060_0000_0000_0001);
+            assert_eq!(direct.row_indices(), &[0, 0, 2, 2, 3]);
+            assert_eq!(direct.unit_counts(), &[2, 0, 2, 1]);
+        }
+    }
+
+    let prediction = bag.predict(&features[2]).unwrap();
+    let refit =
+        DecisionTreeBag::fit_f32(&features, &targets, &sample_units, &spec, &config).unwrap();
+    assert_eq!(
+        prediction.to_bits(),
+        refit.predict(&features[2]).unwrap().to_bits()
+    );
+}

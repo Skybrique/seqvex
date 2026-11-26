@@ -11,10 +11,12 @@ use seqvex::models::linear::ols::{
     FitConfig32, FitConfig64, FitError64, RegressionError, UnderflowPolicy,
 };
 use seqvex::models::trees::decision_tree::{
-    DecisionTreeError, TreeFitConfig, TreeServingConversionError, TreeServingField,
+    DecisionTreeError, TreeFitConfig, TreeFitError, TreeServingConversionError, TreeServingField,
     TreeUnderflowPolicy,
 };
-use seqvex::preprocessing::sampling::{OutcomeInterval, SampleUnit, SamplingMode};
+use seqvex::preprocessing::sampling::{
+    OutcomeInterval, SampleMethod, SampleUnit, SamplingError, SamplingMode,
+};
 
 #[allow(clippy::single_range_in_vec_init)]
 fn units(count: usize) -> Vec<SampleUnit> {
@@ -457,25 +459,50 @@ fn tree_a_b_sequential_sampling_through_public_baggers() {
 }
 
 #[test]
-fn tree_c_sequential_is_rejected_pending_103() {
+fn tree_c_sequential_uses_strict_sampler_for_both_spellings() {
+    use seqvex::preprocessing::sampling::SampleMethod;
+
     let (_, _, features32, targets32) = tree_data();
     let sample_units = units(features32.len());
-    let spec = BaggingSpec::new(
-        1,
-        SamplingMode::Method(seqvex::preprocessing::sampling::SampleMethod::SequentialBootstrap),
-        6,
-        0x51,
-        0,
+    let config = TreeFitConfig::default();
+    let sequential = SamplingMode::Method(SampleMethod::SequentialBootstrap);
+
+    let default = DecisionTreeBag::fit_f32(
+        &features32,
+        &targets32,
+        &sample_units,
+        &BaggingSpec::new(2, SamplingMode::Default, 6, 0x51, 0),
+        &config,
+    )
+    .unwrap();
+    let explicit = DecisionTreeBag::fit_f32(
+        &features32,
+        &targets32,
+        &sample_units,
+        &BaggingSpec::new(2, sequential, 6, 0x51, 0),
+        &config,
+    )
+    .unwrap();
+
+    assert_eq!(default.members(), explicit.members());
+    assert_eq!(
+        default.predict(&features32[0]).unwrap().to_bits(),
+        explicit.predict(&features32[0]).unwrap().to_bits()
     );
-    assert!(
-        DecisionTreeBag::fit_f32(
-            &features32,
-            &targets32,
-            &sample_units,
-            &spec,
-            &TreeFitConfig::default(),
-        )
-        .is_err()
+    assert!(!default.members().is_empty());
+
+    let again = DecisionTreeBag::fit_f32(
+        &features32,
+        &targets32,
+        &sample_units,
+        &BaggingSpec::new(2, SamplingMode::Default, 6, 0x51, 0),
+        &config,
+    )
+    .unwrap();
+    assert_eq!(default.members(), again.members());
+    assert_eq!(
+        default.predict(&features32[3]).unwrap().to_bits(),
+        again.predict(&features32[3]).unwrap().to_bits()
     );
 }
 
@@ -516,6 +543,335 @@ fn fragmented_unit_uses_full_expanded_row_count_before_fit() {
             limit: 2,
         })) => {}
         other => panic!("unexpected fragmented-unit result: {other:?}"),
+    }
+}
+
+#[test]
+fn expanded_rows_limit_is_inclusive_and_rejects_one_above() {
+    let features = vec![
+        Vector64::from_slice(&[0.0]),
+        Vector64::from_slice(&[1.0]),
+        Vector64::from_slice(&[2.0]),
+        Vector64::from_slice(&[3.0]),
+        Vector64::from_slice(&[4.0]),
+        Vector64::from_slice(&[5.0]),
+    ];
+    let targets = vec![0.0, 1.0, 0.0, 1.0, 0.5, 1.5];
+    let fragmented = vec![SampleUnit {
+        rows: vec![0..1, 2..3],
+        outcomes: Vec::new(),
+        sequence: 0,
+    }];
+
+    let exact = BaggingSpec::new(
+        1,
+        SamplingMode::Method(SampleMethod::WithReplacement),
+        2,
+        7,
+        0,
+    )
+    .with_limits(BaggingLimits {
+        max_expanded_rows_per_member: 4,
+        ..BaggingLimits::default()
+    });
+    assert!(
+        DecisionTreeBag64::fit(
+            &features,
+            &targets,
+            &fragmented,
+            &exact,
+            &TreeFitConfig::default()
+        )
+        .is_ok()
+    );
+
+    let over = BaggingSpec::new(
+        1,
+        SamplingMode::Method(SampleMethod::WithReplacement),
+        2,
+        7,
+        0,
+    )
+    .with_limits(BaggingLimits {
+        max_expanded_rows_per_member: 3,
+        ..BaggingLimits::default()
+    });
+    match DecisionTreeBag64::fit(
+        &features,
+        &targets,
+        &fragmented,
+        &over,
+        &TreeFitConfig::default(),
+    ) {
+        Err(DecisionTreeBagError::Bagging(BaggingError::ExpandedRowsExceeded {
+            rows: 4,
+            limit: 3,
+        })) => {}
+        other => panic!("unexpected expanded-row result: {other:?}"),
+    }
+
+    let wide = vec![SampleUnit {
+        rows: vec![0..1, 2..3, 4..5, 5..6],
+        outcomes: Vec::new(),
+        sequence: 0,
+    }];
+    let identity_exact =
+        BaggingSpec::new(1, SamplingMode::Disabled, 0, 7, 0).with_limits(BaggingLimits {
+            max_expanded_rows_per_member: 4,
+            ..BaggingLimits::default()
+        });
+    assert!(
+        DecisionTreeBag64::fit(
+            &features,
+            &targets,
+            &wide,
+            &identity_exact,
+            &TreeFitConfig::default()
+        )
+        .is_ok()
+    );
+
+    let identity_over =
+        BaggingSpec::new(1, SamplingMode::Disabled, 0, 7, 0).with_limits(BaggingLimits {
+            max_expanded_rows_per_member: 3,
+            ..BaggingLimits::default()
+        });
+    match DecisionTreeBag64::fit(
+        &features,
+        &targets,
+        &wide,
+        &identity_over,
+        &TreeFitConfig::default(),
+    ) {
+        Err(DecisionTreeBagError::Bagging(BaggingError::ExpandedRowsExceeded {
+            rows: 4,
+            limit: 3,
+        })) => {}
+        other => panic!("unexpected identity expanded-row result: {other:?}"),
+    }
+}
+
+#[test]
+fn source_row_bounds_report_first_invalid_row() {
+    let features = vec![
+        Vector64::from_slice(&[0.0]),
+        Vector64::from_slice(&[1.0]),
+        Vector64::from_slice(&[2.0]),
+        Vector64::from_slice(&[3.0]),
+    ];
+    let targets = vec![0.0, 1.0, 0.0, 1.0];
+    let spec = disable(1);
+
+    let straddling = vec![SampleUnit {
+        rows: vec![3..5],
+        outcomes: Vec::new(),
+        sequence: 0,
+    }];
+    match DecisionTreeBag64::fit(
+        &features,
+        &targets,
+        &straddling,
+        &spec,
+        &TreeFitConfig::default(),
+    ) {
+        Err(DecisionTreeBagError::Bagging(BaggingError::SourceRowOutOfRange {
+            unit: 0,
+            row: 4,
+            len: 4,
+        })) => {}
+        other => panic!("unexpected straddling-range result: {other:?}"),
+    }
+
+    let past_end = vec![SampleUnit {
+        rows: vec![6..8],
+        outcomes: Vec::new(),
+        sequence: 0,
+    }];
+    match DecisionTreeBag64::fit(
+        &features,
+        &targets,
+        &past_end,
+        &spec,
+        &TreeFitConfig::default(),
+    ) {
+        Err(DecisionTreeBagError::Bagging(BaggingError::SourceRowOutOfRange {
+            unit: 0,
+            row: 6,
+            len: 4,
+        })) => {}
+        other => panic!("unexpected past-end-range result: {other:?}"),
+    }
+
+    let last = vec![SampleUnit {
+        rows: vec![3..4],
+        outcomes: Vec::new(),
+        sequence: 0,
+    }];
+    assert!(
+        DecisionTreeBag64::fit(&features, &targets, &last, &spec, &TreeFitConfig::default())
+            .is_ok()
+    );
+}
+
+#[test]
+#[allow(clippy::reversed_empty_ranges)] // A reversed range is the malformed fixture.
+fn unit_cap_precedes_malformed_range_for_the_bagger() {
+    let features = vec![Vector64::from_slice(&[0.0]), Vector64::from_slice(&[1.0])];
+    let targets = vec![0.0, 1.0];
+    let units = vec![
+        SampleUnit {
+            rows: vec![0..1, 7..3],
+            outcomes: Vec::new(),
+            sequence: 0,
+        },
+        SampleUnit {
+            rows: vec![1..2],
+            outcomes: Vec::new(),
+            sequence: 0,
+        },
+    ];
+    let spec = BaggingSpec::new(1, SamplingMode::Disabled, 0, 7, 0).with_limits(BaggingLimits {
+        max_units: 1,
+        ..BaggingLimits::default()
+    });
+    match DecisionTreeBag64::fit(
+        &features,
+        &targets,
+        &units,
+        &spec,
+        &TreeFitConfig::default(),
+    ) {
+        Err(DecisionTreeBagError::Bagging(BaggingError::UnitLimitExceeded {
+            units: 2,
+            limit: 1,
+        })) => {}
+        other => panic!("unexpected combined-fault result: {other:?}"),
+    }
+}
+
+#[test]
+fn tree_c_strict_rejection_is_nested_and_preserves_the_active_bag() {
+    use seqvex::preprocessing::sampling::SequentialLimits;
+
+    let features = vec![Vector::from_slice(&[0.0]), Vector::from_slice(&[1.0])];
+    let targets = vec![0.0, 1.0];
+    let sample_units = units(features.len());
+    let config = TreeFitConfig::default();
+
+    let active = DecisionTreeBag::fit_f32(
+        &features,
+        &targets,
+        &sample_units,
+        &BaggingSpec::new(1, SamplingMode::Default, 1, 7, 0),
+        &config,
+    )
+    .unwrap();
+    let prediction = active.predict(&features[1]).unwrap();
+
+    let over =
+        BaggingSpec::new(1, SamplingMode::Default, 1_000_001, 7, 0).with_limits(BaggingLimits {
+            max_expanded_rows_per_member: 1_000_001,
+            ..BaggingLimits::default()
+        });
+    match DecisionTreeBag::fit_f32(&features, &targets, &sample_units, &over, &config) {
+        Err(DecisionTreeBagError::Bagging(BaggingError::Sampling(
+            SamplingError::ExpandedRowsExceeded { computed, limit },
+        ))) => {
+            assert_eq!(computed, 1_000_001);
+            assert_eq!(limit, SequentialLimits::default().max_expanded_rows as u128);
+        }
+        other => panic!("unexpected strict delegation result: {other:?}"),
+    }
+
+    assert_eq!(active.predict(&features[1]).unwrap(), prediction);
+}
+
+#[test]
+fn tree_c_failed_refit_keeps_the_active_bag() {
+    let features = vec![Vector::from_slice(&[0.0])];
+    let targets = vec![0.0];
+    let sample_units = units(1);
+    let config = TreeFitConfig::default();
+    let spec = BaggingSpec::new(1, SamplingMode::Default, 1, 7, 0);
+
+    let active =
+        DecisionTreeBag::fit_f32(&features, &targets, &sample_units, &spec, &config).unwrap();
+    let prediction = active.predict(&features[0]).unwrap();
+
+    let broken = vec![f32::NAN];
+    match DecisionTreeBag::fit_f32(&features, &broken, &sample_units, &spec, &config) {
+        Err(DecisionTreeBagError::MemberFit {
+            member: 0,
+            source: TreeFitError::NonFiniteTrainingValue { row: 0 },
+        }) => {}
+        other => panic!("unexpected failed-refit result: {other:?}"),
+    }
+
+    assert_eq!(active.predict(&features[0]).unwrap(), prediction);
+    assert_eq!(active.members().len(), 1);
+}
+
+#[test]
+fn strict_sequential_multiplicity_reaches_the_fit() {
+    let features = vec![Vector::from_slice(&[0.0_f32]); 6];
+    let targets = vec![0.0_f32, 1000.0, 4.0, 10.0, 20.0, 36.0];
+    let sample_units = vec![
+        SampleUnit {
+            rows: vec![0..1, 2..3],
+            outcomes: vec![OutcomeInterval { start: 0, end: 1 }],
+            sequence: 0,
+        },
+        SampleUnit {
+            rows: vec![3..4],
+            outcomes: vec![OutcomeInterval { start: 1, end: 2 }],
+            sequence: 0,
+        },
+        SampleUnit {
+            rows: vec![4..5],
+            outcomes: vec![OutcomeInterval { start: 2, end: 3 }],
+            sequence: 0,
+        },
+        SampleUnit {
+            rows: vec![5..6],
+            outcomes: vec![OutcomeInterval { start: 3, end: 4 }],
+            sequence: 0,
+        },
+    ];
+    let config = TreeFitConfig {
+        max_depth: 0,
+        ..TreeFitConfig::default()
+    };
+    let bag = DecisionTreeBag::fit_f32(
+        &features,
+        &targets,
+        &sample_units,
+        &BaggingSpec::new(1, SamplingMode::Default, 5, 0, 0),
+        &config,
+    )
+    .unwrap();
+
+    // Member 0 rows are [0,2,0,2,4,4,5] -> 84/7 = 12; deduplicating gives 60/4 = 15.
+    assert_eq!(bag.predict(&features[0]).unwrap(), 12.0);
+}
+
+#[test]
+fn tree_c_sequential_zero_draws_return_zero_sample_size() {
+    let features = vec![Vector::from_slice(&[0.0]), Vector::from_slice(&[1.0])];
+    let targets = vec![0.0, 1.0];
+    let sample_units = units(features.len());
+    let config = TreeFitConfig::default();
+
+    for mode in [
+        SamplingMode::Default,
+        SamplingMode::Method(SampleMethod::SequentialBootstrap),
+    ] {
+        let spec = BaggingSpec::new(1, mode, 0, 7, 0);
+        match DecisionTreeBag::fit_f32(&features, &targets, &sample_units, &spec, &config) {
+            Err(DecisionTreeBagError::Bagging(BaggingError::Sampling(
+                SamplingError::ZeroSampleSize,
+            ))) => {}
+            other => panic!("unexpected zero-draw result for {mode:?}: {other:?}"),
+        }
     }
 }
 

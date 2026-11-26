@@ -5,8 +5,8 @@ use std::fmt;
 use crate::foundation::numerical::{Vector, Vector64};
 use crate::foundation::observation::Observation;
 use crate::preprocessing::sampling::{
-    SampleMethod, SampleUnit, SamplingError, SamplingMode, SamplingSpec, TrainingSample,
-    sample_training,
+    SampleMethod, SampleUnit, SamplingError, SamplingMode, SamplingSpec, SequentialLimits,
+    TrainingSample, sample_training, sample_training_sequential_f32,
 };
 
 mod decision_tree;
@@ -256,6 +256,7 @@ pub enum BaggingError {
         rows: usize,
         limit: usize,
     },
+    ExpandedRowsOverflow,
     TotalSequentialWorkExceeded {
         computed: u128,
         limit: u64,
@@ -358,6 +359,7 @@ impl fmt::Display for BaggingError {
             Self::ExpandedRowsExceeded { rows, limit } => {
                 write!(formatter, "expanded rows {rows} exceed limit {limit}")
             }
+            Self::ExpandedRowsOverflow => formatter.write_str("expanded-row accounting overflowed"),
             Self::TotalSequentialWorkExceeded { computed, limit } => {
                 write!(
                     formatter,
@@ -519,13 +521,39 @@ fn mode_is_sequential(mode: SamplingMode) -> bool {
     )
 }
 
+fn unit_row_count(unit: &SampleUnit) -> Result<usize, BaggingError> {
+    unit.rows.iter().try_fold(0usize, |total, range| {
+        total
+            .checked_add(range.end - range.start)
+            .ok_or(BaggingError::ExpandedRowsOverflow)
+    })
+}
+
+fn expanded_rows_bound(units: &[SampleUnit], spec: &BaggingSpec) -> Result<usize, BaggingError> {
+    if matches!(spec.mode, SamplingMode::Disabled) {
+        units.iter().try_fold(0usize, |total, unit| {
+            total
+                .checked_add(unit_row_count(unit)?)
+                .ok_or(BaggingError::ExpandedRowsOverflow)
+        })
+    } else if spec.sample_size == 0 {
+        Ok(0)
+    } else {
+        let widest = units.iter().try_fold(0usize, |widest, unit| {
+            Ok::<usize, BaggingError>(widest.max(unit_row_count(unit)?))
+        })?;
+        spec.sample_size
+            .checked_mul(widest)
+            .ok_or(BaggingError::ExpandedRowsOverflow)
+    }
+}
+
 fn validate_units(
     units: &[SampleUnit],
     features: usize,
     targets: usize,
     spec: &BaggingSpec,
     tree_profile: bool,
-    strict_f32: bool,
 ) -> Result<(), BaggingError> {
     spec.limits.validate()?;
     if spec.members == 0 {
@@ -556,10 +584,6 @@ fn validate_units(
         SamplingMode::Disabled => {}
         SamplingMode::Default | SamplingMode::Method(SampleMethod::SequentialBootstrap) => {
             if !tree_profile {
-                return Err(BaggingError::UnsupportedMode { mode: spec.mode });
-            }
-            if strict_f32 {
-                // Tree C sequential requires the #103 strict-f32 path.
                 return Err(BaggingError::UnsupportedMode { mode: spec.mode });
             }
         }
@@ -630,7 +654,7 @@ fn validate_units(
             if range.end > features {
                 return Err(BaggingError::SourceRowOutOfRange {
                     unit: unit_index,
-                    row: range.end,
+                    row: range.start.max(features),
                     len: features,
                 });
             }
@@ -659,26 +683,7 @@ fn validate_units(
         }
     }
 
-    let expanded = match spec.mode {
-        SamplingMode::Disabled => units
-            .iter()
-            .flat_map(|unit| unit.rows.iter())
-            .map(|range| range.end - range.start)
-            .sum::<usize>(),
-        _ => {
-            let max_unit_rows = units
-                .iter()
-                .map(|unit| {
-                    unit.rows
-                        .iter()
-                        .map(|range| range.end - range.start)
-                        .sum::<usize>()
-                })
-                .max()
-                .unwrap_or(0);
-            spec.sample_size.saturating_mul(max_unit_rows)
-        }
-    };
+    let expanded = expanded_rows_bound(units, spec)?;
     if expanded > spec.limits.max_expanded_rows_per_member {
         return Err(BaggingError::ExpandedRowsExceeded {
             rows: expanded,
@@ -692,9 +697,15 @@ fn sample_member(
     units: &[SampleUnit],
     spec: &BaggingSpec,
     member: usize,
+    strict_sequential: bool,
 ) -> Result<TrainingSample, BaggingError> {
     let sampling = SamplingSpec::new(spec.mode, spec.sample_size, spec.member_seed(member));
-    sample_training(units, sampling).map_err(BaggingError::Sampling)
+    if strict_sequential && mode_is_sequential(spec.mode) {
+        sample_training_sequential_f32(units, sampling, &SequentialLimits::default())
+            .map_err(BaggingError::Sampling)
+    } else {
+        sample_training(units, sampling).map_err(BaggingError::Sampling)
+    }
 }
 
 fn row_is_finite_64(row: &Vector64) -> bool {
@@ -787,9 +798,11 @@ pub(crate) struct Candidate<M> {
     pub retained_bytes: usize,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn assemble_candidate<M, E>(
     units: &[SampleUnit],
     spec: &BaggingSpec,
+    strict_sequential: bool,
     mut map_sampling: impl FnMut(BaggingError) -> E,
     mut fit_member: impl FnMut(usize, &[usize]) -> Result<(M, usize), E>,
     dimension: impl Fn(&M) -> usize,
@@ -800,7 +813,8 @@ pub(crate) fn assemble_candidate<M, E>(
     let mut retained_bytes = 0usize;
     let mut feature_dimension = None;
     for member in 0..spec.members {
-        let sample = sample_member(units, spec, member).map_err(&mut map_sampling)?;
+        let sample =
+            sample_member(units, spec, member, strict_sequential).map_err(&mut map_sampling)?;
         let (model, bytes) = fit_member(member, sample.row_indices())?;
         let actual = dimension(&model);
         if let Some(expected) = feature_dimension {
@@ -887,10 +901,11 @@ pub(crate) fn publish_batch<R, O, PE>(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::single_range_in_vec_init)]
+
     use super::*;
     use crate::preprocessing::sampling::{OutcomeInterval, SampleMethod, SampleUnit};
 
-    #[allow(clippy::single_range_in_vec_init)]
     fn unit(index: usize) -> SampleUnit {
         SampleUnit {
             rows: vec![index..index + 1],
@@ -923,7 +938,7 @@ mod tests {
             7,
             0,
         );
-        assert!(validate_units(&units, 1_000, 1_000, &pass, true, false).is_ok());
+        assert!(validate_units(&units, 1_000, 1_000, &pass, true).is_ok());
 
         let reject = BaggingSpec::new(
             1,
@@ -933,7 +948,7 @@ mod tests {
             0,
         );
         assert!(matches!(
-            validate_units(&units, 1_000, 1_000, &reject, true, false),
+            validate_units(&units, 1_000, 1_000, &reject, true),
             Err(BaggingError::TotalSequentialWorkExceeded { .. })
         ));
     }
@@ -943,18 +958,294 @@ mod tests {
         let units = units(1);
         let pass =
             BaggingSpec::new(1, SamplingMode::Disabled, 0, 1, 0).with_support_cutoff(Some(1));
-        assert!(validate_units(&units, 1, 1, &pass, true, false).is_ok());
+        assert!(validate_units(&units, 1, 1, &pass, true).is_ok());
 
         let reject =
             BaggingSpec::new(1, SamplingMode::Disabled, 0, 1, 0).with_support_cutoff(Some(0));
         assert!(matches!(
-            validate_units(&units, 1, 1, &reject, true, false),
+            validate_units(&units, 1, 1, &reject, true),
             Err(BaggingError::SupportBeyondCutoff {
                 end: 1,
                 cutoff: 0,
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn expanded_rows_boundary_passes_at_limit_and_rejects_above() {
+        let fragmented = SampleUnit {
+            rows: vec![0..1, 2..3],
+            outcomes: Vec::new(),
+            sequence: 0,
+        };
+        let sampled = BaggingSpec::new(
+            1,
+            SamplingMode::Method(SampleMethod::WithReplacement),
+            2,
+            7,
+            0,
+        );
+        let sampled_at = sampled.with_limits(BaggingLimits {
+            max_expanded_rows_per_member: 4,
+            ..BaggingLimits::default()
+        });
+        assert!(validate_units(std::slice::from_ref(&fragmented), 4, 4, &sampled_at, true).is_ok());
+
+        let sampled_over = sampled.with_limits(BaggingLimits {
+            max_expanded_rows_per_member: 3,
+            ..BaggingLimits::default()
+        });
+        assert!(matches!(
+            validate_units(std::slice::from_ref(&fragmented), 4, 4, &sampled_over, true),
+            Err(BaggingError::ExpandedRowsExceeded { rows: 4, limit: 3 })
+        ));
+
+        let identity = BaggingSpec::new(1, SamplingMode::Disabled, 0, 7, 0);
+        let identity_at = identity.with_limits(BaggingLimits {
+            max_expanded_rows_per_member: 4,
+            ..BaggingLimits::default()
+        });
+        assert!(
+            validate_units(
+                &[fragmented.clone(), fragmented.clone()],
+                4,
+                4,
+                &identity_at,
+                true
+            )
+            .is_ok()
+        );
+
+        let identity_over = identity.with_limits(BaggingLimits {
+            max_expanded_rows_per_member: 3,
+            ..BaggingLimits::default()
+        });
+        assert!(matches!(
+            validate_units(
+                &[fragmented.clone(), fragmented],
+                4,
+                4,
+                &identity_over,
+                true
+            ),
+            Err(BaggingError::ExpandedRowsExceeded { rows: 4, limit: 3 })
+        ));
+    }
+
+    #[test]
+    fn expanded_row_arithmetic_overflow_is_typed() {
+        let huge = SampleUnit {
+            rows: vec![0..usize::MAX],
+            outcomes: Vec::new(),
+            sequence: 0,
+        };
+        let identity = BaggingSpec::new(1, SamplingMode::Disabled, 0, 7, 0);
+        assert!(matches!(
+            validate_units(
+                &[huge.clone(), huge],
+                usize::MAX,
+                usize::MAX,
+                &identity,
+                true
+            ),
+            Err(BaggingError::ExpandedRowsOverflow)
+        ));
+
+        let wide = SampleUnit {
+            rows: vec![0..2],
+            outcomes: Vec::new(),
+            sequence: 0,
+        };
+        let sampled = BaggingSpec::new(
+            1,
+            SamplingMode::Method(SampleMethod::WithReplacement),
+            usize::MAX,
+            7,
+            0,
+        );
+        assert!(matches!(
+            validate_units(&[wide], 2, 2, &sampled, true),
+            Err(BaggingError::ExpandedRowsOverflow)
+        ));
+    }
+
+    #[test]
+    fn zero_draws_defer_expanded_rows_to_the_sampler() {
+        // Two ranges whose lengths overflow when summed for one unit.
+        let overflowing = SampleUnit {
+            rows: vec![0..usize::MAX, 0..usize::MAX],
+            outcomes: Vec::new(),
+            sequence: 0,
+        };
+        let units = [overflowing];
+
+        let none = BaggingSpec::new(
+            1,
+            SamplingMode::Method(SampleMethod::WithReplacement),
+            0,
+            7,
+            0,
+        );
+        assert!(matches!(expanded_rows_bound(&units, &none), Ok(0)));
+
+        let one = BaggingSpec::new(
+            1,
+            SamplingMode::Method(SampleMethod::WithReplacement),
+            1,
+            7,
+            0,
+        );
+        assert!(matches!(
+            expanded_rows_bound(&units, &one),
+            Err(BaggingError::ExpandedRowsOverflow)
+        ));
+
+        let identity = BaggingSpec::new(1, SamplingMode::Disabled, 0, 7, 0);
+        assert!(matches!(
+            expanded_rows_bound(&units, &identity),
+            Err(BaggingError::ExpandedRowsOverflow)
+        ));
+    }
+
+    #[test]
+    #[allow(clippy::reversed_empty_ranges)] // A reversed range is the malformed fixture.
+    fn source_row_error_reports_first_invalid_row() {
+        let spec = BaggingSpec::new(1, SamplingMode::Disabled, 0, 7, 0);
+        let straddling = SampleUnit {
+            rows: vec![3..5],
+            outcomes: Vec::new(),
+            sequence: 0,
+        };
+        assert!(matches!(
+            validate_units(&[straddling], 4, 4, &spec, true),
+            Err(BaggingError::SourceRowOutOfRange {
+                unit: 0,
+                row: 4,
+                len: 4
+            })
+        ));
+
+        let past_end = SampleUnit {
+            rows: vec![6..8],
+            outcomes: Vec::new(),
+            sequence: 0,
+        };
+        assert!(matches!(
+            validate_units(&[past_end], 4, 4, &spec, true),
+            Err(BaggingError::SourceRowOutOfRange {
+                unit: 0,
+                row: 6,
+                len: 4
+            })
+        ));
+
+        let last_row = SampleUnit {
+            rows: vec![3..4],
+            outcomes: Vec::new(),
+            sequence: 0,
+        };
+        assert!(validate_units(&[last_row], 4, 4, &spec, true).is_ok());
+
+        let reversed = SampleUnit {
+            rows: vec![5..3],
+            outcomes: Vec::new(),
+            sequence: 0,
+        };
+        assert!(matches!(
+            validate_units(&[reversed], 4, 4, &spec, true),
+            Err(BaggingError::InvalidUnitRange {
+                unit: 0,
+                span: Some(0),
+                start: 5,
+                end: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn strict_sampling_rejection_fits_no_member() {
+        let units = units(1);
+        let spec = BaggingSpec::new(1, SamplingMode::Default, 1_000_001, 7, 0).with_limits(
+            BaggingLimits {
+                max_expanded_rows_per_member: 1_000_001,
+                ..BaggingLimits::default()
+            },
+        );
+        assert!(validate_units(&units, 1, 1, &spec, true).is_ok());
+
+        let mut fits = 0;
+        let error = match assemble_candidate::<(), BaggingError>(
+            &units,
+            &spec,
+            true,
+            |error| error,
+            |_, _| {
+                fits += 1;
+                Ok(((), 0))
+            },
+            |_| 0,
+            |member, _, _| BaggingError::MemberIdTooLarge { member, limit: 0 },
+            |requested, limit| BaggingError::RetainedBytesExceeded { requested, limit },
+        ) {
+            Ok(_) => panic!("preflight rejection must not produce a candidate"),
+            Err(error) => error,
+        };
+
+        assert_eq!(fits, 0, "preflight rejection must fit no member");
+        assert!(matches!(
+            error,
+            BaggingError::Sampling(SamplingError::ExpandedRowsExceeded {
+                computed: 1_000_001,
+                limit: 1_000_000,
+            })
+        ));
+    }
+
+    #[test]
+    fn strict_member_receives_expanded_whole_unit_rows() {
+        let units = vec![
+            SampleUnit {
+                rows: vec![0..1, 2..3],
+                outcomes: vec![OutcomeInterval { start: 0, end: 1 }],
+                sequence: 0,
+            },
+            SampleUnit {
+                rows: vec![3..4],
+                outcomes: vec![OutcomeInterval { start: 1, end: 2 }],
+                sequence: 0,
+            },
+            SampleUnit {
+                rows: vec![4..5],
+                outcomes: vec![OutcomeInterval { start: 2, end: 3 }],
+                sequence: 0,
+            },
+            SampleUnit {
+                rows: vec![5..6],
+                outcomes: vec![OutcomeInterval { start: 3, end: 4 }],
+                sequence: 0,
+            },
+        ];
+        let spec = BaggingSpec::new(1, SamplingMode::Default, 5, 0, 0);
+        assert!(validate_units(&units, 6, 6, &spec, true).is_ok());
+
+        let mut recorded = Vec::new();
+        assemble_candidate::<(), BaggingError>(
+            &units,
+            &spec,
+            true,
+            |error| error,
+            |_, rows| {
+                recorded.push(rows.to_vec());
+                Ok(((), 0))
+            },
+            |_| 0,
+            |member, _, _| BaggingError::MemberIdTooLarge { member, limit: 0 },
+            |requested, limit| BaggingError::RetainedBytesExceeded { requested, limit },
+        )
+        .unwrap();
+
+        assert_eq!(recorded, vec![vec![0, 2, 0, 2, 4, 4, 5]]);
     }
 
     #[test]

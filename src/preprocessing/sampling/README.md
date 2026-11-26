@@ -61,6 +61,66 @@ weights, `target = u·Σw`, the first strict `>` win, and a last-positive fallba
 
 Resampling is opt-in. Shuffle is independent and defaults to `false`.
 
+## Strict-`f32` sequential entry point
+
+`sample_training(&units, spec)` keeps the legacy identity, integer and `f64`
+sequential paths. The strict path is a separate additive entry point:
+
+```rust
+pub fn sample_training_sequential_f32(
+    units: &[SampleUnit],
+    spec: SamplingSpec,
+    limits: &SequentialLimits,
+) -> Result<TrainingSample, SamplingError>
+```
+
+It accepts `Default` and `Method(SequentialBootstrap)` identically and rejects
+`Disabled`, `WithoutReplacement`, `WithReplacement` and any future unadmitted
+mode with `UnsupportedMode`. It creates one fresh generator from `spec.seed`
+only after preflight, and never calls the legacy `f64` sampler.
+
+`SequentialLimits` is per call, not an aggregate bag limit:
+
+| Field | Default | Inclusive ceiling |
+|---|---:|---:|
+| `max_units` | 65,536 | 1,048,576 |
+| `max_support_spans` | 1,000,000 | 16,777,216 |
+| `max_endpoint_scratch_bytes` | 16,777,216 (16 MiB) | 268,435,456 (256 MiB) |
+| `max_expanded_rows` | 1,000,000 | 16,777,216 |
+| `max_work_cells` | 1,000,000,000 | 1,000,000,000,000 |
+
+Each field is admitted in `1..=ceiling`; zero and above-ceiling values return
+`InvalidLimits` with the exact field spelling and widened values.
+
+The strict preflight order is: limits, admitted mode, sample size, unit
+presence, row/support shape and order, missing support, inherited `2^53`
+outcome span, strict count `2^24`, strict per-unit support union `2^24`, then
+`max_units`, `max_support_spans`, endpoint scratch, expanded rows, work, and the
+hard element/byte/work capacities. The raw endpoint buffer is charged as
+`P = 2*S` (not the deduplicated count) and retains that capacity. The scratch
+charge is `64*S + 64*U + 256` bytes, expanded rows are
+`n * max_i sum(range length)`, and work is `n*U*P` cells. Only covered segments
+are subject to the strict `2^24` union bound; unused gaps and the total across
+units are not. Every caller-reachable typed rejection consumes zero selection
+and shuffle draws.
+
+Weights use only `f32`: for each unit, sum
+`length_f32 / (1.0_f32 + concurrency_f32)` over spans and ascending covered
+segments, then divide by the unit's declared support-union length converted to
+`f32`. Tickets are exact binary32-derived integers with `Q = 2^32`, `M` the
+per-draw maximum stored weight, round-half-up, and a positive floor of one.
+One `draw_u64_below` request is made per selection; the first cumulative ticket
+end strictly greater than the draw wins. A zero stored weight or a failed
+checked ticket/total is a defensive `F32WeightUnderflow` or
+`F32WeightQuantumOverflow` before the failing draw; admitted input cannot reach
+either after a draw. Presentation and shuffle follow the existing whole-unit
+rules.
+
+Strict replay is the same units, spec, seed, release, locked dependencies,
+toolchain and target; cross-release, cross-toolchain and cross-precision
+bitwise equality is not promised. Tree Profile C sequential integration and
+bagger adapter/preflight work belong to #106, not this module.
+
 ## Presentation order
 
 Every mode uses one order:
@@ -101,15 +161,20 @@ Errors are `#[non_exhaustive]`: `ZeroSampleSize`, `NoEligibleUnits`,
 `EmptyUnitRows`, `UnitRowsOutOfOrder`, `SequenceOutOfOrder`,
 `InvalidOutcomeInterval`, `OutcomeOutOfOrder`, `MissingOutcomeSupport`,
 `SampleSizeExceedsUnits`, `OutcomeSpanOverflow`, `SampleLengthOverflow`,
-`AllocationTooLarge`, and `SamplingWorkOverflow`.
+`AllocationTooLarge`, and `SamplingWorkOverflow`. The strict entry point adds
+`InvalidLimits`, `UnsupportedMode`, `F32CountUnsupported`,
+`F32SpanUnsupported`, `UnitLimitExceeded`, `SupportSpanLimitExceeded`,
+`EndpointScratchExceeded`, `ExpandedRowsExceeded`, `WorkLimitExceeded`,
+`ArithmeticOverflow`, `F32WeightUnderflow`, and `F32WeightQuantumOverflow`.
 
 ## Replay
 
-Same units, spec, seed, release, and toolchain produce identical rows and
-counts. Cross-release and cross-toolchain bitwise equality is not promised:
-`rand` streams may change across releases, and sequential weights use `f64`.
-Distinct folds or ensemble members need distinct caller-chosen seeds; the
-sampler never derives seeds.
+Same units, spec, seed, release, locked dependencies, toolchain and target
+produce identical rows and counts. Cross-release, cross-toolchain and
+cross-precision bitwise equality is not promised: `rand` streams may change
+across releases, legacy sequential weights use `f64`, and the strict path uses
+`f32`. Distinct folds or ensemble members need distinct caller-chosen seeds;
+the sampler never derives seeds.
 
 ## Not in this slice
 
@@ -120,5 +185,5 @@ separate operation with its own design gate. Block-bootstrapping already-scored
 results is a separate evaluation operation, not this module.
 
 `examples/data_sampler.rs` shows the splitter → sampler → OLS path, the
-cutoff-24 excluded-support mutation control, a fragmented group, and Stage 1
-composition.
+cutoff-24 excluded-support mutation control, strict-`f32` replay, a fragmented
+group, and Stage 1 composition.

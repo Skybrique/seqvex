@@ -24,6 +24,10 @@ use std::ops::Range;
 
 use crate::foundation::numerical::RandomGenerator;
 
+mod sequential_f32;
+
+pub use sequential_f32::sample_training_sequential_f32;
+
 /// Exact-integer limit for outcome-span and weight arithmetic.
 const OUTCOME_SPAN_LIMIT: u128 = 1_u128 << 53;
 
@@ -126,6 +130,37 @@ impl SamplingSpec {
     pub fn with_shuffle(mut self, shuffle: bool) -> Self {
         self.shuffle = shuffle;
         self
+    }
+}
+
+/// Per-call resource limits for the strict-`f32` sequential sampler.
+///
+/// Each field is admitted in `1..=ceiling`; [`Default`] supplies the approved
+/// defaults. These are direct-sampler limits for one call, not aggregate bag
+/// limits. Use [`sample_training_sequential_f32`] with these limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SequentialLimits {
+    /// Maximum number of supplied units.
+    pub max_units: usize,
+    /// Maximum total number of declared outcome spans.
+    pub max_support_spans: usize,
+    /// Maximum charged raw-endpoint scratch in bytes.
+    pub max_endpoint_scratch_bytes: usize,
+    /// Maximum expanded rows across the returned sample.
+    pub max_expanded_rows: usize,
+    /// Maximum weight/ticket work cells.
+    pub max_work_cells: u64,
+}
+
+impl Default for SequentialLimits {
+    fn default() -> Self {
+        Self {
+            max_units: 65_536,
+            max_support_spans: 1_000_000,
+            max_endpoint_scratch_bytes: 16_777_216,
+            max_expanded_rows: 1_000_000,
+            max_work_cells: 1_000_000_000,
+        }
     }
 }
 
@@ -255,6 +290,92 @@ pub enum SamplingError {
         /// Limit (`u64::MAX`).
         limit: u128,
     },
+    /// A strict-sampler limit is zero or above its approved ceiling.
+    InvalidLimits {
+        /// Exact field spelling.
+        field: &'static str,
+        /// Supplied value.
+        value: u128,
+        /// Inclusive minimum (`1`).
+        min: u128,
+        /// Inclusive maximum.
+        max: u128,
+    },
+    /// The supplied mode is not admitted by the strict sampler.
+    UnsupportedMode {
+        /// Original supplied mode.
+        mode: SamplingMode,
+    },
+    /// The strict draw count exceeds `2^24`.
+    F32CountUnsupported {
+        /// Requested draw count.
+        computed: u128,
+        /// Limit (`2^24`).
+        limit: u128,
+    },
+    /// A unit's full support length exceeds `2^24`.
+    F32SpanUnsupported {
+        /// Unit index.
+        unit: usize,
+        /// Unit support length.
+        computed: u128,
+        /// Limit (`2^24`).
+        limit: u128,
+    },
+    /// The unit count exceeds the per-call limit.
+    UnitLimitExceeded {
+        /// Computed unit count.
+        computed: u128,
+        /// Configured limit.
+        limit: u128,
+    },
+    /// The total support-span count exceeds the per-call limit.
+    SupportSpanLimitExceeded {
+        /// Computed span count.
+        computed: u128,
+        /// Configured limit.
+        limit: u128,
+    },
+    /// The raw-endpoint scratch charge exceeds the per-call limit.
+    EndpointScratchExceeded {
+        /// Computed bytes.
+        computed: u128,
+        /// Configured limit.
+        limit: u128,
+    },
+    /// The expanded-row bound exceeds the per-call limit.
+    ExpandedRowsExceeded {
+        /// Computed rows.
+        computed: u128,
+        /// Configured limit.
+        limit: u128,
+    },
+    /// The sequential work bound exceeds the per-call limit.
+    WorkLimitExceeded {
+        /// Computed work cells.
+        computed: u128,
+        /// Configured limit.
+        limit: u128,
+    },
+    /// A strict formula overflowed its checked widened arithmetic.
+    ArithmeticOverflow {
+        /// Formula name.
+        bound: &'static str,
+    },
+    /// A stored strict weight was zero before ticket conversion.
+    F32WeightUnderflow {
+        /// Zero-based draw index.
+        draw_index: usize,
+        /// Unit index.
+        unit: usize,
+    },
+    /// A strict ticket calculation or checked total overflowed.
+    F32WeightQuantumOverflow {
+        /// Zero-based draw index.
+        draw_index: usize,
+        /// Unit index.
+        unit: usize,
+    },
 }
 
 impl fmt::Display for SamplingError {
@@ -327,6 +448,61 @@ impl fmt::Display for SamplingError {
             Self::SamplingWorkOverflow { computed, limit } => write!(
                 formatter,
                 "sampling work {computed} cells exceeds limit {limit}"
+            ),
+            Self::InvalidLimits {
+                field,
+                value,
+                min,
+                max,
+            } => write!(
+                formatter,
+                "invalid {field} limit {value}; expected {min}..={max}"
+            ),
+            Self::UnsupportedMode { mode } => {
+                write!(
+                    formatter,
+                    "sampling mode {mode:?} is not supported by the strict f32 sampler"
+                )
+            }
+            Self::F32CountUnsupported { computed, limit } => write!(
+                formatter,
+                "strict f32 draw count {computed} exceeds limit {limit}"
+            ),
+            Self::F32SpanUnsupported {
+                unit,
+                computed,
+                limit,
+            } => write!(
+                formatter,
+                "unit {unit} strict f32 support span {computed} exceeds limit {limit}"
+            ),
+            Self::UnitLimitExceeded { computed, limit } => {
+                write!(formatter, "unit count {computed} exceeds limit {limit}")
+            }
+            Self::SupportSpanLimitExceeded { computed, limit } => write!(
+                formatter,
+                "support span count {computed} exceeds limit {limit}"
+            ),
+            Self::EndpointScratchExceeded { computed, limit } => write!(
+                formatter,
+                "endpoint scratch {computed} bytes exceeds limit {limit}"
+            ),
+            Self::ExpandedRowsExceeded { computed, limit } => {
+                write!(formatter, "expanded rows {computed} exceeds limit {limit}")
+            }
+            Self::WorkLimitExceeded { computed, limit } => {
+                write!(formatter, "work {computed} cells exceeds limit {limit}")
+            }
+            Self::ArithmeticOverflow { bound } => {
+                write!(formatter, "arithmetic overflow computing {bound}")
+            }
+            Self::F32WeightUnderflow { draw_index, unit } => write!(
+                formatter,
+                "strict f32 weight underflow at draw {draw_index} unit {unit}"
+            ),
+            Self::F32WeightQuantumOverflow { draw_index, unit } => write!(
+                formatter,
+                "strict f32 ticket quantum overflow at draw {draw_index} unit {unit}"
             ),
         }
     }

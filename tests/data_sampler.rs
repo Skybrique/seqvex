@@ -12,7 +12,7 @@ use std::ops::Range;
 
 use seqvex::preprocessing::sampling::{
     OutcomeInterval, SampleMethod, SampleUnit, SamplingError, SamplingMode, SamplingSpec,
-    sample_training,
+    SequentialLimits, sample_training, sample_training_sequential_f32,
 };
 use seqvex::preprocessing::split::{
     RowWindowSpec, TailPolicy, TimeCoverage, TimeFold, TimeFoldOutcome, TimeRow, TimeWindowSpec,
@@ -118,6 +118,39 @@ fn single(row: usize) -> SampleUnit {
         outcomes: vec![],
         sequence: 0,
     }
+}
+
+fn strict_unit(rows: &[Range<usize>], outcomes: &[(i64, i64)], sequence: u32) -> SampleUnit {
+    SampleUnit {
+        rows: rows.to_vec(),
+        outcomes: outcomes
+            .iter()
+            .map(|&(start, end)| OutcomeInterval { start, end })
+            .collect(),
+        sequence,
+    }
+}
+
+fn strict_single(row: usize, outcomes: &[(i64, i64)], sequence: u32) -> SampleUnit {
+    strict_unit(&[row..row + 1], outcomes, sequence)
+}
+
+fn strict_normalized_units() -> Vec<SampleUnit> {
+    (0..4)
+        .map(|index| strict_single(index, &[(index as i64, index as i64 + 1)], 0))
+        .collect()
+}
+
+fn expand_counts(units: &[SampleUnit], counts: &[usize]) -> Vec<usize> {
+    let mut rows = Vec::new();
+    for (unit, &count) in units.iter().zip(counts) {
+        for _ in 0..count {
+            for range in &unit.rows {
+                rows.extend(range.clone());
+            }
+        }
+    }
+    rows
 }
 
 #[test]
@@ -439,4 +472,386 @@ fn training_sample_accessors_are_available() {
     assert_eq!(sample.len(), 1);
     assert!(!sample.is_empty());
     assert_eq!(sample.unit_counts().len(), 1);
+}
+
+#[test]
+fn strict_f32_seeded_replay_matches_e0_37() {
+    let units = strict_normalized_units();
+    let limits = SequentialLimits::default();
+    for mode in [
+        SamplingMode::Default,
+        SamplingMode::Method(SampleMethod::SequentialBootstrap),
+    ] {
+        let spec = SamplingSpec::new(mode, 5, 0x1060_0000_0000_0001);
+        let first = sample_training_sequential_f32(&units, spec, &limits).expect("first strict");
+        let second = sample_training_sequential_f32(&units, spec, &limits).expect("second strict");
+        assert_eq!(first, second, "strict replay for {mode:?}");
+        assert_eq!(first.row_indices(), &[0, 0, 2, 2, 3]);
+        assert_eq!(first.unit_counts(), &[2, 0, 2, 1]);
+        assert_eq!(first.unit_counts().iter().sum::<usize>(), 5);
+    }
+}
+
+#[test]
+fn strict_f32_preflight_contract() {
+    const L: u128 = 1 << 24;
+    let defaults = SequentialLimits::default();
+    let valid = [strict_single(0, &[(0, 1)], 0)];
+
+    let mut limits = defaults;
+    limits.max_units = 0;
+    assert_eq!(
+        sample_training_sequential_f32(
+            &valid,
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &limits
+        ),
+        Err(SamplingError::InvalidLimits {
+            field: "max_units",
+            value: 0,
+            min: 1,
+            max: 1_048_576,
+        })
+    );
+    assert_eq!(
+        sample_training_sequential_f32(
+            &valid,
+            SamplingSpec::new(SamplingMode::Method(SampleMethod::WithReplacement), 1, 1,),
+            &defaults,
+        ),
+        Err(SamplingError::UnsupportedMode {
+            mode: SamplingMode::Method(SampleMethod::WithReplacement),
+        })
+    );
+    assert_eq!(
+        sample_training_sequential_f32(
+            &valid,
+            SamplingSpec::new(SamplingMode::Default, 0, 1),
+            &defaults,
+        ),
+        Err(SamplingError::ZeroSampleSize)
+    );
+    assert_eq!(
+        sample_training_sequential_f32(
+            &[],
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &defaults,
+        ),
+        Err(SamplingError::NoEligibleUnits)
+    );
+    assert_eq!(
+        sample_training_sequential_f32(
+            &[strict_unit(&[], &[(0, 1)], 0)],
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &defaults,
+        ),
+        Err(SamplingError::EmptyUnitRows {
+            unit: 0,
+            span: None,
+        })
+    );
+    assert_eq!(
+        sample_training_sequential_f32(
+            &[strict_unit(&[0..2, 1..3], &[(0, 2)], 0)],
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &defaults,
+        ),
+        Err(SamplingError::UnitRowsOutOfOrder {
+            unit: 0,
+            previous_end: 2,
+            start: 1,
+        })
+    );
+    assert_eq!(
+        sample_training_sequential_f32(
+            &[
+                strict_single(0, &[(0, 1)], 1),
+                strict_single(1, &[(1, 2)], 0),
+            ],
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &defaults,
+        ),
+        Err(SamplingError::SequenceOutOfOrder {
+            unit: 1,
+            previous: 1,
+            actual: 0,
+        })
+    );
+    assert_eq!(
+        sample_training_sequential_f32(
+            &[strict_single(0, &[(5, 5)], 0)],
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &defaults,
+        ),
+        Err(SamplingError::InvalidOutcomeInterval {
+            unit: 0,
+            span: 0,
+            start: 5,
+            end: 5,
+        })
+    );
+    assert_eq!(
+        sample_training_sequential_f32(
+            &[strict_unit(&[0..1], &[(1, 4), (3, 6)], 0)],
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &defaults,
+        ),
+        Err(SamplingError::OutcomeOutOfOrder {
+            unit: 0,
+            span: 1,
+            previous_end: 4,
+            start: 3,
+        })
+    );
+    assert_eq!(
+        sample_training_sequential_f32(
+            &[strict_single(0, &[], 0)],
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &defaults,
+        ),
+        Err(SamplingError::MissingOutcomeSupport { unit: 0 })
+    );
+    assert_eq!(
+        sample_training_sequential_f32(
+            &[strict_single(0, &[(0, (1_i64 << 53) + 1)], 0)],
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &defaults,
+        ),
+        Err(SamplingError::OutcomeSpanOverflow {
+            computed: (1_u128 << 53) + 1,
+            limit: 1_u128 << 53,
+        })
+    );
+    assert_eq!(
+        sample_training_sequential_f32(
+            &valid,
+            SamplingSpec::new(SamplingMode::Default, (L + 1) as usize, 1),
+            &defaults,
+        ),
+        Err(SamplingError::F32CountUnsupported {
+            computed: L + 1,
+            limit: L,
+        })
+    );
+    assert_eq!(
+        sample_training_sequential_f32(
+            &[strict_single(0, &[(0, (L + 1) as i64)], 0)],
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &defaults,
+        ),
+        Err(SamplingError::F32SpanUnsupported {
+            unit: 0,
+            computed: L + 1,
+            limit: L,
+        })
+    );
+
+    let two = [
+        strict_single(0, &[(0, 1)], 0),
+        strict_single(1, &[(1, 2)], 0),
+    ];
+    let mut limits = defaults;
+    limits.max_units = 1;
+    assert_eq!(
+        sample_training_sequential_f32(
+            &two,
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &limits
+        ),
+        Err(SamplingError::UnitLimitExceeded {
+            computed: 2,
+            limit: 1,
+        })
+    );
+    let mut limits = defaults;
+    limits.max_support_spans = 1;
+    assert_eq!(
+        sample_training_sequential_f32(
+            &[strict_unit(&[0..1], &[(0, 1), (2, 3)], 0)],
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &limits,
+        ),
+        Err(SamplingError::SupportSpanLimitExceeded {
+            computed: 2,
+            limit: 1,
+        })
+    );
+    let identical = [
+        strict_single(0, &[(0, 1)], 0),
+        strict_single(1, &[(0, 1)], 0),
+    ];
+    let mut limits = defaults;
+    limits.max_endpoint_scratch_bytes = 511;
+    assert_eq!(
+        sample_training_sequential_f32(
+            &identical,
+            SamplingSpec::new(SamplingMode::Default, 1, 1),
+            &limits
+        ),
+        Err(SamplingError::EndpointScratchExceeded {
+            computed: 512,
+            limit: 511,
+        })
+    );
+    let mut limits = defaults;
+    limits.max_expanded_rows = 3;
+    assert_eq!(
+        sample_training_sequential_f32(
+            &[strict_unit(&[0..1, 2..3], &[(0, 1)], 0)],
+            SamplingSpec::new(SamplingMode::Default, 2, 1),
+            &limits,
+        ),
+        Err(SamplingError::ExpandedRowsExceeded {
+            computed: 4,
+            limit: 3,
+        })
+    );
+    let mut limits = defaults;
+    limits.max_work_cells = 2;
+    assert_eq!(
+        sample_training_sequential_f32(
+            &valid,
+            SamplingSpec::new(SamplingMode::Default, 2, 1),
+            &limits,
+        ),
+        Err(SamplingError::WorkLimitExceeded {
+            computed: 4,
+            limit: 2,
+        })
+    );
+}
+
+#[test]
+fn strict_f32_admits_long_unused_gap() {
+    const L: u128 = 1 << 24;
+    let units = [
+        strict_single(0, &[(0, 1)], 0),
+        strict_single(1, &[((L + 2) as i64, (L + 3) as i64)], 0),
+    ];
+    let spec = SamplingSpec::new(SamplingMode::Default, 2, 5);
+    let limits = SequentialLimits::default();
+    let first = sample_training_sequential_f32(&units, spec, &limits).expect("gap first");
+    let second = sample_training_sequential_f32(&units, spec, &limits).expect("gap second");
+    assert_eq!(first, second);
+    assert_eq!(first.unit_counts().iter().sum::<usize>(), 2);
+    assert_eq!(first.row_indices().len(), 2);
+    assert!(first.row_indices().iter().all(|&row| matches!(row, 0 | 1)));
+}
+
+#[test]
+fn strict_f32_cutoff_24_matches_and_replays() {
+    let rows = fixture_rows();
+    let folds = expanding_folds(&rows);
+    let fold = &folds[2];
+    let supports = support_map();
+    let units = units_from_fold(fold, &DECISIONS, &supports);
+    assert_eq!(fold.outcome(), TimeFoldOutcome::Usable);
+    assert_eq!(fold.cutoff(), 24);
+    assert_eq!(fold.train_ranges(), &[0..3, 4..5, 6..7]);
+    assert_eq!(fold.test_range(), 7..8, "holdout rows");
+    let expected_rows = [0..1, 1..3, 4..5, 6..7];
+    let expected_supports = [vec![(1, 4)], vec![(4, 7)], vec![(12, 15)], vec![(17, 20)]];
+    assert_eq!(units.len(), expected_rows.len());
+    for (unit, (rows, support)) in units
+        .iter()
+        .zip(expected_rows.iter().zip(expected_supports.iter()))
+    {
+        assert_eq!(unit.rows, vec![rows.clone()], "cutoff row group");
+        assert_eq!(unit.sequence, 0, "cutoff sequence");
+        let expected: Vec<OutcomeInterval> = support
+            .iter()
+            .map(|&(start, end)| OutcomeInterval { start, end })
+            .collect();
+        assert_eq!(unit.outcomes, expected, "cutoff support");
+    }
+    let eligible: Vec<usize> = units
+        .iter()
+        .flat_map(|unit| unit.rows.iter().flat_map(|range| range.clone()))
+        .collect();
+    assert_eq!(eligible, vec![0, 1, 2, 4, 6], "eligible training rows");
+    assert!(
+        units
+            .iter()
+            .flat_map(|unit| unit.rows.iter())
+            .all(|range| !range.contains(&7)),
+        "holdout row must stay out of the training units"
+    );
+    let spec = SamplingSpec::new(SamplingMode::Default, 4, 21);
+    let limits = SequentialLimits::default();
+    let first = sample_training_sequential_f32(&units, spec, &limits).expect("strict cutoff first");
+    let second =
+        sample_training_sequential_f32(&units, spec, &limits).expect("strict cutoff second");
+    assert_eq!(first, second);
+    assert_eq!(first.unit_counts().iter().sum::<usize>(), 4);
+    assert_eq!(
+        first.row_indices(),
+        expand_counts(&units, first.unit_counts()).as_slice()
+    );
+    for &row in first.row_indices() {
+        assert!(matches!(row, 0 | 1 | 2 | 4 | 6), "unexpected row {row}");
+        assert!(!matches!(row, 3 | 5 | 7), "ineligible row {row}");
+    }
+
+    let mut mutated_supports = support_map();
+    mutated_supports[3] = vec![(100, 140)];
+    mutated_supports[5] = vec![(200, 260)];
+    mutated_supports[7] = vec![(300, 330)];
+    let mutated_units = units_from_fold(fold, &DECISIONS, &mutated_supports);
+    let shapes = |units: &[SampleUnit]| -> Vec<(Vec<Range<usize>>, Vec<OutcomeInterval>)> {
+        units
+            .iter()
+            .map(|unit| (unit.rows.clone(), unit.outcomes.clone()))
+            .collect()
+    };
+    assert_eq!(shapes(&units), shapes(&mutated_units));
+    let mutated = sample_training_sequential_f32(&mutated_units, spec, &limits)
+        .expect("strict cutoff mutated");
+    assert_eq!(first.row_indices(), mutated.row_indices());
+    assert_eq!(first.unit_counts(), mutated.unit_counts());
+}
+
+#[test]
+fn strict_f32_fragmented_and_sequence_controls() {
+    let units = [
+        strict_unit(&[0..1, 2..3], &[(0, 1), (2, 3)], 0),
+        strict_single(3, &[(3, 4)], 0),
+        strict_single(4, &[(4, 5)], 1),
+    ];
+    let spec = SamplingSpec::new(SamplingMode::Default, 4, 7);
+    let limits = SequentialLimits::default();
+    let first = sample_training_sequential_f32(&units, spec, &limits).expect("fragment first");
+    let second = sample_training_sequential_f32(&units, spec, &limits).expect("fragment second");
+    assert_eq!(first, second);
+    assert_eq!(first.unit_counts().iter().sum::<usize>(), 4);
+    assert_eq!(
+        first.row_indices(),
+        expand_counts(&units, first.unit_counts()).as_slice()
+    );
+    assert!(
+        first
+            .row_indices()
+            .iter()
+            .all(|&row| matches!(row, 0 | 2 | 3 | 4))
+    );
+    if first.unit_counts()[2] > 0 {
+        let tail = &first.row_indices()[first.len() - first.unit_counts()[2]..];
+        assert!(tail.iter().all(|&row| row == 4));
+    }
+
+    let shuffled_spec = spec.with_shuffle(true);
+    let shuffled =
+        sample_training_sequential_f32(&units, shuffled_spec, &limits).expect("fragment shuffled");
+    let shuffled_replay = sample_training_sequential_f32(&units, shuffled_spec, &limits)
+        .expect("fragment shuffled replay");
+    assert_eq!(shuffled, shuffled_replay);
+    assert_eq!(first.unit_counts(), shuffled.unit_counts());
+    let mut ordered_rows = first.row_indices().to_vec();
+    let mut reordered_rows = shuffled.row_indices().to_vec();
+    ordered_rows.sort_unstable();
+    reordered_rows.sort_unstable();
+    assert_eq!(ordered_rows, reordered_rows);
+    if shuffled.unit_counts()[2] > 0 {
+        let tail = &shuffled.row_indices()[shuffled.len() - shuffled.unit_counts()[2]..];
+        assert!(tail.iter().all(|&row| row == 4));
+    }
 }

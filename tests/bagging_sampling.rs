@@ -142,3 +142,86 @@ fn tree_c_sequential_member_matches_direct_strict_sample() {
         refit.predict(&features[2]).unwrap().to_bits()
     );
 }
+
+#[allow(clippy::single_range_in_vec_init)]
+fn tree_c_integer_fixture() -> (Vec<Vector>, Vec<f32>, Vec<SampleUnit>) {
+    let features: Vec<Vector> = (0..5)
+        .map(|row| Vector::from_slice(&[row as f32]))
+        .collect();
+    let targets = vec![0.0_f32, 12.0, 16.0, 24.0, 48.0];
+    let sample_units = (0..5)
+        .map(|index| SampleUnit {
+            rows: vec![index..index + 1],
+            outcomes: Vec::new(),
+            sequence: 0,
+        })
+        .collect();
+    (features, targets, sample_units)
+}
+
+fn assert_tree_c_integer_member(
+    method: SampleMethod,
+    expected_rows: &[usize],
+    expected_unit_counts: &[usize],
+    expected_prediction: f32,
+) {
+    let (features, targets, sample_units) = tree_c_integer_fixture();
+    let config = TreeFitConfig {
+        max_depth: 0,
+        ..TreeFitConfig::default()
+    };
+    let spec = BaggingSpec::new(1, SamplingMode::Method(method), 4, 0x1060_0000_5EED_5EEC, 0);
+    assert_eq!(spec.member_seed(0), 0x0000_0000_5EED_5EED);
+
+    let direct = sample_training(
+        &sample_units,
+        SamplingSpec::new(SamplingMode::Method(method), 4, 0x0000_0000_5EED_5EED),
+    )
+    .unwrap();
+    assert_eq!(direct.row_indices(), expected_rows);
+    assert_eq!(direct.unit_counts(), expected_unit_counts);
+
+    let reference = fit_tree_f32(&features, &targets, direct.row_indices(), &config)
+        .unwrap()
+        .into_predictor();
+    let bag = DecisionTreeBag::fit_f32(&features, &targets, &sample_units, &spec, &config).unwrap();
+    assert_eq!(bag.members().len(), 1);
+    assert_eq!(bag.members()[0], reference);
+
+    let query = Vector::from_slice(&[5.0]);
+    let prediction = bag.predict(&query).unwrap();
+    assert_eq!(prediction.to_bits(), expected_prediction.to_bits());
+    assert_eq!(
+        reference.predict(&query).unwrap().to_bits(),
+        expected_prediction.to_bits()
+    );
+
+    let identity = fit_tree_f32(&features, &targets, &[0, 1, 2, 3, 4], &config)
+        .unwrap()
+        .into_predictor();
+    assert_ne!(
+        identity.predict(&query).unwrap().to_bits(),
+        expected_prediction.to_bits(),
+        "identity fallback must not reproduce the sampled mean"
+    );
+}
+
+#[test]
+fn tree_c_with_replacement_matches_direct_integer_sample() {
+    assert_tree_c_integer_member(
+        SampleMethod::WithReplacement,
+        &[0, 0, 1, 3],
+        &[2, 1, 0, 1, 0],
+        9.0,
+    );
+}
+
+#[test]
+fn tree_c_without_replacement_matches_direct_integer_sample() {
+    assert_tree_c_integer_member(
+        SampleMethod::WithoutReplacement,
+        &[0, 1, 2, 3],
+        &[1, 1, 1, 1, 0],
+        13.0,
+    );
+}

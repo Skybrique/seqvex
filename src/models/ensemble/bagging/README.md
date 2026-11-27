@@ -19,14 +19,30 @@ recommended deployment policy; `AllowLoss` is explicit.
 
 - Tree A/B: identity, without-replacement, with-replacement, and sequential
   bootstrap through the shared f64 sampler.
-- Tree C: identity and integer-draw modes now. Sequential bootstrap requires
-  the #103 strict-f32 sampler and is not integrated by the pre-#103 slice.
+- Tree C: identity and the integer methods through the shared f64 sampler;
+  `Default` and explicit sequential bootstrap route to
+  `sample_training_sequential_f32` with `SequentialLimits::default()`.
 - OLS: identity and explicit without-replacement only.
 - Resampling is opt-in; shuffle is off by default.
 
+Sequential strict-`f32` sampling passes both layers. The bagger fails fast on
+its aggregate `BaggingLimits` (units, spans, scratch, work), then the sampler
+applies its own per-call limits and hard capacities for every member. Raising a
+bag limit cannot raise a sampler default, and one admitted call does not relax
+the aggregate cap. The bagger runs its preflight before fitting any member and
+returns its own `BaggingError` variants on rejection. Each member's sampler
+preflight runs before that member is fitted. Sampler errors are wrapped in
+`BaggingError::Sampling(..)`. A failed candidate is never published.
+Expanded-row arithmetic is checked: equality at
+`max_expanded_rows_per_member` passes, a representable over-limit result is
+`ExpandedRowsExceeded`, and a checked-arithmetic overflow is
+`ExpandedRowsOverflow`.
+
 The caller owns eligibility, cutoff, outcome provenance, preprocessing, and
 held-out membership. `support_cutoff: Option<i64>` validates declared support
-ends when supplied; an end equal to the cutoff passes.
+ends when supplied; an end equal to the cutoff passes. A source range whose end
+exceeds the input reports the first invalid row, `max(start, len)`, in
+`SourceRowOutOfRange`.
 
 ## Publication and prediction
 
@@ -77,6 +93,6 @@ members=4 retained_bytes=416 holdout_rows=6 test_mae=0.000000
 
 ## Current checkpoint
 
-The pre-#103 slice delivers S0–S5 and the independent S7/S8/S9a/S10a work.
-Tree C sequential integration, full E0-27 evidence, and full #106 acceptance
-wait for #103 delivery and independent validation.
+The pre-#103 slice delivers S0–S5 and the independent S7/S8/S9a/S10a work. Tree C
+sequential bootstrap now routes to the landed strict-`f32` sampler; full E0-27
+release evidence and full #106 acceptance remain open under S10b.

@@ -88,10 +88,11 @@ impl OlsBag64 {
         spec: &BaggingSpec,
         config: &FitConfig64,
     ) -> Result<Self, OlsBagError> {
-        validate_units(units, features.len(), targets.len(), spec, false, false)?;
+        validate_units(units, features.len(), targets.len(), spec, false)?;
         let candidate = assemble_candidate(
             units,
             spec,
+            false,
             OlsBagError::Bagging,
             |member, rows| {
                 let fit = fit_f64(features, targets, rows, config)
@@ -206,10 +207,11 @@ impl OlsBag {
         config: &FitConfig64,
         policy: UnderflowPolicy,
     ) -> Result<Self, OlsBagError> {
-        validate_units(units, features.len(), targets.len(), spec, false, false)?;
+        validate_units(units, features.len(), targets.len(), spec, false)?;
         let candidate = assemble_candidate(
             units,
             spec,
+            false,
             OlsBagError::Bagging,
             |member, rows| {
                 let fit = fit_f64(features, targets, rows, config)
@@ -249,10 +251,11 @@ impl OlsBag {
         spec: &BaggingSpec,
         config: &FitConfig32,
     ) -> Result<Self, OlsBagError> {
-        validate_units(units, features.len(), targets.len(), spec, false, true)?;
+        validate_units(units, features.len(), targets.len(), spec, false)?;
         let candidate = assemble_candidate(
             units,
             spec,
+            false,
             OlsBagError::Bagging,
             |member, rows| {
                 let fit = fit_f32(features, targets, rows, config)

@@ -1,14 +1,17 @@
 #![allow(clippy::single_range_in_vec_init)]
 
-use seqvex::foundation::numerical::Vector64;
-use seqvex::models::ensemble::bagging::{BaggingSpec, DecisionTreeBag64, OlsBag64};
+use seqvex::foundation::numerical::{Vector, Vector64};
+use seqvex::models::ensemble::bagging::{
+    BaggingSpec, DecisionTreeBag, DecisionTreeBag64, OlsBag64,
+};
 use seqvex::models::linear::ols::FitConfig64;
 use seqvex::models::trees::decision_tree::TreeFitConfig;
 use seqvex::preprocessing::sampling::{
-    OutcomeInterval, SampleMethod, SampleUnit, SamplingMode, SamplingSpec, sample_training,
+    OutcomeInterval, SampleMethod, SampleUnit, SamplingMode, SamplingSpec, SequentialLimits,
+    sample_training, sample_training_sequential_f32,
 };
 use seqvex::preprocessing::split::{
-    TimeCoverage, TimeFold, TimeRow, TimeWindowSpec, expanding_time,
+    TimeCoverage, TimeFold, TimeFoldOutcome, TimeRow, TimeWindowSpec, expanding_time,
 };
 
 const DECISIONS: [i64; 8] = [1, 4, 4, 9, 12, 12, 17, 24];
@@ -179,6 +182,63 @@ fn cutoff24_mutation_rebuilds_units_and_preserves_evidence() {
         before_sample.unit_counts(),
         after_sample.unit_counts(),
         query
+    );
+}
+
+#[test]
+fn cutoff24_tree_c_sequential_replays_and_isolates_the_holdout() {
+    let rows = rows();
+    let folds = folds(&rows);
+    let fold = &folds[2];
+    assert_eq!(fold.outcome(), TimeFoldOutcome::Usable);
+    assert_eq!(fold.cutoff(), 24);
+    assert_eq!(fold.test_range(), 7..8);
+
+    let base_supports = support_map();
+    let base_units = units(fold, &base_supports);
+    assert_eq!(base_units.len(), 4);
+
+    let features: Vec<Vector> = (0..8)
+        .map(|index| Vector::from_slice(&[index as f32, (index % 3) as f32]))
+        .collect();
+    let targets: Vec<f32> = (0..8).map(|index| index as f32).collect();
+    let spec = BaggingSpec::new(2, SamplingMode::Default, 4, 0x5B, fold.scheduled_id());
+    let config = TreeFitConfig::default();
+
+    let before =
+        DecisionTreeBag::fit_f32(&features, &targets, &base_units, &spec, &config).unwrap();
+    let query = fold.test_range().start;
+    let before_prediction = before.predict(&features[query]).unwrap();
+
+    for member in 0..spec.members() {
+        let sample = sample_training_sequential_f32(
+            &base_units,
+            SamplingSpec::new(spec.mode(), spec.sample_size(), spec.member_seed(member)),
+            &SequentialLimits::default(),
+        )
+        .unwrap();
+        for &row in sample.row_indices() {
+            assert!(matches!(row, 0 | 1 | 2 | 4 | 6), "unexpected row {row}");
+            assert!(!matches!(row, 3 | 5 | 7), "ineligible row {row}");
+        }
+    }
+
+    let mut mutated_supports = support_map();
+    mutated_supports[3] = vec![(100, 140)];
+    mutated_supports[5] = vec![(200, 260)];
+    mutated_supports[7] = vec![(300, 330)];
+    let mut mutated_targets = targets.clone();
+    mutated_targets[7] += 500.0;
+    let mutated_units = units(fold, &mutated_supports);
+    assert_eq!(shapes(&base_units), shapes(&mutated_units));
+
+    let after =
+        DecisionTreeBag::fit_f32(&features, &mutated_targets, &mutated_units, &spec, &config)
+            .unwrap();
+    assert_eq!(after.members(), before.members());
+    assert_eq!(
+        after.predict(&features[query]).unwrap().to_bits(),
+        before_prediction.to_bits()
     );
 }
 

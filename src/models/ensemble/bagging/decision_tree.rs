@@ -80,10 +80,11 @@ impl DecisionTreeBag64 {
         spec: &BaggingSpec,
         config: &TreeFitConfig,
     ) -> Result<Self, DecisionTreeBagError> {
-        validate_units(units, features.len(), targets.len(), spec, true, false)?;
+        validate_units(units, features.len(), targets.len(), spec, true)?;
         let candidate = assemble_candidate(
             units,
             spec,
+            false,
             DecisionTreeBagError::Bagging,
             |member, rows| {
                 let fit = fit_tree_f64(features, targets, rows, config)
@@ -205,10 +206,11 @@ impl DecisionTreeBag {
         config: &TreeFitConfig,
         policy: TreeUnderflowPolicy,
     ) -> Result<Self, DecisionTreeBagError> {
-        validate_units(units, features.len(), targets.len(), spec, true, false)?;
+        validate_units(units, features.len(), targets.len(), spec, true)?;
         let candidate = assemble_candidate(
             units,
             spec,
+            false,
             DecisionTreeBagError::Bagging,
             |member, rows| {
                 let fit = fit_tree_f64(features, targets, rows, config)
@@ -244,6 +246,13 @@ impl DecisionTreeBag {
     }
 
     /// Profile C: strict f32 member fits.
+    ///
+    /// `SamplingMode::Default` and `Method(SequentialBootstrap)` route to the
+    /// shared strict-`f32` sampler with the default per-call
+    /// [`SequentialLimits`]; identity and the integer methods keep the legacy
+    /// sampler. Both bag-level and per-call limits must admit a request.
+    ///
+    /// [`SequentialLimits`]: crate::preprocessing::sampling::SequentialLimits
     pub fn fit_f32(
         features: &[Vector],
         targets: &[f32],
@@ -251,10 +260,11 @@ impl DecisionTreeBag {
         spec: &BaggingSpec,
         config: &TreeFitConfig,
     ) -> Result<Self, DecisionTreeBagError> {
-        validate_units(units, features.len(), targets.len(), spec, true, true)?;
+        validate_units(units, features.len(), targets.len(), spec, true)?;
         let candidate = assemble_candidate(
             units,
             spec,
+            true,
             DecisionTreeBagError::Bagging,
             |member, rows| {
                 let fit = fit_tree_f32(features, targets, rows, config)

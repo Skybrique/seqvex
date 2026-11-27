@@ -202,6 +202,14 @@ Report the summary method. Percentiles of window averages describe window averag
 
 A separate **memory probe** is an execution arranged to count memory while retaining the result long enough to inspect it. Keep its setup consistent with the stated operation. Declare whether native libraries, other threads or devices escape the counter.
 
+**Illustrative example — measuring model replacement.** Start peak tracking before fitting the candidate, with the old model still live. Keep tracking through candidate construction and any required serving conversion. Record the starting live memory, peak during replacement, and retained memory after the old model is released. State which allocations the probe can observe.
+
+| Observation | Illustrative result |
+|---|---|
+| Logical vector payload | 64 `f32` values occupy 256 bytes. |
+| Reserved vector storage | Capacity for 256 `f32` values represents 1,024 bytes of element storage. |
+| Peak during replacement | Capture tracked live memory while the old model, candidate, and temporary buffers may coexist. |
+
 Counting memory can itself affect timing. Do not compare a counted candidate with an uncounted baseline without accounting for that difference.
 
 ## 9. Link each run to the right executable

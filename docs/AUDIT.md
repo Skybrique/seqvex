@@ -206,6 +206,8 @@ A PASS resolves the stated scope and its identified findings. Use wording such a
 
 For rejection tests, keep other inputs valid so the intended check is reached. Assert the expected error and useful context. Test competing invalid conditions separately when error precedence matters; an earlier rejection does not exercise a later check.
 
+**Illustrative example — preserving validation order.** An OLS fit checks for duplicate selected indices before checking selected feature values. Suppose the selected indices are `[0, 1, 1]`, row `0` contains a `NaN` feature, and earlier checks pass. The expected error is `DuplicateIndex { index: 1 }`. A single loop that checks both conditions per row could report the non-finite feature first. Test each fault alone, then test them together and assert the exact first error and its context.
+
 Record functional acceptance separately from the optimization decision. State whether the supported learning, prediction and failure behavior passed, whether performance investigation remains open, and whether full handover is accepted. A functional PASS does not imply an accepted performance result. Full handover must still satisfy the governing requirements.
 
 Before handover verify:

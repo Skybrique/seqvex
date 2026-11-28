@@ -34,7 +34,15 @@ macro_rules! mean_impl {
         $frac_bits:expr,
         $sign_shift:expr,
         $tau:expr,
-        $u:expr
+        $u:expr,
+        $large:expr,
+        $tiny60:expr,
+        $tiny62:expr,
+        $div29_bits:expr,
+        $d_sum_bits:expr,
+        $d_mean_bits:expr,
+        $too_small_bits:expr,
+        $result_bits:expr
     ) => {
         mod $module {
             use super::MeanError;
@@ -48,6 +56,28 @@ macro_rules! mean_impl {
             const TAU: $ty = $tau;
             const UNIT_ROUNDOFF: $ty = $u;
             const TWO_ETA: $ty = ETA + ETA;
+
+            #[cfg(test)]
+            #[derive(Debug, Clone, Copy, PartialEq)]
+            pub(super) enum MeanObservation {
+                Bounds {
+                    hi: $ty,
+                    lo: $ty,
+                    positive_lo: $ty,
+                    positive_hi: $ty,
+                    negative_lo: $ty,
+                    negative_hi: $ty,
+                    d_sum_upper: $ty,
+                    d_mean_upper: $ty,
+                    lo_upper: $ty,
+                    r_div: $ty,
+                    total: $ty,
+                },
+                SumInterval {
+                    low: $ty,
+                    high: $ty,
+                },
+            }
 
             fn next_up(x: $ty) -> $ty {
                 if x.is_nan() || x == <$ty>::INFINITY {
@@ -219,7 +249,10 @@ macro_rules! mean_impl {
                 Ok(<$ty>::from_bits(bits))
             }
 
-            pub(super) fn mean(predictions: &[$ty]) -> Result<$ty, MeanError> {
+            pub(super) fn mean(
+                predictions: &[$ty],
+                #[cfg(test)] mut observe: Option<&mut dyn FnMut(MeanObservation)>,
+            ) -> Result<$ty, MeanError> {
                 if predictions.is_empty() {
                     return Err(MeanError::MeanCancellation);
                 }
@@ -281,6 +314,22 @@ macro_rules! mean_impl {
                     ETA
                 };
                 let total = add_up(add_up(d_mean_upper, lo_upper), r_div);
+                #[cfg(test)]
+                if let Some(observe) = observe.as_deref_mut() {
+                    observe(MeanObservation::Bounds {
+                        hi,
+                        lo,
+                        positive_lo,
+                        positive_hi,
+                        negative_lo,
+                        negative_hi,
+                        d_sum_upper,
+                        d_mean_upper,
+                        lo_upper,
+                        r_div,
+                        total,
+                    });
+                }
                 if !total.is_finite() {
                     return Err(MeanError::MeanCancellation);
                 }
@@ -298,6 +347,10 @@ macro_rules! mean_impl {
                     }
                     let low = add_down(add_down(sub_down(positive_lo, negative_hi), hi), lo);
                     let high = add_up(add_up(sub_up(positive_hi, negative_lo), hi), lo);
+                    #[cfg(test)]
+                    if let Some(observe) = observe {
+                        observe(MeanObservation::SumInterval { low, high });
+                    }
                     if low > 0.0 {
                         Ok(0.0)
                     } else if high < 0.0 {
@@ -309,6 +362,109 @@ macro_rules! mean_impl {
                     }
                 } else {
                     Err(MeanError::MeanCancellation)
+                }
+            }
+
+            #[cfg(test)]
+            mod evidence_tests {
+                use super::*;
+
+                fn observe_once(values: &[$ty]) -> (Result<$ty, MeanError>, Vec<MeanObservation>) {
+                    let mut events = Vec::new();
+                    let result = {
+                        let mut push = |event| events.push(event);
+                        mean(values, Some(&mut push))
+                    };
+                    (result, events)
+                }
+
+                #[test]
+                fn e0_11_signed_zero_at_two_eta_bound() {
+                    let p60: $ty = $large;
+                    let original = [p60, 1.0, 4.0 * ETA, -2.0 * ETA, -p60, -1.0];
+                    let negated = original.map(|value| -value);
+                    let cases: [([$ty; 6], $bits, $bits, $bits, $bits); 2] = [
+                        (original, 4, 2, 2, 0),
+                        (negated, 2, 4, SIGN_MASK | 2, SIGN_MASK),
+                    ];
+                    for (values, positive, negative, interval, result_bits) in cases {
+                        let (result, events) = observe_once(&values);
+                        assert_eq!(result.unwrap().to_bits(), result_bits);
+                        assert_eq!(events.len(), 2);
+                        let MeanObservation::Bounds {
+                            hi,
+                            lo,
+                            positive_lo,
+                            positive_hi,
+                            negative_lo,
+                            negative_hi,
+                            d_sum_upper,
+                            d_mean_upper,
+                            lo_upper,
+                            r_div,
+                            total,
+                        } = events[0]
+                        else {
+                            panic!("expected Bounds event, found {:?}", events[0]);
+                        };
+                        assert_eq!(hi.to_bits(), 0);
+                        assert_eq!(lo.to_bits(), 0);
+                        assert_eq!(positive_lo.to_bits(), positive);
+                        assert_eq!(positive_hi.to_bits(), positive);
+                        assert_eq!(negative_lo.to_bits(), negative);
+                        assert_eq!(negative_hi.to_bits(), negative);
+                        assert_eq!(d_sum_upper.to_bits(), 6);
+                        assert_eq!(d_mean_upper.to_bits(), 1);
+                        assert_eq!(lo_upper.to_bits(), 0);
+                        assert_eq!(r_div.to_bits(), 1);
+                        assert_eq!(total.to_bits(), 2);
+                        let MeanObservation::SumInterval { low, high } = events[1] else {
+                            panic!("expected SumInterval event, found {:?}", events[1]);
+                        };
+                        assert_eq!(low.to_bits(), interval);
+                        assert_eq!(high.to_bits(), interval);
+                    }
+                }
+
+                #[test]
+                fn e0_12_div_up_pos_fused_cases() {
+                    let cases: [($ty, usize, $bits); 5] = [
+                        (0.0, 3, 0),
+                        (ETA, 3, 1),
+                        (6.0 * ETA, 6, 1),
+                        (1.0, 29, $div29_bits),
+                        (5.0 * ETA, 3, 2),
+                    ];
+                    for (operand, divisor, expected) in cases {
+                        assert_eq!(
+                            div_up_pos(operand, divisor).to_bits(),
+                            expected,
+                            "div_up_pos({operand:?}, {divisor})"
+                        );
+                    }
+                }
+
+                #[test]
+                fn e0_13_lost_residual_outward_bounds() {
+                    let p60: $ty = $large;
+                    let tiny60: $ty = $tiny60;
+                    let tiny62: $ty = $tiny62;
+                    assert_eq!(tiny62.to_bits(), $too_small_bits);
+                    let values = [p60, 1.0, ETA, tiny60];
+                    let (result, events) = observe_once(&values);
+                    assert_eq!(result.unwrap().to_bits(), $result_bits);
+                    assert_eq!(events.len(), 1);
+                    let MeanObservation::Bounds {
+                        d_sum_upper,
+                        d_mean_upper,
+                        ..
+                    } = events[0]
+                    else {
+                        panic!("expected Bounds event, found {:?}", events[0]);
+                    };
+                    assert_eq!(d_sum_upper.to_bits(), $d_sum_bits);
+                    assert_eq!(d_mean_upper.to_bits(), $d_mean_bits);
+                    assert_ne!(d_mean_upper.to_bits(), $too_small_bits);
                 }
             }
         }
@@ -324,7 +480,15 @@ mean_impl!(
     52,
     63,
     f64::from_bits((1023u64 - 40) << 52),
-    f64::from_bits((1023u64 - 53) << 52)
+    f64::from_bits((1023u64 - 53) << 52),
+    2.0f64.powi(60),
+    2.0f64.powi(-60),
+    2.0f64.powi(-62),
+    0x3fa1_a7b9_611a_7b97u64,
+    0x3c30_0000_0000_0001u64,
+    0x3c10_0000_0000_0001u64,
+    0x3c10_0000_0000_0000u64,
+    0x4390_0000_0000_0000u64
 );
 
 mean_impl!(
@@ -336,15 +500,31 @@ mean_impl!(
     23,
     31,
     f32::from_bits((127u32 - 20) << 23),
-    f32::from_bits((127u32 - 24) << 23)
+    f32::from_bits((127u32 - 24) << 23),
+    2.0f32.powi(60),
+    2.0f32.powi(-60),
+    2.0f32.powi(-62),
+    0x3d0d_3dccu32,
+    0x2180_0001u32,
+    0x2080_0001u32,
+    0x2080_0000u32,
+    0x5c80_0000u32
 );
 
 pub(crate) fn mean_f64(predictions: &[f64]) -> Result<f64, MeanError> {
-    f64_impl::mean(predictions)
+    f64_impl::mean(
+        predictions,
+        #[cfg(test)]
+        None,
+    )
 }
 
 pub(crate) fn mean_f32(predictions: &[f32]) -> Result<f32, MeanError> {
-    f32_impl::mean(predictions)
+    f32_impl::mean(
+        predictions,
+        #[cfg(test)]
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -380,6 +560,18 @@ mod tests {
             mean_f32(&[M32, M32, M32 - 2.0 * ETA32]).unwrap(),
             M32 - ETA32
         );
+        assert_eq!(
+            mean_f64(&[f64::MAX, -f64::MAX, ETA64, ETA64, ETA64])
+                .unwrap()
+                .to_bits(),
+            1
+        );
+        assert_eq!(
+            mean_f32(&[f32::MAX, -f32::MAX, ETA32, ETA32, ETA32])
+                .unwrap()
+                .to_bits(),
+            1
+        );
     }
 
     #[test]
@@ -395,6 +587,19 @@ mod tests {
             (-0.0f64).to_bits()
         );
         assert_eq!(mean_f64(&[0.0, -0.0]).unwrap().to_bits(), 0);
+        assert_eq!(mean_f32(&[ETA32, 0.0]).unwrap().to_bits(), 0);
+        assert_eq!(
+            mean_f32(&[-ETA32, 0.0]).unwrap().to_bits(),
+            (-0.0f32).to_bits()
+        );
+        assert_eq!(
+            mean_f64(&[-3.0 * ETA64, ETA64]).unwrap().to_bits(),
+            (-ETA64).to_bits()
+        );
+        assert_eq!(
+            mean_f32(&[-3.0 * ETA32, ETA32]).unwrap().to_bits(),
+            (-ETA32).to_bits()
+        );
     }
 
     #[test]

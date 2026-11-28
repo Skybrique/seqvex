@@ -93,6 +93,15 @@ members=4 retained_bytes=416 holdout_rows=6 test_mae=0.000000
 
 ## Current checkpoint
 
-The pre-#103 slice delivers S0–S5 and the independent S7/S8/S9a/S10a work. Tree C
-sequential bootstrap now routes to the landed strict-`f32` sampler; full E0-27
-release evidence and full #106 acceptance remain open under S10b.
+The pre-#103 slice delivers S0–S5 and the independent S7/S8/S9a work. Tree Profile C
+sequential bootstrap uses the landed strict-`f32` sampler. Accepted evidence:
+
+- [E0-17 Tree C integer-mode sampling coverage](https://github.com/Skybrique/seqvex/issues/106#issuecomment-7221194449).
+- [E0-27 S9b release evidence](https://github.com/Skybrique/seqvex/issues/106#s9b-release-evidence-e0-27),
+  measured on the recorded x86-64 Linux workload and host. Those results are
+  descriptive for that workload and executable, not a cross-platform or universal
+  guarantee.
+- [S10a acceptance under the revised numerical scope](https://github.com/Skybrique/seqvex/issues/106#issuecomment-7241327534),
+  tied to `3989895` and landed at `fcd9d11`.
+
+Full #106 acceptance remains pending S10b validation and independent review.

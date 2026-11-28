@@ -348,74 +348,120 @@ fn profile_b_conversion_failure_is_indexed_and_preserves_active() {
 
 #[test]
 fn real_ols_predictor_error_is_indexed() {
-    use seqvex::models::ensemble::bagging::{MemberPredictCause, OlsBagError, PredictionError};
-    use seqvex::models::linear::ols::RegressionError;
+    use seqvex::models::ensemble::bagging::RowError;
+    use seqvex::preprocessing::sampling::{SamplingSpec, sample_training};
+    use std::error::Error;
+
+    let k = f64::from_bits((1023_u64 + 600) << 52);
+    assert_eq!(
+        k.to_bits(),
+        0x6570_0000_0000_0000,
+        "K must be exactly 2^600"
+    );
 
     let features = vec![
         Vector64::from_slice(&[0.0]),
         Vector64::from_slice(&[1.0]),
-        Vector64::from_slice(&[2.0]),
-        Vector64::from_slice(&[3.0]),
+        Vector64::from_slice(&[1.0]),
+        Vector64::from_slice(&[0.0]),
     ];
-    let targets = vec![0.0, 1e200, 2.0, 3.0];
+    let targets = vec![0.0, k, 1.0, 0.0];
     let sample_units = units(4);
-    let mut found = false;
-    for base in 0..256u64 {
-        let spec = BaggingSpec::new(
-            2,
-            SamplingMode::Method(seqvex::preprocessing::sampling::SampleMethod::WithoutReplacement),
-            2,
-            base,
-            0,
-        );
-        let Ok(bag) = OlsBag64::fit(
-            &features,
-            &targets,
+    let spec = BaggingSpec::new(
+        2,
+        SamplingMode::Method(SampleMethod::WithoutReplacement),
+        2,
+        0x1060_0000_0000_0002,
+        0,
+    );
+
+    assert_eq!(spec.member_seed(0), 3);
+    assert_eq!(spec.member_seed(1), 2);
+    for (member, expected_rows, expected_counts) in [
+        (0usize, vec![0usize, 2], vec![1usize, 0, 1, 0]),
+        (1usize, vec![0usize, 1], vec![1usize, 1, 0, 0]),
+    ] {
+        let sample = sample_training(
             &sample_units,
-            &spec,
-            &FitConfig64::default(),
-        ) else {
-            continue;
-        };
-        let batch = vec![
-            Observation::new(Vector64::from_slice(&[1.0])),
-            Observation::new(Vector64::from_slice(&[1.0])),
-            Observation::new(Vector64::from_slice(&[1.0])),
-            Observation::new(Vector64::from_slice(&[1e200])),
-        ];
-        if let Err(error) = bag.predict_batch(&batch, 8) {
-            let matches = matches!(
-                &error,
-                OlsBagError::Predict(PredictionError::MemberPredict {
-                    row_index: 3,
-                    member_index: 1,
-                    cause: MemberPredictCause::Predictor(RegressionError::NonFiniteOutput { .. }),
-                    evaluated_rows: 3,
-                })
-            );
-            if matches {
-                use std::error::Error;
-                let prediction = error.source().expect("prediction source");
-                assert!(
-                    prediction
-                        .downcast_ref::<PredictionError<RegressionError>>()
-                        .is_some()
-                );
-                assert!(
-                    prediction
-                        .source()
-                        .expect("predictor source")
-                        .downcast_ref::<RegressionError>()
-                        .is_some()
-                );
-                found = true;
-                break;
-            }
-        }
+            SamplingSpec::new(spec.mode(), spec.sample_size(), spec.member_seed(member)),
+        )
+        .unwrap();
+        assert_eq!(sample.row_indices(), expected_rows.as_slice());
+        assert_eq!(sample.unit_counts(), expected_counts.as_slice());
     }
-    assert!(
-        found,
-        "expected a real OLS non-finite predictor error at member 1"
+
+    let config = FitConfig64 {
+        intercept: false,
+        ..FitConfig64::default()
+    };
+    let bag = OlsBag64::fit(&features, &targets, &sample_units, &spec, &config).unwrap();
+    assert_eq!(bag.members().len(), 2);
+    assert_eq!(bag.members()[0].weights().as_slice(), &[1.0][..]);
+    assert_eq!(bag.members()[1].weights().as_slice(), &[k][..]);
+    assert_eq!(bag.members()[0].bias(), 0.0);
+    assert_eq!(bag.members()[1].bias(), 0.0);
+
+    let prefix = [
+        Observation::new(Vector64::from_slice(&[1.0])),
+        Observation::new(Vector64::from_slice(&[1.0])),
+        Observation::new(Vector64::from_slice(&[1.0])),
+    ];
+    let prefix_outputs = bag.predict_batch(&prefix, 8).unwrap();
+    assert_eq!(prefix_outputs.len(), 3);
+    assert!(prefix_outputs.iter().all(|value| value.is_finite()));
+
+    let overflow_row = Vector64::from_slice(&[k]);
+    assert_eq!(bag.members()[0].predict(&overflow_row), Ok(k));
+    assert_eq!(
+        bag.members()[1].predict(&overflow_row),
+        Err(RegressionError::NonFiniteOutput { observation: None })
+    );
+
+    let batch = vec![
+        Observation::new(Vector64::from_slice(&[1.0])),
+        Observation::new(Vector64::from_slice(&[1.0])),
+        Observation::new(Vector64::from_slice(&[1.0])),
+        Observation::new(overflow_row),
+        Observation::new(Vector64::from_slice(&[1.0, 1.0])),
+    ];
+    let expected = PredictionError::MemberPredict {
+        row_index: 3,
+        member_index: 1,
+        cause: MemberPredictCause::Predictor(RegressionError::NonFiniteOutput {
+            observation: None,
+        }),
+        evaluated_rows: 3,
+    };
+    let error = bag.predict_batch(&batch, 8).unwrap_err();
+    assert_eq!(error, OlsBagError::Predict(expected.clone()));
+
+    let prediction = error.source().expect("prediction source");
+    assert_eq!(
+        prediction.downcast_ref::<PredictionError<RegressionError>>(),
+        Some(&expected)
+    );
+    assert_eq!(
+        prediction
+            .source()
+            .expect("predictor source")
+            .downcast_ref::<RegressionError>(),
+        Some(&RegressionError::NonFiniteOutput { observation: None })
+    );
+
+    let control = vec![
+        Observation::new(Vector64::from_slice(&[1.0])),
+        Observation::new(Vector64::from_slice(&[1.0])),
+        Observation::new(Vector64::from_slice(&[1.0])),
+        Observation::new(Vector64::from_slice(&[1.0])),
+        Observation::new(Vector64::from_slice(&[1.0, 1.0])),
+    ];
+    assert_eq!(
+        bag.predict_batch(&control, 8).unwrap_err(),
+        OlsBagError::Predict(PredictionError::RowValidation {
+            row_index: 4,
+            cause: RowError::DimensionMismatch,
+            evaluated_rows: 4,
+        })
     );
 }
 

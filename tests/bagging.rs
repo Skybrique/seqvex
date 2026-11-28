@@ -144,6 +144,77 @@ fn ols_profiles_fit_predict() {
 }
 
 #[test]
+fn ols_profiles_reject_repeat_capable_sampling_before_fit() {
+    let (features64, targets64, features32, targets32) = ols_data();
+    let sample_units = units(features64.len());
+
+    for mode in [
+        SamplingMode::Default,
+        SamplingMode::Method(SampleMethod::SequentialBootstrap),
+        SamplingMode::Method(SampleMethod::WithReplacement),
+    ] {
+        let spec = BaggingSpec::new(1, mode, 2, 7, 0);
+        let expected = Err(OlsBagError::Bagging(BaggingError::UnsupportedMode { mode }));
+
+        let profile_a = OlsBag64::fit(
+            &features64,
+            &targets64,
+            &sample_units,
+            &spec,
+            &FitConfig64::default(),
+        )
+        .map(|_| ());
+        assert_eq!(
+            profile_a, expected,
+            "Profile A must reject {mode:?} before sampling or fitting"
+        );
+
+        let profile_b = OlsBag::fit_from_f64(
+            &features64,
+            &targets64,
+            &sample_units,
+            &spec,
+            &FitConfig64::default(),
+            UnderflowPolicy::Reject,
+        )
+        .map(|_| ());
+        assert_eq!(
+            profile_b, expected,
+            "Profile B must reject {mode:?} before fitting or conversion"
+        );
+
+        let profile_c = OlsBag::fit_f32(
+            &features32,
+            &targets32,
+            &sample_units,
+            &spec,
+            &FitConfig32::default(),
+        )
+        .map(|_| ());
+        assert_eq!(
+            profile_c, expected,
+            "Profile C must reject {mode:?} before sampling or fitting"
+        );
+    }
+
+    let mode = SamplingMode::Method(SampleMethod::WithReplacement);
+    let zero_draw_spec = BaggingSpec::new(1, mode, 0, 7, 0);
+    let precedence = OlsBag64::fit(
+        &features64,
+        &targets64,
+        &sample_units,
+        &zero_draw_spec,
+        &FitConfig64::default(),
+    )
+    .map(|_| ());
+    assert_eq!(
+        precedence,
+        Err(OlsBagError::Bagging(BaggingError::UnsupportedMode { mode })),
+        "Profile A must reject WithReplacement before the sampler reports ZeroSampleSize"
+    );
+}
+
+#[test]
 fn retained_limit_equality_and_over_limit_preserve_active_bag() {
     let (features64, targets64, _, _) = tree_data();
     let sample_units = units(features64.len());

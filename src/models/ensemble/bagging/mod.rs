@@ -1335,4 +1335,77 @@ mod tests {
         assert!(calls.iter().any(|&(row, member)| row == 3 && member == 4));
         assert!(calls.iter().all(|(row, _)| *row < 4));
     }
+
+    #[test]
+    fn production_batch_stops_on_typed_predictor_error() {
+        use crate::models::linear::ols::RegressionError;
+
+        #[derive(Debug, PartialEq)]
+        enum Event {
+            Validate(usize),
+            Predict(usize, usize),
+            Mean(Vec<f64>),
+        }
+
+        let batch: Vec<Observation<usize>> = (0..5).map(Observation::new).collect();
+
+        let events = std::cell::RefCell::new(Vec::new());
+
+        let err = publish_batch::<usize, f64, RegressionError>(
+            &batch,
+            8,
+            8,
+            2,
+            |row, _| {
+                events.borrow_mut().push(Event::Validate(row));
+                Ok(())
+            },
+            |row, member, _| {
+                events.borrow_mut().push(Event::Predict(row, member));
+                if row == 3 && member == 1 {
+                    Err(RegressionError::NonFiniteOutput { observation: None })
+                } else {
+                    Ok((row + 1) as f64)
+                }
+            },
+            |value: &f64| value.is_finite(),
+            |predictions| {
+                events.borrow_mut().push(Event::Mean(predictions.to_vec()));
+                mean::mean_f64(predictions)
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            PredictionError::MemberPredict {
+                row_index: 3,
+                member_index: 1,
+                cause: MemberPredictCause::Predictor(RegressionError::NonFiniteOutput {
+                    observation: None,
+                }),
+                evaluated_rows: 3,
+            }
+        );
+        assert_eq!(
+            events.into_inner(),
+            vec![
+                Event::Validate(0),
+                Event::Predict(0, 0),
+                Event::Predict(0, 1),
+                Event::Mean(vec![1.0, 1.0]),
+                Event::Validate(1),
+                Event::Predict(1, 0),
+                Event::Predict(1, 1),
+                Event::Mean(vec![2.0, 2.0]),
+                Event::Validate(2),
+                Event::Predict(2, 0),
+                Event::Predict(2, 1),
+                Event::Mean(vec![3.0, 3.0]),
+                Event::Validate(3),
+                Event::Predict(3, 0),
+                Event::Predict(3, 1),
+            ]
+        );
+    }
 }
